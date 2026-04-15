@@ -1,0 +1,378 @@
+# Specification: Journal of Random Thought
+
+## Purpose
+
+The Journal of Random Thought is the private capture layer of my second brain.
+
+It exists to:
+- offload fragmented, unfiltered thoughts quickly;
+- reduce friction for capture, especially in an ADHD context;
+- preserve streams of thought before they disappear;
+- organize them later without interrupting capture;
+- connect them to projects, published work, and relationships;
+- surface useful synthesis during planning time rather than at entry time.
+
+This system is not a diary, not a chat assistant, and not a task manager.
+It is a consciousness capture system that can later feed tasks, goals, notes, and strategic reflection.
+
+---
+
+## Design principles
+
+1. Capture must be low resistance.
+2. Capture must happen in an interface I already use.
+3. Sending a note must require no follow-up interaction.
+4. The bot should acknowledge receipt, then get out of the way.
+5. Organization happens in the background.
+6. Reflection happens later, during planning or dashboard review.
+7. Raw entries remain preserved even if later distilled.
+8. The journal is a private layer, distinct from public writing and projects.
+
+---
+
+## Phase 1 scope
+
+Phase 1 includes:
+- capture by text message to a bot;
+- automatic message stitching into a single entry within a 10-minute window;
+- contextual “new note” detection to split entries within that same window;
+- automatic timestamp capture;
+- automatic tag inference;
+- optional location capture when technically available;
+- storage in a dedicated database;
+- basic AI classification;
+- basic AI-generated related-entry / related-project / related-public-work connections;
+- simple acknowledgement response.
+
+Phase 1 excludes:
+- interactive clarification at capture time;
+- manual tagging workflow;
+- complex editing UI;
+- full knowledge graph visualization;
+- deep relationship management interface;
+- full task management workflow.
+
+---
+
+## Capture interface requirements
+
+### Preferred interfaces
+Priority order:
+1. iMessage
+2. WhatsApp
+3. Telegram
+
+### Phase 1 recommendation
+Use Telegram first because it is the most practical interface for bot-based capture with minimal UX friction and mature automation support.
+
+### UX requirements
+- The capture interface must feel like messaging, not like note-taking software.
+- The user types and presses send.
+- The system replies only with a short acknowledgement.
+- No conversational back-and-forth is required.
+- No forced categorization at input time.
+- No extra formatting is required.
+
+### Acknowledgement behavior
+Examples:
+- “Stored.”
+- “Captured.”
+- “Saved.”
+
+Acknowledgements should be brief and consistent.
+
+---
+
+## Capture logic
+
+### Entry stitching
+- Messages sent within 10 minutes of each other are grouped into one JournalEntry by default.
+- Each individual message is still stored as a separate CaptureEvent.
+- The stitched JournalEntry is the user-facing logical note.
+
+### Forced split
+If the system detects a contextual “new note” phrase, it starts a new JournalEntry even if the message arrives within the 10-minute window.
+
+Examples of trigger intent:
+- “Here’s another note”
+- “New note”
+- “Different thought”
+- equivalent contextual variations
+
+### Premature send handling
+If a user accidentally sends too early, follow-up messages within the same 10-minute window are appended to the current JournalEntry unless a forced split is detected.
+
+---
+
+## Metadata capture
+
+Each JournalEntry should store:
+- entry ID
+- source channel
+- created_at
+- updated_at
+- stitch_window_start
+- stitch_window_end
+- raw combined text
+- cleaned text
+- inferred language
+- inferred tags
+- inferred themes
+- candidate classification
+- summary
+- link suggestions
+- location metadata if available
+- privacy level
+- processing status
+
+Each CaptureEvent should store:
+- event ID
+- parent JournalEntry ID
+- original message text
+- message timestamp
+- platform message ID
+- sender ID
+- delivery status
+- location metadata if available
+
+### Location
+Location is desirable but optional.
+If the source platform does not expose it directly, the system may later support:
+- explicit location share;
+- device automation handoff;
+- coarse geolocation from a trusted companion workflow.
+
+Location should never block capture.
+
+---
+
+## Classification model
+
+The system should classify entries silently in the background.
+
+### Initial output classes
+- Task candidate
+- Goal candidate
+- Knowledge node candidate
+- Archive only
+
+### Important rule
+Classification is advisory, not destructive.
+A journal entry remains a journal entry even if it is later linked to a task, goal, or note.
+
+### Tagging
+Tags are inferred automatically from content.
+The user is not required to add tags manually.
+
+Possible tag dimensions:
+- topic
+- project
+- person
+- organization
+- place
+- emotional tone
+- time horizon
+- actionability
+- content format relevance (essay, episode, manuscript, etc.)
+
+---
+
+## Four-layer second brain architecture
+
+### Layer 1: Private journal
+The Journal of Random Thought is the private layer.
+It contains raw consciousness capture, fragmented ideas, reminders, observations, and inner reflection.
+
+### Layer 2: Public presence
+This layer contains:
+- published essays
+- episode transcripts
+- book manuscripts
+- draft public-facing writing
+
+This is conceptually separate from the private journal but highly linkable to it.
+
+### Layer 3: Projects
+This layer contains:
+- past projects
+- current projects
+- future projects
+- project status
+- project assets and decisions
+
+Projects are often downstream expressions of public ideas and private thoughts.
+
+### Layer 4: Social graph
+This layer contains:
+- people
+- organizations
+- interactions
+- relationship notes
+- possible reconnect prompts
+
+This layer may relate to the private journal, public work, and projects.
+
+---
+
+## Linkage model
+
+The system should create machine-assisted links between entries and other entities.
+
+### Link targets
+A JournalEntry may link to:
+- another JournalEntry
+- a KnowledgeNode
+- a Project
+- a PublicArtifact
+- a Person
+- an Organization
+- a Task
+- a Goal
+
+### Link properties
+Each link should include:
+- source entity
+- target entity
+- link type
+- confidence score
+- explanation
+- created_at
+- model version
+
+### Example link types
+- elaborates
+- resembles
+- contradicts
+- continues
+- inspires
+- relates_to_project
+- relates_to_person
+- may_become_task
+- may_become_goal
+- references_public_argument
+
+---
+
+## Planning-time active recall
+
+Active recall should not interrupt capture.
+It should appear only during planning contexts.
+
+### Delivery contexts
+- morning planning review
+- end-of-day review
+- productivity dashboard
+- optional scheduled digest
+
+### Output form
+The output should be an AI-written synthesis, not just a search result list.
+
+### Synthesis goals
+The system should surface:
+- repeated themes;
+- unfinished loops;
+- connections to prior journal entries;
+- connections to essays, transcripts, or manuscripts;
+- possible task or goal candidates;
+- relevant people or organizations;
+- notable changes in thinking over time.
+
+### Example synthesis prompts
+- “What has Simon been circling around recently?”
+- “Which new journal entries connect to active projects?”
+- “Which thoughts resemble prior published arguments?”
+- “What ideas are recurring but still unactioned?”
+- “Who should Simon reconnect with based on recent themes?”
+
+---
+
+## Database requirements
+
+The long-term system should use a dedicated relational or graph-capable database rather than Notion as the primary backend.
+
+### Core entities
+- JournalEntry
+- CaptureEvent
+- KnowledgeNode
+- PublicArtifact
+- Project
+- Person
+- Organization
+- Task
+- Goal
+- LinkEdge
+
+### Design requirement
+The database must preserve raw capture and support many-to-many relationships across all layers.
+
+### Architectural note
+A hybrid relational + vector search architecture is acceptable:
+- relational store for source-of-truth entities and links;
+- vector index for semantic recall and related-note suggestions.
+
+---
+
+## Processing pipeline
+
+### Ingestion
+1. Receive inbound message.
+2. Identify active stitch window.
+3. Detect whether message appends or starts a new entry.
+4. Store raw CaptureEvent.
+5. Update JournalEntry.
+6. Send acknowledgement.
+
+### Background processing
+1. Clean and normalize text.
+2. Infer tags.
+3. Infer classification candidates.
+4. Generate summary.
+5. Search for semantic neighbors in prior entries and other layers.
+6. Create candidate LinkEdges.
+7. Mark for planning-time synthesis.
+
+### Planning-time synthesis
+1. Gather recent entries.
+2. Rank by recurrence, novelty, actionability, and relational relevance.
+3. Produce narrative synthesis for dashboard or review.
+
+---
+
+## Non-functional requirements
+
+### User experience
+- friction must be minimal;
+- no noisy UI;
+- no extra app if avoidable;
+- no mandatory review step after capture.
+
+### Reliability
+- capture should be fast;
+- no message loss;
+- raw text must always be retained.
+
+### Privacy
+- private journal data must be stored in user-controlled infrastructure where possible;
+- messaging platform should be treated as an intake layer, not final storage;
+- sensitive entries should be movable quickly into controlled storage.
+
+### Extensibility
+The architecture should later support:
+- additional capture channels;
+- richer project/task conversion;
+- transcript and essay ingestion;
+- social graph enrichment;
+- dashboard views;
+- memory and planning agents.
+
+---
+
+## Success criteria for Phase 1
+
+Phase 1 is successful if:
+- I can send fragmented thoughts with near-zero friction;
+- accidental message splitting does not create note chaos;
+- I receive only a lightweight acknowledgement;
+- entries are auto-tagged and stored reliably;
+- I can later see useful basic connections;
+- the system begins to function as an externalized stream of consciousness, not just a message archive.
