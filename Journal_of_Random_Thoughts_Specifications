@@ -1,0 +1,1169 @@
+# Journal of Random Thought — System Specification (Phase 1)
+
+## 0. Purpose & role in the second brain
+
+The **Journal of Random Thought** is the private, inner-world capture layer of my second brain.
+
+It exists to:
+
+- Offload fragmented, unfiltered thoughts with **minimal friction**.
+- Preserve streams of consciousness before they vanish.
+- Organize and connect these streams **in the background**, not at capture time.
+- Feed planning and reflection through **AI-written syntheses**, not just search.
+- Connect inner thoughts to:
+  - public work (essays, transcripts, manuscripts),
+  - projects (past, present, future),
+  - relationships (people, organizations).
+
+The journal is *not* a traditional diary, task manager, or chat assistant.
+It is a structured consciousness-capture system that later feeds tasks, goals, notes, and decisions.
+
+---
+
+## 1. Design principles
+
+1. **Frictionless capture**  
+   - Capture should feel like sending a message to a bot.  
+   - No extra apps, no noisy UI, no forced fields at input.
+
+2. **One-way handoff at capture**  
+   - I type → I send → the system acknowledges receipt.  
+   - No follow-up questions or categorizations in the moment.
+
+3. **Background organization**  
+   - Classification, tagging, linking, and suggestions run asynchronously.  
+   - Capture UX is never blocked by “the AI thinking.”
+
+4. **Planning-time reflection**  
+   - Active recall appears only during:
+     - morning review,
+     - end-of-day review,
+     - or on a productivity dashboard.
+   - Not during capture.
+
+5. **Raw preservation**  
+   - Raw text and message-level detail are kept.  
+   - Distilled notes, tasks, or goals are downstream derivatives.
+
+6. **Layered second brain architecture**  
+   - Layer 1: private journal.  
+   - Layer 2: public presence (essays, transcripts, manuscripts).  
+   - Layer 3: projects.  
+   - Layer 4: social graph (people, organizations, interactions).
+
+---
+
+## 2. High-level architecture (Phase 1)
+
+### 2.1 Channels
+
+- Backend is **channel-agnostic**.
+- **Phase 1 intake channel:** Telegram bot (1:1 private chat).
+- Future channels (WhatsApp, iMessage, others) will integrate via the same ingestion API.
+
+```text
+User → Telegram Bot → Ingestion API → PostgreSQL (+ pgvector) → Background processors → Planning views
+```
+
+### 2.2 Data stack
+
+- **Primary store:** PostgreSQL (relational) as system of record.
+- **Semantic layer:** pgvector extension for embeddings and similarity search.
+- **Potential Phase 2+:** optional graph layer if relationship traversal becomes central.
+
+---
+
+## 3. Core entities (Phase 1)
+
+### 3.1 `journal_entry` (stitched note)
+
+Represents one **stream of thought** as experienced by the user.
+
+Fields:
+
+- Identity & time
+  - `id` (UUID)
+  - `user_id`
+  - `channel` (e.g. `telegram`)
+  - `created_at` (first event time)
+  - `updated_at` (last event time)
+  - `stitch_window_start` (timestamp)
+  - `stitch_window_end` (timestamp)
+
+- Content
+  - `full_text` (concatenated ordered `capture_event.raw_text` segments)
+  - `clean_text` (normalized for embedding)
+  - `summary` (short AI synopsis, 1–3 sentences)
+  - `language` (ISO code)
+
+- Classification
+  - `tags` (array of strings)
+  - `primary_type` (enum: `task_candidate`, `goal_candidate`, `knowledge_candidate`, `archive_only`)
+  - `primary_type_confidence` (float 0–1)
+
+- Suggested actions (medium-level classification)
+  - `suggested_actions` (JSONB), examples:
+    - `{ "kind": "task", "project_id": null, "reason": "Explicit next action described", "confidence": 0.78 }`
+    - `{ "kind": "goal", "project_id": "proj_123", "reason": "Longer-term aspiration linked to an existing project", "confidence": 0.65 }`
+    - `{ "kind": "knowledge", "node_id": null, "reason": "Abstract concept suitable for evergreen note", "confidence": 0.72 }`
+
+- Context
+  - `location` (nullable JSONB, e.g. `{ "lat": ..., "lon": ..., "place_name": ..., "source": "telegram" }`)
+  - `privacy_level` (enum: `private`, `sensitive`)
+  - `processing_status` (enum: `pending`, `processed`, `error`)
+
+- Vector
+  - `embedding` (pgvector column)
+
+Indexes:
+
+- on `user_id`, `created_at`, `updated_at`
+- GIN on `tags`
+- vector index on `embedding`
+
+---
+
+### 3.2 `capture_event` (atomic message)
+
+Represents a single inbound message from any channel.
+
+Fields:
+
+- Identity
+  - `id` (UUID)
+  - `journal_entry_id` (nullable until stitched, then set)
+  - `user_id`
+  - `channel` (e.g. `telegram`)
+  - `channel_message_id`
+
+- Time & content
+  - `received_at` (timestamp)
+  - `raw_text`
+  - `clean_text`
+
+- Location
+  - `location` (nullable JSONB, same shape as `journal_entry.location`)
+
+- Command metadata
+  - `is_system_command` (bool)
+  - `system_command_type` (nullable enum: `new_note`)
+
+Indexes:
+
+- on `user_id`, `received_at`
+- on `journal_entry_id`
+
+---
+
+### 3.3 Other entities (sketched for context)
+
+Phase 1 will mostly **link to** these without needing full UI:
+
+- `public_artifact`  
+  - essays, transcripts, manuscripts (public layer).
+
+- `project`  
+  - past, present, future projects.
+
+- `person`, `organization`  
+  - social graph nodes.
+
+- `link_edge`  
+  - generic relationship between any two entities:
+    - `source_type`, `source_id`
+    - `target_type`, `target_id`
+    - `link_type` (e.g. `resembles`, `relates_to_project`, `references_public_argument`, `relates_to_person`)
+    - `confidence`
+    - `explanation`
+    - `created_at`
+
+---
+
+## 4. Capture behavior
+
+### 4.1 Stitching rule
+
+- Define a **10-minute window** per user per channel.
+- For each new `capture_event`:
+
+  1. Check for system command:
+     - If `raw_text` matches a “new note” command exactly (see 4.2):
+       - mark `is_system_command = true`, `system_command_type = 'new_note'`;
+       - **do not** associate it with any `journal_entry`;
+       - **do not** include in any `full_text`;
+       - mark user as “awaiting new entry”.
+
+  2. If not a system command:
+     - If there is a **recent `journal_entry`** such that:
+       - same `user_id`, `channel`, and  
+       - `stitch_window_end` within 10 minutes of `received_at`, and  
+       - no `new_note` command has occurred since that entry,
+       - then **append**:
+         - set `journal_entry_id` on event;
+         - update `stitch_window_end` and `updated_at`;
+         - append `raw_text` in order to `full_text`.
+     - Else:
+       - **create new `journal_entry`**:
+         - set `created_at = received_at`;
+         - `stitch_window_start = stitch_window_end = received_at`;
+         - set `full_text = raw_text`;
+         - associate event.
+
+### 4.2 “New note” signals (user override)
+
+- Use a **small controlled phrase set** (case-insensitive, trimmed):
+
+  - `new note`
+  - `another note`
+  - `separate note`
+  - `different note`
+  - `different thought`
+
+- Behavior:
+
+  - If `raw_text` exactly equals one of these phrases:
+    - Treat as **system command**.
+    - No `journal_entry` is created or updated from this event.
+    - The **next** non-command `capture_event` starts a new `journal_entry` even if within 10 minutes of the previous one.
+
+- No semantic guessing in Phase 1; only explicit commands split a window.
+
+---
+
+### 4.3 Metadata capture
+
+- **Timestamps**
+  - Every `capture_event` stores `received_at`.
+  - `journal_entry.created_at` = earliest `received_at` among its events.
+  - `journal_entry.updated_at` = latest `received_at`.
+
+- **Location (opportunistic)**
+  - If the channel/integration provides location “for free”:
+    - store on `capture_event.location`.
+  - For `journal_entry.location`:
+    - if all associated events share the same location, copy that;
+    - else set as `null` for now and rely on event-level detail.
+  - Never request location at capture time; absence of location never blocks capture.
+
+---
+
+### 4.4 Telegram bot UX (Phase 1)
+
+- For every non-command message:
+  - Ingest, stitch, store.
+  - Immediately reply with a **short acknowledgement**, e.g.:
+    - `Stored.`
+    - `Captured.`
+- The bot **never** asks:
+  - “Is this a task?”  
+  - “Which project is this?”  
+  - “Add tags now?”
+- Capture is **one-way**: send → acknowledge → done.
+
+---
+
+## 5. Background processing
+
+All heavy lifting runs asynchronously after capture.
+
+### 5.1 Pipeline per `journal_entry`
+
+1. **Normalization**
+   - Build `clean_text` (strip markup, normalize whitespace, handle language).
+
+2. **Embedding**
+   - Generate `embedding` vector from `clean_text`.
+   - Store in pgvector column.
+
+3. **Summary**
+   - Generate a concise synopsis:
+     - 1–3 sentences;
+     - reflect main ideas, NOT just rephrased opening.
+
+4. **Tag inference**
+   - Infer 3–10 tags per entry spanning:
+     - topics (e.g. `content`, `macro`, `family`, `craft`, `health`);
+     - recognizable projects;
+     - named people/organizations;
+     - time horizon or actionability if obvious.
+
+5. **Primary type classification**
+   - Choose:
+     - `task_candidate`
+     - `goal_candidate`
+     - `knowledge_candidate`
+     - `archive_only`
+   - Store `primary_type` + `primary_type_confidence` (0–1).
+   - Classification is **advisory**, not binding.
+
+6. **Suggested actions (medium-level)**
+   - Derive up to **2 suggested actions**, stored in `suggested_actions` JSONB, such as:
+     - `task` suggestions where a concrete next step is described;
+     - `goal` suggestions for longer-horizon commitments;
+     - `knowledge` suggestions for evergreen notes;
+   - Each suggestion includes:
+     - `kind`
+     - optional `project_id` or `node_id`
+     - `reason` (short natural-language rationale)
+     - `confidence`.
+
+7. **Link candidates**
+   - Use the embedding to run similarity search against:
+     - recent and historical `journal_entry`s;
+     - `public_artifact`s (essays, transcripts, manuscripts);
+     - `project`s;
+     - `person`/`organization` entities.
+   - For each high-confidence match, create a `link_edge` candidate:
+     - `source_type = 'journal_entry'`
+     - `source_id`
+     - `target_type`, `target_id`
+     - `link_type` (e.g. `resembles`, `relates_to_project`, `references_public_argument`, `relates_to_person`)
+     - `confidence`
+     - `explanation` (short phrase).
+
+---
+
+## 6. Planning-time active recall
+
+Active recall is **pull-based**, triggered during planning/dashboards, not at capture.
+
+### 6.1 Contexts
+
+- **Morning review**
+- **End-of-day review**
+- **Productivity dashboard** (status view)
+
+### 6.2 Morning review (Phase 1 format)
+
+Goal: orient attention for the day by combining **themes** and **action candidates**, with ordering chosen adaptively.
+
+#### 6.2.1 Adaptive ordering
+
+- Compute:
+  - count and average confidence of `task_candidate`/`goal_candidate` entries in last N days;
+  - concentration of themes (tag clusters) from last N days.
+
+- If:
+  - many high-confidence action candidates and heavy project mentions → **actions first**.
+- Else:
+  - **themes first**.
+
+#### 6.2.2 Structure (medium-length)
+
+For each morning:
+
+```markdown
+# Morning Review — [Date]
+
+## 1. [Either Themes or Actions, adaptively]
+
+### If themes come first:
+- 3–5 bullets summarizing recurring themes from recent journal entries.
+- Each bullet references:
+  - representative entries,
+  - associated tags,
+  - any linked projects or public pieces.
+
+### If actions come first:
+- 3–5 top action candidates drawn from recent entries:
+  - likely tasks, goals, or project moves;
+  - brief justification for each (1–2 sentences).
+```
+
+Then:
+
+```markdown
+## 2. [The other section: Actions or Themes]
+
+- Mirror of above, but secondary in ordering.
+```
+
+Then always:
+
+```markdown
+## 3. Connections
+
+- 2–4 bullets that highlight notable links:
+  - entries that clearly connect to existing projects;
+  - entries that echo or elaborate prior essays or transcripts;
+  - entries that point to specific people or organizations;
+  - entries that revisit older journal themes with new nuance.
+
+## 4. Shift / Signal
+
+- 1 short paragraph (3–6 sentences) answering:
+  - What seems *new* in your thinking?
+  - What is *repeating* that you haven’t acted on?
+  - What might deserve special focus today?
+```
+
+Constraints:
+
+- Overall length: **one medium-length screen** — about:
+  - up to 5 bullets for themes;
+  - up to 5 bullets for action candidates;
+  - 2–4 bullets for connections;
+  - one short paragraph for shift/signal.
+- Tone: analytic but concise; no fluff, no generic motivational language.
+
+---
+
+### 6.3 End-of-day review (outline, Phase 1)
+
+Goal: evaluate the day’s mental residue and decide what should carry into tomorrow.
+
+Suggested structure:
+
+```markdown
+# End-of-Day Review — [Date]
+
+## 1. Today’s mental load
+- 3–5 bullets summarizing what occupied your mind today (from today’s entries).
+
+## 2. Open loops
+- 2–5 items that:
+  - recurred today or across the last few days;
+  - remain unactioned but seem important.
+
+## 3. Carry-forward
+- Suggested seed ideas or action candidates to start tomorrow with.
+
+## 4. Observation
+- 1 short paragraph on patterns, tension, or drift vs. your stated priorities.
+```
+
+(End-of-day can be added after Phase 1 capture and morning review are stable.)
+
+---
+
+## 7. Non-functional requirements
+
+- **UX**
+  - Capture requires no extra app beyond the messaging client.
+  - UI remains distraction-free; no noisy editing interfaces at capture.
+- **Reliability**
+  - Inbound messages must never be dropped.
+  - Raw `capture_event` data is always preserved.
+- **Privacy & security**
+  - Messaging layer is treated as an **intake conduit**, not the final store.
+  - Private data is stored in a controlled database under my infrastructure.
+- **Extensibility**
+  - Easy to:
+    - plug in new channels (WhatsApp, iMessage, etc.);
+    - ingest corpus of essays and transcripts into `public_artifact`;
+    - expand project and relationship layers;
+    - add graph layer later for richer traversal.
+
+---
+
+## 8. Phase 1 definition of “done”
+
+Phase 1 is considered successful when:
+
+- I can send fragmented thoughts to the Telegram bot without friction.
+- Messages within 10 minutes are stitched predictably, with explicit “new note” commands splitting as expected.
+- Each `journal_entry` is auto-tagged, summarized, classified, and linked to related material in the background.
+- The bot responds only with lightweight acknowledgements at capture.
+- Morning review delivers a daily, medium-length AI-written synthesis with:
+  - adaptive ordering of themes and actions;
+  - visible connections to projects, public work, and relationships;
+  - at least one useful “shift/signal” insight on most days.
+
+## 9. Public artifacts, projects, and people (revised to match existing tools)
+
+### 9.1 Design principle
+
+For this second brain, not every layer should be natively owned by the internal database.
+
+Use the internal database as the source of truth for:
+- journal entries
+- extracted items
+- knowledge nodes
+- writings database
+- cross-layer links and provenance
+
+Use external systems as the operational source of truth where they already fit your workflow:
+
+- **Google Tasks** = canonical system for tasks and project execution
+- **Google Contacts** = canonical system for people / contact records
+- **YouTube channel** = canonical archive for video-podcast episodes
+- **Internal writings database** = canonical store for essays, manuscripts, transcripts, and related metadata
+
+The second brain database should therefore function as:
+- a knowledge and linkage layer;
+- an index and memory layer;
+- a provenance and synthesis layer;
+- not a duplicate task manager or contact manager.
+
+---
+
+### 9.2 Writings database (`public_artifact`)
+
+Represents writing and text-based public or semi-public artifacts that should live in your own database.
+
+This includes:
+- published essays
+- newsletters
+- book manuscript drafts / fragments
+- transcript text for episodes
+- other writing-oriented outputs
+
+#### Purpose
+
+The writings database serves as:
+- your owned archive of written thought;
+- the bridge between private journal ideas and public expression;
+- a retrieval layer for semantic linking and synthesis.
+
+#### `public_artifact` fields
+
+- Identity & type
+  - `id` (UUID)
+  - `user_id`
+  - `type` (enum: `essay`, `newsletter`, `manuscript`, `transcript`, `article`, `other`)
+  - `title`
+  - `slug` (nullable)
+  - `status` (enum: `idea`, `draft`, `published`, `archived`)
+
+- Time
+  - `created_at`
+  - `updated_at`
+  - `published_at` (nullable)
+
+- Content
+  - `raw_source` (full text, markdown/plain text/transcript text)
+  - `clean_text`
+  - `summary`
+  - `excerpt` (nullable)
+
+- Publishing metadata
+  - `canonical_url` (nullable)
+  - `series` (nullable)
+  - `language`
+
+- Classification
+  - `tags` (array of strings)
+
+- Links to external/public systems
+  - `source_system` (nullable enum: `manual`, `substack`, `website`, `youtube_transcript`, `other`)
+  - `source_external_id` (nullable)
+
+- Vector
+  - `embedding` (pgvector)
+
+Indexes:
+- `user_id`, `type`, `status`, `published_at`
+- GIN on `tags`
+- vector index on `embedding`
+
+#### Important note
+
+For video-podcast episodes, the **transcript text** may exist here as a `public_artifact` of type `transcript`, even though the video itself remains canonically archived on YouTube.
+
+---
+
+### 9.3 Video-podcast archive (`media_artifact` or external YouTube reference)
+
+Your **YouTube channel** is the canonical archive for video-podcast episodes.
+
+The second brain database should not store the video itself as primary content.
+Instead, it should store metadata and linkage records that reference YouTube as the archive of record.
+
+#### Recommended entity: `media_artifact`
+
+Represents externally hosted media artifacts, especially YouTube episodes.
+
+Fields:
+
+- Identity
+  - `id` (UUID)
+  - `user_id`
+  - `platform` (enum: `youtube`, `other`)
+  - `platform_item_id` (e.g. YouTube video ID)
+  - `channel_id` (nullable)
+  - `title`
+
+- Time
+  - `published_at`
+  - `created_at`
+  - `updated_at`
+
+- Metadata
+  - `description`
+  - `duration` (nullable)
+  - `tags` (array)
+  - `language` (nullable)
+
+- External links
+  - `canonical_url`
+  - `thumbnail_url` (nullable)
+
+- Stats snapshot (optional)
+  - `view_count` (nullable)
+  - `like_count` (nullable)
+  - `comment_count` (nullable)
+
+- Relationship to text archive
+  - `transcript_public_artifact_id` (nullable; points to a `public_artifact` record if transcript is stored internally)
+
+Indexes:
+- `platform`, `platform_item_id`
+- `published_at`
+- GIN on `tags`
+
+#### Ingestion model
+
+- Pull metadata from YouTube API / channel ingestion workflow.
+- Store transcript text internally as `public_artifact(type='transcript')` if available.
+- Link episode-level journal inspirations and knowledge nodes to:
+  - `media_artifact` for the episode itself;
+  - `public_artifact` for the transcript text.
+
+This gives you:
+- YouTube as the durable public archive,
+- internal transcript/text retrieval,
+- a clean bridge between media and writing.
+
+---
+
+### 9.4 Projects via Google Tasks
+
+You use **Google Tasks exclusively for tasks and projects**.
+Therefore, projects should not be modeled as fully separate first-class project records in the internal DB unless needed later.
+
+For Phase 1, the canonical operational project container is the **Google Tasks task list**.
+
+#### Design principle
+
+- A Google Task List functions as a project container.
+- Individual Google Tasks function as executable task items.
+- The internal second brain stores:
+  - references to relevant Google task lists,
+  - semantic/project linkage,
+  - optional cached metadata for faster recall,
+  - not the authoritative project/task state.
+
+#### Recommended entity: `project_ref`
+
+Represents a local reference to an external Google Tasks task list.
+
+Fields:
+
+- `id` (UUID)
+- `user_id`
+- `external_system` = `google_tasks`
+- `external_list_id`
+- `name`
+- `description` (nullable cached/local description)
+- `status` (nullable local mirror, if needed)
+- `created_at`
+- `updated_at`
+
+- optional semantic fields
+  - `tags`
+  - `embedding` (from name + description, optional)
+
+Indexes:
+- `external_system`, `external_list_id`
+- `user_id`
+
+#### Optional task cache entity: `task_ref`
+
+If needed for faster dashboard/synthesis use:
+
+- `id` (UUID)
+- `user_id`
+- `external_system` = `google_tasks`
+- `external_task_id`
+- `external_list_id`
+- `title`
+- `notes`
+- `status`
+- `due_at` (nullable)
+- `completed_at` (nullable)
+- `updated_at`
+
+This local cache is optional.
+Canonical task state remains in Google Tasks.
+
+#### Linking behavior
+
+When a journal entry or knowledge node is linked to a project:
+- link it to `project_ref`, not an internally owned `project` entity.
+
+When an extracted item is promoted to task:
+- create the task in Google Tasks;
+- optionally cache it locally as `task_ref`;
+- create provenance links:
+  - `journal_entry` → `task_ref`
+  - `knowledge_node` → `task_ref`
+  - `task_ref` → `project_ref` (via shared task list)
+
+---
+
+### 9.5 People via Google Contacts
+
+You use **Google Contacts** as the canonical person layer.
+Therefore, the internal DB should not own primary person records unless needed for local enrichment.
+
+Use Google People API / Contacts as source of truth for contact identity and contact fields.
+
+#### Recommended entity: `person_ref`
+
+Represents a local reference to an external Google Contact.
+
+Fields:
+
+- `id` (UUID)
+- `user_id`
+- `external_system` = `google_contacts`
+- `external_person_id` (People API resource name / canonical external identifier)
+- `full_name`
+- `primary_email` (nullable)
+- `primary_phone` (nullable)
+- `updated_at`
+
+- local enrichment fields
+  - `notes` (nullable local notes not intended to overwrite Google Contacts)
+  - `tags` (nullable array)
+  - `embedding` (optional, from local notes + tags + name)
+
+Indexes:
+- `external_system`, `external_person_id`
+- `user_id`, `full_name`
+- GIN on `tags` if used
+
+#### Important distinction
+
+- Google Contacts remains the authoritative contact record.
+- `person_ref` exists to:
+  - support semantic linking,
+  - support local notes and relationship synthesis,
+  - support provenance from journal entries and knowledge nodes.
+
+This avoids duplicating your contact system while still letting the second brain think relationally.
+
+---
+
+### 9.6 Organizations
+
+Organizations are less clearly owned by an external Google system, so they can remain internal first-class entities.
+
+#### `organization`
+
+- `id` (UUID)
+- `user_id`
+- `name`
+- `kind` (e.g. `media`, `platform`, `client`, `institution`, `community`)
+- `website` (nullable)
+- `notes` (nullable)
+- `tags` (array)
+- `embedding` (optional)
+- `created_at`
+- `updated_at`
+
+Indexes:
+- `user_id`, `name`
+- GIN on `tags`
+
+---
+
+### 9.7 Tasks and goals (revised)
+
+#### Tasks
+
+Tasks should be created and maintained in **Google Tasks**, not as a primary internal table.
+
+The internal database may optionally maintain `task_ref` for:
+- caching,
+- provenance,
+- dashboard display,
+- semantic retrieval.
+
+#### Goals
+
+Goals are not the same as tasks and may still be worth storing internally.
+
+Recommended `goal` entity:
+
+- `id` (UUID)
+- `user_id`
+- `name`
+- `description`
+- `time_horizon` (`short`, `medium`, `long`)
+- `status` (`active`, `on_hold`, `achieved`, `archived`)
+- `created_at`
+- `updated_at`
+- `target_date` (nullable)
+- `source_journal_entry_id` (nullable)
+- `source_knowledge_node_id` (nullable)
+- `tags`
+- `embedding` (optional)
+
+Goals remain useful as an internal conceptual/planning layer even if execution tasks live in Google Tasks.
+
+---
+
+### 9.8 Link model (revised)
+
+Because many layers now point to external systems, the link layer becomes even more important.
+
+#### `link_edge`
+
+- `id` (UUID)
+- `user_id`
+- `source_type`
+- `source_id`
+- `target_type`
+- `target_id`
+- `link_type`
+- `confidence`
+- `explanation`
+- `created_at`
+- `created_by` (`system`, `user`)
+
+Supported `target_type` values should now include:
+- `journal_entry`
+- `extracted_item`
+- `knowledge_node`
+- `public_artifact`
+- `media_artifact`
+- `project_ref`
+- `task_ref`
+- `goal`
+- `person_ref`
+- `organization`
+
+Examples:
+- `journal_entry` → `public_artifact` : `references_public_argument`
+- `knowledge_node` → `media_artifact` : `informs_episode`
+- `knowledge_node` → `project_ref` : `supports_project`
+- `journal_entry` → `person_ref` : `mentions_person`
+- `knowledge_node` → `task_ref` : `derived_task`
+
+---
+
+### 9.9 Cross-layer behavior
+
+#### Journal → writings
+- Link journal entries and knowledge nodes to essays, transcripts, and manuscript fragments in `public_artifact`.
+
+#### Journal → YouTube
+- Link journal entries and knowledge nodes to YouTube episodes via `media_artifact`.
+- If transcript exists, also link to `public_artifact(type='transcript')`.
+
+#### Journal → projects
+- Link to `project_ref` (Google Task List).
+- If promoted to task, create in Google Tasks and optionally cache as `task_ref`.
+
+#### Journal → people
+- Match names or semantic relevance to `person_ref` from Google Contacts.
+- Suggest reconnect prompts without duplicating full contact management.
+
+---
+
+### 9.10 Summary of source-of-truth boundaries
+
+#### Internal DB is canonical for:
+- `journal_entry`
+- `capture_event`
+- `extracted_item`
+- `knowledge_node`
+- `public_artifact`
+- `media_artifact` metadata mirror
+- `goal`
+- `organization`
+- `link_edge`
+
+#### External systems are canonical for:
+- Google Tasks task lists and tasks (`project_ref`, `task_ref` are references/caches)
+- Google Contacts / People (`person_ref` is a reference/enrichment layer)
+- YouTube-hosted video episode media (mirrored as `media_artifact` metadata)
+
+## 10. Extraction and promotion model (revised)
+
+### 10.1 Core principle
+
+A single `journal_entry` may contain **multiple distinct extracted items**.
+
+Therefore:
+
+- a `journal_entry` is not limited to one type;
+- a `journal_entry` may yield:
+  - multiple task candidates,
+  - multiple goal candidates,
+  - multiple project links,
+  - multiple person / organization links,
+  - multiple knowledge nodes.
+
+The durable endpoint of distillation is the **knowledge node**.
+
+Tasks, goals, project links, and reconnect prompts are operational derivatives that may be created from the same source material.
+
+---
+
+### 10.2 Replace single-type classification with item extraction
+
+Instead of only assigning one `primary_type`, the system should extract a set of candidate items from each `journal_entry`.
+
+Recommended new entity: `extracted_item`
+
+#### `extracted_item`
+
+Represents one candidate idea/action/concept pulled from a `journal_entry`.
+
+Fields:
+
+- `id` (UUID)
+- `user_id`
+- `source_journal_entry_id`
+- `created_at`
+
+- `text_span` (optional exact quote/snippet from source text)
+- `normalized_text` (cleaned candidate statement)
+- `summary` (short paraphrase)
+
+- `item_types` (array / JSONB), possible values:
+  - `knowledge`
+  - `task`
+  - `goal`
+  - `project_link`
+  - `person_link`
+  - `organization_link`
+  - `reconnect`
+
+- `confidence` (overall confidence 0–1)
+
+- optional linked hints:
+  - `suggested_project_id`
+  - `suggested_person_id`
+  - `suggested_organization_id`
+
+- `status` (enum):
+  - `new`
+  - `promoted`
+  - `kept`
+  - `dismissed`
+
+Indexes:
+- `source_journal_entry_id`
+- `status`
+- GIN / JSONB index on `item_types`
+
+#### Processing rule
+
+For each `journal_entry`, background processing should:
+
+1. Segment the entry into one or more meaningful candidate units.
+2. For each candidate unit:
+   - summarize it;
+   - assign one or more `item_types`;
+   - attach confidence;
+   - identify possible linked entities.
+3. Store each as an `extracted_item`.
+
+This replaces the idea that a whole entry has one primary type.
+
+---
+
+### 10.3 `knowledge_node` as the durable endpoint
+
+#### Purpose
+
+A `knowledge_node` is the distilled, reusable, linked unit of thought in the second brain.
+
+It is:
+- more refined than a `journal_entry`;
+- more durable than a task;
+- more concept-oriented than a project status note.
+
+It can later inform essays, transcripts, book manuscripts, projects, and decisions.
+
+#### `knowledge_node` schema
+
+Fields:
+
+- `id` (UUID)
+- `user_id`
+- `title`
+- `statement` (the core idea in one sentence)
+- `body` (expanded note text)
+- `summary` (short synopsis)
+- `created_at`
+- `updated_at`
+
+- `status` (enum):
+  - `seed`
+  - `developing`
+  - `evergreen`
+  - `archived`
+
+- `tags` (array of strings)
+- `embedding` (pgvector)
+
+- provenance
+  - `source_journal_entry_id` (nullable)
+  - `source_extracted_item_id` (nullable)
+  - `source_public_artifact_id` (nullable)
+
+Indexes:
+- `created_at`, `updated_at`, `status`
+- GIN on `tags`
+- vector index on `embedding`
+
+#### Important note
+
+A `knowledge_node` should be:
+- concept-oriented;
+- atomic enough to be reusable;
+- linked to related nodes and source material;
+- allowed to evolve over time.
+
+---
+
+### 10.4 Promotion / distillation rules
+
+For each `extracted_item`, the user may choose one or more of the following outcomes:
+
+- Create knowledge node
+- Create task
+- Create goal
+- Attach to project
+- Attach to person / organization
+- Mark as reconnect
+- Dismiss
+- Keep for later
+
+These are **not mutually exclusive**.
+
+Examples:
+
+#### Example 1
+A journal entry contains:
+- an insight about episode workflow,
+- a reminder to test a new recording pipeline.
+
+Possible outcomes:
+- create `knowledge_node`: “Shorter production cycles require smaller post-production batches”
+- create `task`: “Test smaller post-production batching workflow”
+- attach to `project`: content operations redesign
+
+#### Example 2
+A journal entry contains:
+- reflection about a friend/colleague,
+- reminder to reconnect,
+- broader thought about social capital.
+
+Possible outcomes:
+- create `knowledge_node`: “Relationship maintenance decays when left to ambient memory”
+- create `task` tagged `reconnect`: “Reach out to [Name]”
+- create link to `person`
+
+---
+
+### 10.5 Default recommendation behavior
+
+For Phase 1, the system should **prefer knowledge-node creation whenever a stable idea is present**.
+
+Operational rule:
+- If an extracted item contains a concept, principle, observation, or reusable insight:
+  - recommend creating a `knowledge_node`.
+- If it also contains an actionable step:
+  - recommend task creation as an additional derivative.
+- If it implies a longer-term commitment:
+  - recommend goal creation as an additional derivative.
+
+This ensures that insight is not lost when action is extracted.
+
+---
+
+### 10.6 UI behavior in reviews
+
+In morning review / dashboard / end-of-day review, each surfaced extracted item should display:
+
+- candidate summary
+- candidate types (possibly multiple)
+- linked entities (if any)
+- recommended actions
+
+Example:
+
+```text
+Candidate:
+“Your notes suggest that your content workflow bottleneck is batch size, not idea generation.”
+
+Types:
+[knowledge] [task] [project_link]
+
+Suggested actions:
+- Create knowledge node
+- Create task
+- Attach to Content Ops project
+```
+
+The user can select one, several, or none.
+
+---
+
+### 10.7 Relationship between journal entry and knowledge node
+
+A `knowledge_node` should never overwrite or replace the original `journal_entry`.
+
+Instead:
+- `journal_entry` = raw stream of consciousness
+- `knowledge_node` = distilled durable idea
+- `task` / `goal` = operational derivatives
+- `project` / `person` links = contextual placement
+
+This preserves provenance and lets the system trace:
+- where an idea came from,
+- how it evolved,
+- what actions it produced,
+- what public outputs it eventually influenced.
+
+---
+
+### 10.8 Linkage model updates
+
+Additional `link_edge` types should include:
+
+- `distilled_into`
+  - `journal_entry` → `knowledge_node`
+- `derived_task`
+  - `journal_entry` or `knowledge_node` → `task`
+- `derived_goal`
+  - `journal_entry` or `knowledge_node` → `goal`
+- `supports_project`
+  - `knowledge_node` → `project`
+- `informs_public_artifact`
+  - `knowledge_node` → `public_artifact`
+- `relates_to_person`
+  - `knowledge_node` or `journal_entry` → `person`
+
+This lets the graph show not just similarity, but **idea evolution**.
+
+---
+
+### 10.9 Ranking and review logic
+
+Review surfaces should rank extracted items higher when they are:
+
+- multi-typed (e.g. both knowledge + task);
+- connected to active projects;
+- repeated across multiple journal entries;
+- aligned with current goals;
+- linked to unfinished loops.
+
+This is more useful than ranking only by “task-likeness.”
+
+---
+
+### 10.10 Revised definition of success
+
+The extraction/promotional layer is successful when:
+
+- one messy journal entry can produce several useful downstream outcomes;
+- durable ideas reliably become `knowledge_node`s;
+- tasks and goals can be created without losing conceptual context;
+- provenance from raw thought to refined note to action remains visible;
+- the system compounds knowledge over time instead of merely generating todos.
