@@ -433,6 +433,15 @@ export async function findEntitiesByName(
   return rows;
 }
 
+export async function resetErroredArtifacts(): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE public_artifact
+     SET processing_status = 'pending'
+     WHERE processing_status = 'error'`
+  );
+  return rowCount ?? 0;
+}
+
 export async function getArtifactStats(): Promise<{
   total: number;
   processed: number;

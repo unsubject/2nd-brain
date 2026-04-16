@@ -120,6 +120,16 @@ export function archiveRoutes(): Router {
     }
   });
 
+  router.post("/archive/retry-errors", async (_req, res) => {
+    try {
+      const count = await archiveQueries.resetErroredArtifacts();
+      res.json({ reset: count });
+    } catch (err) {
+      console.error("[archive] Retry-errors error:", err);
+      res.status(500).json({ error: "Failed to reset errored artifacts" });
+    }
+  });
+
   router.get("/archive/stats", async (_req, res) => {
     try {
       const stats = await archiveQueries.getArtifactStats();
