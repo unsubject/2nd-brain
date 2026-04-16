@@ -56,6 +56,31 @@ function parseDate(properties: Record<string, string>): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Notion rich_text property limit is ~2000 chars. If a Cleaned Body is at
+// or near that length, assume Notion truncated it and fall back to the page body.
+const NOTION_PROPERTY_TRUNCATION_THRESHOLD = 1900;
+
+function getCleanedBody(properties: Record<string, string>): string | null {
+  for (const [key, value] of Object.entries(properties)) {
+    if (key.toLowerCase().replace(/\s+/g, "") === "cleanedbody") {
+      const trimmed = value?.trim();
+      return trimmed && trimmed.length > 0 ? trimmed : null;
+    }
+  }
+  return null;
+}
+
+export function pickBody(
+  pageBody: string,
+  cleanedBody: string | null
+): { source: "cleaned_body" | "page_body"; text: string } {
+  if (!cleanedBody) return { source: "page_body", text: pageBody };
+  if (cleanedBody.length >= NOTION_PROPERTY_TRUNCATION_THRESHOLD) {
+    return { source: "page_body", text: pageBody };
+  }
+  return { source: "cleaned_body", text: cleanedBody };
+}
+
 function parseCsvProperties(
   csvContent: string
 ): Map<string, Record<string, string>> {
@@ -121,20 +146,36 @@ function parsePages(zip: AdmZip): NotionPage[] {
 export async function importNotionExport(
   zipBuffer: Buffer,
   userId: string = "default"
-): Promise<{ imported: number; skipped: number; total: number }> {
+): Promise<{
+  imported: number;
+  skipped: number;
+  total: number;
+  bodySource: { cleaned_body: number; page_body: number };
+}> {
   const zip = new AdmZip(zipBuffer);
   const pages = parsePages(zip);
   let imported = 0;
   let skipped = 0;
+  const bodySource = { cleaned_body: 0, page_body: 0 };
 
   for (const page of pages) {
+    const cleaned = getCleanedBody(page.properties);
+    const picked = pickBody(page.markdown, cleaned);
+    bodySource[picked.source]++;
+
+    console.log(
+      `[archive] "${page.title}" → ${picked.source} (${picked.text.length} chars${
+        cleaned ? `, cleaned=${cleaned.length}, page=${page.markdown.length}` : ""
+      })`
+    );
+
     const result = await archiveQueries.upsertArtifact({
       userId,
       type: inferType(page.properties),
       title: page.title,
       slug: slugify(page.title),
       publishedAt: parseDate(page.properties),
-      rawSource: page.markdown,
+      rawSource: picked.text,
       canonicalUrl:
         page.properties["URL"] || page.properties["url"] || null,
       series: page.properties["Series"] || page.properties["series"] || null,
@@ -151,5 +192,5 @@ export async function importNotionExport(
     }
   }
 
-  return { imported, skipped, total: pages.length };
+  return { imported, skipped, total: pages.length, bodySource };
 }
