@@ -83,7 +83,9 @@ export async function generateMorningReview(): Promise<string | null> {
   }
 
   const today = new Date();
-  const dateStr = today.toISOString().slice(0, 10);
+  const timezone = process.env.TIMEZONE || "UTC";
+  const dateStr = today
+    .toLocaleDateString("en-CA", { timeZone: timezone });
   const entriesText = formatEntriesForPrompt(entries, today);
 
   const response = await anthropic.messages.create({
