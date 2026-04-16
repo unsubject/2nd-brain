@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.89.0",
+    "@notionhq/client": "^2.3.0",
     "adm-zip": "^0.5.17",
     "csv-parse": "^6.2.1",
     "express": "^4.21.0",

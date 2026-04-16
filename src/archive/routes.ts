@@ -1,10 +1,19 @@
 import { Router, json } from "express";
 import multer from "multer";
 import { importNotionExport } from "./ingest/notion-export";
+import { syncNotionDatabase, NotionSyncResult } from "./ingest/notion-api";
 import { hybridSearch, SearchRequest } from "./search";
 import * as archiveQueries from "./queries";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+let currentSync: {
+  startedAt: Date;
+  databaseId: string;
+  status: "running" | "completed" | "failed";
+  result: NotionSyncResult | null;
+  error: string | null;
+} | null = null;
 
 export function archiveRoutes(): Router {
   const router = Router();
@@ -30,6 +39,69 @@ export function archiveRoutes(): Router {
       }
     }
   );
+
+  router.post("/archive/import/notion-api", json(), async (req, res) => {
+    const databaseId =
+      (req.body?.database_id as string | undefined) ||
+      process.env.NOTION_DATABASE_ID;
+
+    if (!databaseId) {
+      res.status(400).json({
+        error: "database_id required (in body or NOTION_DATABASE_ID env var)",
+      });
+      return;
+    }
+    if (!process.env.NOTION_TOKEN) {
+      res.status(400).json({ error: "NOTION_TOKEN env var is not set" });
+      return;
+    }
+    if (currentSync?.status === "running") {
+      res.status(409).json({
+        error: "A sync is already running",
+        startedAt: currentSync.startedAt,
+      });
+      return;
+    }
+
+    currentSync = {
+      startedAt: new Date(),
+      databaseId,
+      status: "running",
+      result: null,
+      error: null,
+    };
+
+    // Fire-and-forget
+    syncNotionDatabase(databaseId)
+      .then((result) => {
+        if (currentSync) {
+          currentSync.status = "completed";
+          currentSync.result = result;
+        }
+      })
+      .catch((err) => {
+        console.error("[archive] Notion sync failed:", err);
+        if (currentSync) {
+          currentSync.status = "failed";
+          currentSync.error = err.message || String(err);
+        }
+      });
+
+    res.json({
+      status: "started",
+      databaseId,
+      startedAt: currentSync.startedAt,
+      checkAt: "/archive/sync-status",
+    });
+  });
+
+  router.get("/archive/sync-status", (_req, res) => {
+    if (!currentSync) {
+      res.json({ status: "idle" });
+      return;
+    }
+    res.json(currentSync);
+  });
 
   router.post("/archive/search", json(), async (req, res) => {
     const body = req.body as SearchRequest;

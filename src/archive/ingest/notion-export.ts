@@ -114,7 +114,18 @@ function parseCsvProperties(
   return map;
 }
 
-function parsePages(zip: AdmZip): NotionPage[] {
+interface ParseResult {
+  pages: NotionPage[];
+  debug: {
+    totalEntries: number;
+    mdFiles: number;
+    matched: number;
+    unmatched: string[];
+    sampleEntries: string[];
+  };
+}
+
+function parsePages(zip: AdmZip): ParseResult {
   const entries = zip.getEntries();
   const pages: NotionPage[] = [];
 
@@ -160,21 +171,21 @@ function parsePages(zip: AdmZip): NotionPage[] {
     pages.push({ title, externalId, markdown, properties });
   }
 
-  console.log(
-    `[archive] Zip contents: ${entries.length} entries, ${mdFiles.length} .md files, ${pages.length} matched, ${unmatched.length} unmatched`
-  );
-  if (unmatched.length > 0) {
-    console.log(
-      `[archive] Unmatched .md filenames (first 10):\n${unmatched.slice(0, 10).map((f) => `  ${f}`).join("\n")}`
-    );
-  }
-  if (mdFiles.length === 0) {
-    console.log(
-      `[archive] All entries in zip:\n${entries.map((e) => `  ${e.entryName}`).slice(0, 20).join("\n")}`
-    );
-  }
+  // Show raw entry names if nothing matched
+  const sampleEntries = pages.length === 0
+    ? entries.slice(0, 20).map((e) => e.entryName)
+    : [];
 
-  return pages;
+  return {
+    pages,
+    debug: {
+      totalEntries: entries.length,
+      mdFiles: mdFiles.length,
+      matched: pages.length,
+      unmatched: unmatched.slice(0, 10),
+      sampleEntries,
+    },
+  };
 }
 
 export async function importNotionExport(
@@ -185,9 +196,10 @@ export async function importNotionExport(
   skipped: number;
   total: number;
   bodySource: { cleaned_body: number; page_body: number };
+  debug: ParseResult["debug"];
 }> {
   const zip = new AdmZip(zipBuffer);
-  const pages = parsePages(zip);
+  const { pages, debug } = parsePages(zip);
   let imported = 0;
   let skipped = 0;
   const bodySource = { cleaned_body: 0, page_body: 0 };
@@ -226,5 +238,5 @@ export async function importNotionExport(
     }
   }
 
-  return { imported, skipped, total: pages.length, bodySource };
+  return { imported, skipped, total: pages.length, bodySource, debug };
 }
