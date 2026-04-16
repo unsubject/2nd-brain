@@ -155,73 +155,6 @@ async function linkRelatedTasks(entry: LinkableEntry): Promise<void> {
   }
 }
 
-async function linkRelatedTrips(entry: LinkableEntry): Promise<void> {
-  // Trips whose window overlaps with the entry date, or entry mentions the place
-  const { rows: trips } = await pool.query(
-    `SELECT id, origin_name, destination_name, start_at, end_at
-     FROM trip_ref
-     WHERE user_id = 'default'
-       AND (
-         (start_at <= $1 AND (end_at IS NULL OR end_at >= $1))
-         OR start_at::date = $1::date
-       )`,
-    [entry.created_at]
-  );
-
-  const textLower = entry.full_text.toLowerCase();
-
-  for (const trip of trips) {
-    await insertLink(
-      "journal_entry",
-      entry.id,
-      "trip_ref",
-      trip.id,
-      "during_trip",
-      0.7,
-      `Entry created during trip to ${trip.destination_name || "unknown"}`
-    );
-  }
-
-  // Also link by place name mention, even if not during trip
-  const { rows: mentionTrips } = await pool.query(
-    `SELECT id, origin_name, destination_name
-     FROM trip_ref
-     WHERE user_id = 'default'
-       AND (origin_name IS NOT NULL OR destination_name IS NOT NULL)`
-  );
-
-  for (const trip of mentionTrips) {
-    const dest = trip.destination_name
-      ? (trip.destination_name as string).toLowerCase()
-      : "";
-    const origin = trip.origin_name
-      ? (trip.origin_name as string).toLowerCase()
-      : "";
-
-    const destWords = dest.split(/[,\s]+/).filter((w: string) => w.length >= 4);
-    const originWords = origin
-      .split(/[,\s]+/)
-      .filter((w: string) => w.length >= 4);
-
-    const mentionsDest = destWords.some((w: string) => textLower.includes(w));
-    const mentionsOrigin = originWords.some((w: string) =>
-      textLower.includes(w)
-    );
-
-    if (mentionsDest || mentionsOrigin) {
-      await insertLink(
-        "journal_entry",
-        entry.id,
-        "trip_ref",
-        trip.id,
-        "mentions_trip",
-        0.6,
-        `Entry mentions trip location "${trip.destination_name || trip.origin_name}"`
-      );
-    }
-  }
-}
-
 async function linkRelatedEmails(entry: LinkableEntry): Promise<void> {
   if (!entry.embedding || entry.embedding.length === 0) return;
 
@@ -259,7 +192,6 @@ export async function generateLinks(entry: LinkableEntry): Promise<void> {
     await linkMentionedContacts(entry);
     await linkNearbyCalendarEvents(entry);
     await linkRelatedTasks(entry);
-    await linkRelatedTrips(entry);
     await linkRelatedEmails(entry);
   } catch (err) {
     // Link generation is non-critical — log and continue

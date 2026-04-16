@@ -5,7 +5,6 @@ import { handleMessage } from "./capture";
 import { generateRssFeed } from "./feed";
 import * as queries from "./db/queries";
 import { getAuthUrl, handleCallback } from "./google/auth";
-import { addTrip, importTakeoutTimeline } from "./google/trips";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -94,57 +93,6 @@ export function startWebhook(
       res.status(500).send("Failed to connect Google account");
     }
   });
-
-  app.post("/trips", express.json(), async (req, res) => {
-    const apiKey = process.env.CAPTURE_API_KEY;
-    if (!apiKey || req.headers.authorization !== `Bearer ${apiKey}`) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const { origin, destination, start_at, end_at, mode, notes } = req.body;
-    if (!origin || !destination || !start_at) {
-      res
-        .status(400)
-        .json({ error: "origin, destination, and start_at are required" });
-      return;
-    }
-
-    try {
-      const id = await addTrip({
-        origin,
-        destination,
-        startAt: new Date(start_at),
-        endAt: end_at ? new Date(end_at) : undefined,
-        mode,
-        notes,
-      });
-      res.json({ id, status: "created" });
-    } catch (err) {
-      console.error("Trip creation error:", err);
-      res.status(500).json({ error: "Internal error" });
-    }
-  });
-
-  app.post(
-    "/trips/import",
-    express.json({ limit: "50mb" }),
-    async (req, res) => {
-      const apiKey = process.env.CAPTURE_API_KEY;
-      if (!apiKey || req.headers.authorization !== `Bearer ${apiKey}`) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-
-      try {
-        const result = await importTakeoutTimeline(req.body);
-        res.json(result);
-      } catch (err) {
-        console.error("Trip import error:", err);
-        res.status(500).json({ error: "Internal error" });
-      }
-    }
-  );
 
   app.get("/feed", async (_req, res) => {
     try {
