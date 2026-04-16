@@ -237,8 +237,8 @@ export async function insertLinkEdge(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO link_edge
-       (source_type, source_id, target_type, target_id, link_type, confidence, explanation)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
+     VALUES ('default', $1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
     [sourceType, sourceId, targetType, targetId, linkType, confidence, explanation]
   );
