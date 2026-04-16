@@ -1,5 +1,6 @@
 import { migrate } from "./db/migrate";
 import { createBot, startWebhook } from "./bot";
+import { startWorker } from "./worker";
 
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -21,6 +22,7 @@ async function main() {
   console.log("Telegram webhook registered");
 
   startWebhook(bot, port, webhookSecret);
+  startWorker();
 }
 
 main().catch((err) => {

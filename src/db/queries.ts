@@ -1,4 +1,5 @@
-import { DB } from "./client";
+import { pool, DB } from "./client";
+import { ProcessingResult } from "../processor";
 
 export async function findRecentJournalEntry(
   db: DB,
@@ -95,4 +96,55 @@ export async function insertCaptureEvent(
     ]
   );
   return rows[0].id;
+}
+
+export async function findPendingEntry(
+  stitchWindowMs: number
+): Promise<{ id: string; full_text: string } | null> {
+  const cutoff = new Date(Date.now() - stitchWindowMs);
+  const { rows } = await pool.query(
+    `SELECT id, full_text
+     FROM journal_entry
+     WHERE processing_status = 'pending'
+       AND stitch_window_end < $1
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [cutoff]
+  );
+  return rows[0] || null;
+}
+
+export async function saveProcessingResult(
+  id: string,
+  result: ProcessingResult
+): Promise<void> {
+  await pool.query(
+    `UPDATE journal_entry
+     SET clean_text = $2,
+         summary = $3,
+         language = $4,
+         tags = $5,
+         primary_type = $6,
+         primary_type_confidence = $7,
+         suggested_actions = $8,
+         processing_status = 'processed'
+     WHERE id = $1`,
+    [
+      id,
+      result.clean_text,
+      result.summary,
+      result.language,
+      result.tags,
+      result.primary_type,
+      result.primary_type_confidence,
+      JSON.stringify(result.suggested_actions),
+    ]
+  );
+}
+
+export async function markProcessingError(id: string): Promise<void> {
+  await pool.query(
+    `UPDATE journal_entry SET processing_status = 'error' WHERE id = $1`,
+    [id]
+  );
 }
