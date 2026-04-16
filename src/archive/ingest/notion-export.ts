@@ -9,12 +9,22 @@ interface NotionPage {
   properties: Record<string, string>;
 }
 
-// Notion filenames: "Page Title <32-hex-uuid>.md"
-const NOTION_ID_REGEX = /\s([0-9a-f]{32})\.md$/i;
+// Notion export filenames vary by version:
+//   "Page Title abc123def456789012345678901234.md"  (32 hex, no dashes)
+//   "Page Title abcdef12-3456-7890-abcd-ef1234567890.md"  (UUID with dashes)
+//   "Page Title abc123.md"  (short hex ID in some exports)
+const NOTION_ID_PATTERNS = [
+  /\s([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md$/i,
+  /\s([0-9a-f]{32})\.md$/i,
+  /\s([0-9a-f]{12,})\.md$/i,
+];
 
 function extractNotionId(filename: string): string | null {
-  const match = filename.match(NOTION_ID_REGEX);
-  return match ? match[1] : null;
+  for (const pattern of NOTION_ID_PATTERNS) {
+    const match = filename.match(pattern);
+    if (match) return match[1].replace(/-/g, "");
+  }
+  return null;
 }
 
 function slugify(title: string): string {
@@ -118,19 +128,27 @@ function parsePages(zip: AdmZip): NotionPage[] {
     }
   }
 
+  const mdFiles: string[] = [];
+  const unmatched: string[] = [];
+
   for (const entry of entries) {
     if (entry.isDirectory || !entry.entryName.endsWith(".md")) continue;
 
     const filename = entry.entryName.split("/").pop() || entry.entryName;
+    mdFiles.push(filename);
     const externalId = extractNotionId(filename);
-    if (!externalId) continue;
+    if (!externalId) {
+      unmatched.push(filename);
+      continue;
+    }
 
     const markdown = entry.getData().toString("utf-8");
     if (!markdown.trim()) continue;
 
     // Title: strip the UUID suffix and extension
     const title = filename
-      .replace(/\s[0-9a-f]{32}\.md$/i, "")
+      .replace(/\s[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$/i, "")
+      .replace(/\s[0-9a-f]{12,}\.md$/i, "")
       .replace(/\.md$/, "")
       .trim();
 
@@ -138,6 +156,20 @@ function parsePages(zip: AdmZip): NotionPage[] {
 
     const properties = propertiesMap.get(title) || {};
     pages.push({ title, externalId, markdown, properties });
+  }
+
+  console.log(
+    `[archive] Zip contents: ${entries.length} entries, ${mdFiles.length} .md files, ${pages.length} matched, ${unmatched.length} unmatched`
+  );
+  if (unmatched.length > 0) {
+    console.log(
+      `[archive] Unmatched .md filenames (first 10):\n${unmatched.slice(0, 10).map((f) => `  ${f}`).join("\n")}`
+    );
+  }
+  if (mdFiles.length === 0) {
+    console.log(
+      `[archive] All entries in zip:\n${entries.map((e) => `  ${e.entryName}`).slice(0, 20).join("\n")}`
+    );
   }
 
   return pages;
