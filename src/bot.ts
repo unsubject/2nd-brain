@@ -5,6 +5,7 @@ import { handleMessage } from "./capture";
 import { generateRssFeed } from "./feed";
 import * as queries from "./db/queries";
 import { getAuthUrl, handleCallback } from "./google/auth";
+import { archiveRoutes } from "./archive/routes";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -93,6 +94,20 @@ export function startWebhook(
       res.status(500).send("Failed to connect Google account");
     }
   });
+
+  // Archive routes (bearer auth checked per-route by middleware)
+  const apiKey = process.env.CAPTURE_API_KEY;
+  const archiveRouter = archiveRoutes();
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/archive")) {
+      if (!apiKey || req.headers.authorization !== `Bearer ${apiKey}`) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+    }
+    next();
+  });
+  app.use(archiveRouter);
 
   app.get("/feed", async (_req, res) => {
     try {

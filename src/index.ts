@@ -3,6 +3,7 @@ import { createBot, startWebhook } from "./bot";
 import { startWorker } from "./worker";
 import { startScheduler } from "./scheduler";
 import { startGoogleSync } from "./google/sync";
+import { startArchiveWorker } from "./archive/worker";
 
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -27,6 +28,7 @@ async function main() {
   startWorker();
   startScheduler();
   startGoogleSync();
+  startArchiveWorker();
 }
 
 main().catch((err) => {
