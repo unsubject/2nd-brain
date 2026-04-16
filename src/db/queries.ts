@@ -244,3 +244,111 @@ export async function getRecentReviews(
   );
   return rows;
 }
+
+export async function getTodayCalendarEvents(
+  timezone: string
+): Promise<
+  {
+    id: string;
+    title: string;
+    description: string | null;
+    start_at: Date;
+    end_at: Date;
+    location: string | null;
+    attendees: unknown;
+  }[]
+> {
+  const { rows } = await pool.query(
+    `SELECT id, title, description, start_at, end_at, location, attendees
+     FROM calendar_event_ref
+     WHERE user_id = 'default'
+       AND (start_at AT TIME ZONE $1)::date =
+           (now() AT TIME ZONE $1)::date
+     ORDER BY start_at ASC`,
+    [timezone]
+  );
+  return rows;
+}
+
+export async function getOpenTasks(daysAhead: number = 7): Promise<
+  {
+    id: string;
+    title: string;
+    notes: string | null;
+    due_at: Date | null;
+    list_name: string | null;
+    list_type: string | null;
+    parent_title: string | null;
+  }[]
+> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + daysAhead);
+  const { rows } = await pool.query(
+    `SELECT t.id, t.title, t.notes, t.due_at,
+            p.name AS list_name, p.list_type,
+            parent.title AS parent_title
+     FROM task_ref t
+     LEFT JOIN project_ref p ON t.project_ref_id = p.id
+     LEFT JOIN task_ref parent ON t.parent_task_ref_id = parent.id
+     WHERE t.user_id = 'default'
+       AND t.status = 'needsAction'
+       AND (t.due_at IS NULL OR t.due_at <= $1)
+     ORDER BY
+       CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END,
+       t.due_at ASC
+     LIMIT 40`,
+    [cutoff]
+  );
+  return rows;
+}
+
+export async function getStarredEmails(days: number = 30): Promise<
+  {
+    id: string;
+    subject: string | null;
+    from_address: string;
+    snippet: string | null;
+    sent_at: Date | null;
+  }[]
+> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const { rows } = await pool.query(
+    `SELECT id, subject, from_address, snippet, sent_at
+     FROM email_ref
+     WHERE user_id = 'default'
+       AND is_starred = true
+       AND (sent_at IS NULL OR sent_at >= $1)
+     ORDER BY sent_at DESC NULLS LAST
+     LIMIT 15`,
+    [cutoff]
+  );
+  return rows;
+}
+
+export async function getLinksForRecentEntries(days: number = 7): Promise<
+  {
+    link_type: string;
+    confidence: number | null;
+    explanation: string | null;
+    target_type: string;
+    journal_summary: string | null;
+    journal_created_at: Date;
+  }[]
+> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const { rows } = await pool.query(
+    `SELECT le.link_type, le.confidence, le.explanation, le.target_type,
+            je.summary AS journal_summary,
+            je.created_at AS journal_created_at
+     FROM link_edge le
+     JOIN journal_entry je ON je.id = le.source_id AND le.source_type = 'journal_entry'
+     WHERE je.created_at >= $1
+       AND (le.confidence IS NULL OR le.confidence >= 0.5)
+     ORDER BY le.confidence DESC NULLS LAST, le.created_at DESC
+     LIMIT 25`,
+    [cutoff]
+  );
+  return rows;
+}
