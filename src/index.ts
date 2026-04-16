@@ -2,6 +2,7 @@ import { migrate } from "./db/migrate";
 import { createBot, startWebhook } from "./bot";
 import { startWorker } from "./worker";
 import { startScheduler } from "./scheduler";
+import { startGoogleSync } from "./google/sync";
 
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -25,6 +26,7 @@ async function main() {
   startWebhook(bot, port, webhookSecret);
   startWorker();
   startScheduler();
+  startGoogleSync();
 }
 
 main().catch((err) => {

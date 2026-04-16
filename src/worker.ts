@@ -1,6 +1,7 @@
 import * as queries from "./db/queries";
 import { processEntry } from "./processor";
 import { generateEmbedding } from "./embeddings";
+import { generateLinks } from "./google/linker";
 
 const POLL_INTERVAL_MS = 30_000;
 const STITCH_WINDOW_MS = 10 * 60 * 1000;
@@ -16,6 +17,15 @@ async function tick(): Promise<void> {
       const embedding = await generateEmbedding(result.clean_text);
       await queries.saveProcessingResult(entry.id, result, embedding);
       console.log(`Processed entry ${entry.id}`);
+
+      await generateLinks({
+        id: entry.id,
+        full_text: entry.full_text,
+        tags: result.tags,
+        created_at: new Date(),
+        embedding,
+      });
+      console.log(`Links generated for entry ${entry.id}`);
     } catch (err) {
       console.error(`Error processing entry ${entry.id}:`, err);
       await queries.markProcessingError(entry.id);

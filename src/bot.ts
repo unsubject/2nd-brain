@@ -4,6 +4,7 @@ import express from "express";
 import { handleMessage } from "./capture";
 import { generateRssFeed } from "./feed";
 import * as queries from "./db/queries";
+import { getAuthUrl, handleCallback } from "./google/auth";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -69,6 +70,27 @@ export function startWebhook(
     } catch (err) {
       console.error("Capture API error:", err);
       res.status(500).json({ error: "Internal error" });
+    }
+  });
+
+  app.get("/auth/google", (_req, res) => {
+    const url = getAuthUrl();
+    res.redirect(url);
+  });
+
+  app.get("/auth/google/callback", async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) {
+      res.status(400).send("Missing authorization code");
+      return;
+    }
+
+    try {
+      await handleCallback(code);
+      res.send("Google account connected successfully! You can close this tab.");
+    } catch (err) {
+      console.error("Google OAuth callback error:", err);
+      res.status(500).send("Failed to connect Google account");
     }
   });
 
