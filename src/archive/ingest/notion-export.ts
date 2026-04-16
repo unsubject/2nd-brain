@@ -9,14 +9,14 @@ interface NotionPage {
   properties: Record<string, string>;
 }
 
-// Notion export filenames vary by version:
-//   "Page Title abc123def456789012345678901234.md"  (32 hex, no dashes)
-//   "Page Title abcdef12-3456-7890-abcd-ef1234567890.md"  (UUID with dashes)
-//   "Page Title abc123.md"  (short hex ID in some exports)
+// Notion export filenames end with the page ID before .md. The ID is either
+// a 32-hex string (no dashes) or a UUID (with dashes). The separator between
+// title and ID may be ASCII space, ideographic space, or other Unicode
+// whitespace — we avoid requiring a specific separator by just matching the
+// trailing ID+.md at end of filename.
 const NOTION_ID_PATTERNS = [
-  /\s([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md$/i,
-  /\s([0-9a-f]{32})\.md$/i,
-  /\s([0-9a-f]{12,})\.md$/i,
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md$/i,
+  /([0-9a-f]{32})\.md$/i,
 ];
 
 function extractNotionId(filename: string): string | null {
@@ -133,8 +133,10 @@ function parsePages(zip: AdmZip): NotionPage[] {
 
   for (const entry of entries) {
     if (entry.isDirectory || !entry.entryName.endsWith(".md")) continue;
+    if (entry.entryName.includes("__MACOSX/")) continue;
 
     const filename = entry.entryName.split("/").pop() || entry.entryName;
+    if (filename.startsWith("._")) continue;
     mdFiles.push(filename);
     const externalId = extractNotionId(filename);
     if (!externalId) {
@@ -145,10 +147,10 @@ function parsePages(zip: AdmZip): NotionPage[] {
     const markdown = entry.getData().toString("utf-8");
     if (!markdown.trim()) continue;
 
-    // Title: strip the UUID suffix and extension
+    // Title: strip the ID suffix (any separator) and extension
     const title = filename
-      .replace(/\s[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$/i, "")
-      .replace(/\s[0-9a-f]{12,}\.md$/i, "")
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$/i, "")
+      .replace(/[0-9a-f]{32}\.md$/i, "")
       .replace(/\.md$/, "")
       .trim();
 
