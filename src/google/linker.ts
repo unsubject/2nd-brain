@@ -76,7 +76,7 @@ async function linkNearbyCalendarEvents(entry: LinkableEntry): Promise<void> {
   dayEnd.setHours(23, 59, 59, 999);
 
   const { rows: events } = await pool.query(
-    `SELECT id, title FROM calendar_event_ref
+    `SELECT id, title, location FROM calendar_event_ref
      WHERE user_id = 'default'
        AND start_at >= $1 AND start_at <= $2`,
     [dayStart, dayEnd]
@@ -86,13 +86,33 @@ async function linkNearbyCalendarEvents(entry: LinkableEntry): Promise<void> {
 
   for (const event of events) {
     const titleLower = (event.title as string).toLowerCase();
-    // Check if the entry text mentions any significant words from the event title
     const titleWords = titleLower
       .split(/\s+/)
       .filter((w: string) => w.length >= 4);
-    const mentionsEvent = titleWords.some((w: string) => textLower.includes(w));
+    const mentionsTitle = titleWords.some((w: string) =>
+      textLower.includes(w)
+    );
 
-    if (mentionsEvent) {
+    const location = (event.location as string | null) || "";
+    const locationLower = location.toLowerCase();
+    const locationWords = locationLower
+      .split(/[,\s]+/)
+      .filter((w: string) => w.length >= 4);
+    const mentionsLocation = locationWords.some((w: string) =>
+      textLower.includes(w)
+    );
+
+    if (mentionsTitle && mentionsLocation) {
+      await insertLink(
+        "journal_entry",
+        entry.id,
+        "calendar_event_ref",
+        event.id,
+        "relates_to_event",
+        0.9,
+        `Entry mentions event "${event.title}" and location "${location}"`
+      );
+    } else if (mentionsTitle) {
       await insertLink(
         "journal_entry",
         entry.id,
@@ -102,8 +122,17 @@ async function linkNearbyCalendarEvents(entry: LinkableEntry): Promise<void> {
         0.7,
         `Entry on same day mentions event "${event.title}"`
       );
+    } else if (mentionsLocation) {
+      await insertLink(
+        "journal_entry",
+        entry.id,
+        "calendar_event_ref",
+        event.id,
+        "relates_to_location",
+        0.7,
+        `Entry mentions event location "${location}"`
+      );
     } else {
-      // Still link with lower confidence (same-day temporal proximity)
       await insertLink(
         "journal_entry",
         entry.id,
