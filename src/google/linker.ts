@@ -254,8 +254,8 @@ async function linkRelatedEmails(entry: LinkableEntry): Promise<LinkRow[]> {
   return links;
 }
 
-async function linkRelatedArtifacts(entry: LinkableEntry): Promise<void> {
-  if (!entry.embedding || entry.embedding.length === 0) return;
+async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
+  if (!entry.embedding || entry.embedding.length === 0) return [];
 
   const vectorStr = `[${entry.embedding.join(",")}]`;
 
@@ -297,20 +297,20 @@ async function linkRelatedArtifacts(entry: LinkableEntry): Promise<void> {
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 3);
 
-  for (const match of topMatches) {
+  return topMatches.map((match) => {
     const dateStr = match.publishedAt
       ? new Date(match.publishedAt).toISOString().slice(0, 10)
       : "undated";
-    await insertLink(
-      "journal_entry",
-      entry.id,
-      "public_artifact",
-      match.artifactId,
-      "echoes_artifact",
-      match.similarity,
-      `Entry echoes past article "${match.title}" (${dateStr})`
-    );
-  }
+    return {
+      sourceType: "journal_entry",
+      sourceId: entry.id,
+      targetType: "public_artifact",
+      targetId: match.artifactId,
+      linkType: "echoes_artifact",
+      confidence: match.similarity,
+      explanation: `Entry echoes past article "${match.title}" (${dateStr})`,
+    };
+  });
 }
 
 export async function generateLinks(entry: LinkableEntry): Promise<void> {
@@ -320,6 +320,7 @@ export async function generateLinks(entry: LinkableEntry): Promise<void> {
       linkNearbyCalendarEvents(entry),
       linkRelatedTasks(entry),
       linkRelatedEmails(entry),
+      linkRelatedArtifacts(entry),
     ]);
     await insertLinks(results.flat());
   } catch (err) {
