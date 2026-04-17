@@ -6,9 +6,30 @@ import { generateRssFeed } from "./feed";
 import * as queries from "./db/queries";
 import { getAuthUrl, handleCallback } from "./google/auth";
 import { archiveRoutes } from "./archive/routes";
+import { ask, formatForTelegram } from "./archive/ask";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
+
+  bot.command("ask", async (ctx) => {
+    const query = ctx.match?.trim();
+    if (!query) {
+      await ctx.reply("Usage: /ask <your question>");
+      return;
+    }
+
+    await ctx.replyWithChatAction("typing");
+    try {
+      const result = await ask(query);
+      const message = formatForTelegram(result);
+      const truncated =
+        message.length > 4000 ? message.slice(0, 3990) + "\n…(truncated)" : message;
+      await ctx.reply(truncated);
+    } catch (err) {
+      console.error("[ask] Error:", err);
+      await ctx.reply("Sorry, couldn't search the archive right now.");
+    }
+  });
 
   bot.on("message:text", async (ctx) => {
     const result = await handleMessage({
