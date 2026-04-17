@@ -12,7 +12,7 @@ You receive five kinds of input, any of which may be empty:
 2. Today's calendar events (from Google Calendar).
 3. Open tasks due soon (from Google Tasks), including the task list name ("Do", "Subjects", "Learn") and any parent task.
 4. Starred emails (from Gmail — the follow-up queue).
-5. Cross-source connections (journal entries linked to Google entities by name mention, same-day event, location match, task keywords, or semantic similarity).
+5. Cross-source connections: journal entries linked to Google entities (by name mention, same-day event, location match, task keywords, or semantic similarity) AND journal entries that echo the owner's own past published writing from their archive (link_type "echoes_artifact" — a semantic match between today's thought and an article they wrote in the past).
 
 Your output must follow this structure in markdown:
 
@@ -35,7 +35,7 @@ Your output must follow this structure in markdown:
 ### Section details:
 - **Themes**: 3–5 bullets summarizing recurring themes from recent entries. Reference representative entries, tags, and linked projects/ideas.
 - **Actions**: 3–5 top action candidates from recent entries — tasks, goals, project moves — with brief justification (1–2 sentences each). Note overlap with Google Tasks where relevant.
-- **Connections**: 2–4 bullets. Use the cross-source link data to highlight meaningful ties — e.g., a journal thought that mirrors an upcoming event, a person mentioned who is also in a recent email thread, a task that keeps appearing in journal entries. Also include journal-to-journal echoes.
+- **Connections**: 2–4 bullets. Use the cross-source link data to highlight meaningful ties — e.g., a journal thought that mirrors an upcoming event, a person mentioned who is also in a recent email thread, a task that keeps appearing in journal entries, or a current journal thought that echoes something the owner previously published (call these out explicitly with the article title). Also include journal-to-journal echoes.
 - **Shift / Signal**: 1 short paragraph (3–6 sentences). What is *new* in the thinking? What is *repeating* that hasn't been acted on? What might deserve special focus today given both the thoughts and the schedule?
 
 ### Constraints:
@@ -191,7 +191,14 @@ function formatLinksForPrompt(
       const conf = l.confidence
         ? ` [confidence ${l.confidence.toFixed(2)}]`
         : "";
-      return `- [${dateStr}] Journal: "${summary}" → ${l.target_type} (${l.link_type})${conf}\n  ${l.explanation || ""}`;
+      const targetDesc = l.target_title
+        ? `${l.target_type} "${l.target_title}"${
+            l.target_date
+              ? ` (${l.target_date.toISOString().slice(0, 10)})`
+              : ""
+          }`
+        : l.target_type;
+      return `- [${dateStr}] Journal: "${summary}" → ${targetDesc} (${l.link_type})${conf}\n  ${l.explanation || ""}`;
     })
     .join("\n");
 }
@@ -230,7 +237,7 @@ ${formatTasksForPrompt(tasks, timezone)}
 === STARRED EMAILS (follow-up queue) ===
 ${formatEmailsForPrompt(starred, timezone)}
 
-=== CROSS-SOURCE CONNECTIONS (journal entries linked to Google entities, last 7 days) ===
+=== CROSS-SOURCE CONNECTIONS (journal entries linked to Google entities and archive articles, last 7 days) ===
 ${formatLinksForPrompt(links)}
 
 === JOURNAL ENTRIES (last 7 days, ${entries.length} entries) ===

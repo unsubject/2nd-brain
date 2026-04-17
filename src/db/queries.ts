@@ -332,6 +332,8 @@ export async function getLinksForRecentEntries(days: number = 7): Promise<
     confidence: number | null;
     explanation: string | null;
     target_type: string;
+    target_title: string | null;
+    target_date: Date | null;
     journal_summary: string | null;
     journal_created_at: Date;
   }[]
@@ -340,10 +342,27 @@ export async function getLinksForRecentEntries(days: number = 7): Promise<
   cutoff.setDate(cutoff.getDate() - days);
   const { rows } = await pool.query(
     `SELECT le.link_type, le.confidence, le.explanation, le.target_type,
+            CASE le.target_type
+              WHEN 'public_artifact' THEN pa.title
+              WHEN 'calendar_event_ref' THEN ce.title
+              WHEN 'task_ref' THEN tr.title
+              WHEN 'email_ref' THEN er.subject
+              WHEN 'person_ref' THEN pr.full_name
+            END AS target_title,
+            CASE le.target_type
+              WHEN 'public_artifact' THEN pa.published_at
+              WHEN 'calendar_event_ref' THEN ce.start_at
+              WHEN 'email_ref' THEN er.sent_at
+            END AS target_date,
             je.summary AS journal_summary,
             je.created_at AS journal_created_at
      FROM link_edge le
      JOIN journal_entry je ON je.id = le.source_id AND le.source_type = 'journal_entry'
+     LEFT JOIN public_artifact pa ON le.target_type = 'public_artifact' AND pa.id = le.target_id
+     LEFT JOIN calendar_event_ref ce ON le.target_type = 'calendar_event_ref' AND ce.id = le.target_id
+     LEFT JOIN task_ref tr ON le.target_type = 'task_ref' AND tr.id = le.target_id
+     LEFT JOIN email_ref er ON le.target_type = 'email_ref' AND er.id = le.target_id
+     LEFT JOIN person_ref pr ON le.target_type = 'person_ref' AND pr.id = le.target_id
      WHERE je.created_at >= $1
        AND (le.confidence IS NULL OR le.confidence >= 0.5)
      ORDER BY le.confidence DESC NULLS LAST, le.created_at DESC

@@ -216,12 +216,72 @@ async function linkRelatedEmails(entry: LinkableEntry): Promise<void> {
   }
 }
 
+async function linkRelatedArtifacts(entry: LinkableEntry): Promise<void> {
+  if (!entry.embedding || entry.embedding.length === 0) return;
+
+  const vectorStr = `[${entry.embedding.join(",")}]`;
+
+  // ANN-first over chunks (HNSW index on embedding), then dedupe to best-per-artifact in JS.
+  // Pulling 30 nearest chunks reliably covers 5-10 distinct top artifacts.
+  const { rows } = await pool.query(
+    `SELECT c.public_artifact_id AS artifact_id,
+            a.title,
+            a.published_at,
+            1 - (c.embedding <=> $1::vector) AS similarity
+     FROM public_artifact_chunk c
+     JOIN public_artifact a ON a.id = c.public_artifact_id
+     WHERE c.embedding IS NOT NULL
+       AND a.processing_status = 'processed'
+     ORDER BY c.embedding <=> $1::vector
+     LIMIT 30`,
+    [vectorStr]
+  );
+
+  const bestByArtifact = new Map<
+    string,
+    { title: string; publishedAt: Date | null; similarity: number }
+  >();
+  for (const r of rows) {
+    const sim = parseFloat(r.similarity);
+    const existing = bestByArtifact.get(r.artifact_id);
+    if (!existing || sim > existing.similarity) {
+      bestByArtifact.set(r.artifact_id, {
+        title: r.title,
+        publishedAt: r.published_at,
+        similarity: sim,
+      });
+    }
+  }
+
+  const topMatches = Array.from(bestByArtifact.entries())
+    .map(([artifactId, info]) => ({ artifactId, ...info }))
+    .filter((m) => m.similarity >= 0.45)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 3);
+
+  for (const match of topMatches) {
+    const dateStr = match.publishedAt
+      ? new Date(match.publishedAt).toISOString().slice(0, 10)
+      : "undated";
+    await insertLink(
+      "journal_entry",
+      entry.id,
+      "public_artifact",
+      match.artifactId,
+      "echoes_artifact",
+      match.similarity,
+      `Entry echoes past article "${match.title}" (${dateStr})`
+    );
+  }
+}
+
 export async function generateLinks(entry: LinkableEntry): Promise<void> {
   try {
     await linkMentionedContacts(entry);
     await linkNearbyCalendarEvents(entry);
     await linkRelatedTasks(entry);
     await linkRelatedEmails(entry);
+    await linkRelatedArtifacts(entry);
   } catch (err) {
     // Link generation is non-critical — log and continue
     console.error(`Link generation error for entry ${entry.id}:`, err);
