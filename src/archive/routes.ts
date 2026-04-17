@@ -120,6 +120,16 @@ export function archiveRoutes(): Router {
     }
   });
 
+  router.get("/archive/diagnostics", async (_req, res) => {
+    try {
+      const diag = await archiveQueries.getProcessingDiagnostics();
+      res.json(diag);
+    } catch (err) {
+      console.error("[archive] Diagnostics error:", err);
+      res.status(500).json({ error: "Failed to get diagnostics" });
+    }
+  });
+
   router.post("/archive/retry-errors", async (_req, res) => {
     try {
       const count = await archiveQueries.resetErroredArtifacts();
