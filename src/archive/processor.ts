@@ -113,6 +113,10 @@ export async function analyzeArtifact(
     tool_choice: { type: "tool", name: "save_artifact_analysis" },
   });
 
+  console.log(
+    `[archive] analyze tokens: in=${response.usage.input_tokens} out=${response.usage.output_tokens}`
+  );
+
   const toolBlock = response.content.find(
     (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
   );
@@ -139,6 +143,10 @@ export async function extractEntities(
     tools: [ENTITY_TOOL],
     tool_choice: { type: "tool", name: "save_extracted_entities" },
   });
+
+  console.log(
+    `[archive] entities tokens: in=${response.usage.input_tokens} out=${response.usage.output_tokens}`
+  );
 
   const toolBlock = response.content.find(
     (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"

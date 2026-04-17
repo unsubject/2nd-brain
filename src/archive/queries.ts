@@ -438,6 +438,47 @@ export async function findEntitiesByName(
   return rows;
 }
 
+export async function getProcessingDiagnostics(): Promise<{
+  statusCounts: { processing_status: string; count: number }[];
+  reprocessedCount: number;
+  oldestPending: { id: string; title: string; created_at: Date } | null;
+  recentProcessed: { title: string; updated_at: Date; reprocess_seconds: number | null }[];
+}> {
+  const { rows: statusCounts } = await pool.query(
+    `SELECT processing_status, count(*)::int AS count
+     FROM public_artifact GROUP BY processing_status`
+  );
+
+  const { rows: reprocessed } = await pool.query(
+    `SELECT count(*)::int AS count
+     FROM public_artifact
+     WHERE processing_status = 'processed'
+       AND updated_at - created_at > interval '10 minutes'`
+  );
+
+  const { rows: pending } = await pool.query(
+    `SELECT id, title, created_at
+     FROM public_artifact
+     WHERE processing_status = 'pending'
+     ORDER BY created_at ASC LIMIT 1`
+  );
+
+  const { rows: recent } = await pool.query(
+    `SELECT title, updated_at,
+            EXTRACT(EPOCH FROM (updated_at - created_at))::int AS reprocess_seconds
+     FROM public_artifact
+     WHERE processing_status = 'processed'
+     ORDER BY updated_at DESC LIMIT 10`
+  );
+
+  return {
+    statusCounts,
+    reprocessedCount: reprocessed[0].count,
+    oldestPending: pending[0] || null,
+    recentProcessed: recent,
+  };
+}
+
 export async function resetErroredArtifacts(): Promise<number> {
   const { rowCount } = await pool.query(
     `UPDATE public_artifact
