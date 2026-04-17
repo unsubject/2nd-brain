@@ -102,12 +102,17 @@ export async function findPendingEntry(
   stitchWindowMs: number
 ): Promise<{ id: string; full_text: string } | null> {
   const cutoff = new Date(Date.now() - stitchWindowMs);
+  // ORDER BY stitch_window_end (not created_at) so the query can use the
+  // partial index idx_journal_entry_processing on (processing_status,
+  // stitch_window_end) without a separate sort step. This is also more
+  // correct FIFO ordering: entries whose stitch window closed first are
+  // the ones ready to process first.
   const { rows } = await pool.query(
     `SELECT id, full_text
      FROM journal_entry
      WHERE processing_status = 'pending'
        AND stitch_window_end < $1
-     ORDER BY created_at ASC
+     ORDER BY stitch_window_end ASC
      LIMIT 1`,
     [cutoff]
   );
@@ -176,7 +181,8 @@ export async function markProcessingError(id: string): Promise<void> {
 }
 
 export async function getEntriesForReview(
-  days: number
+  days: number,
+  limit: number = 200
 ): Promise<
   {
     id: string;
@@ -198,8 +204,9 @@ export async function getEntriesForReview(
      FROM journal_entry
      WHERE processing_status = 'processed'
        AND created_at > $1
-     ORDER BY created_at DESC`,
-    [cutoff]
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [cutoff, limit]
   );
   return rows;
 }
