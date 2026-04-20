@@ -9,6 +9,7 @@ import {
   cancelFamilyDraft,
   confirmStaleFamilyDrafts,
 } from "./db/familyQueries";
+import { askFamilyArchive, AskScope } from "./familyAsk";
 
 export interface FamilyBotConfig {
   groupChatId: string;
@@ -19,6 +20,7 @@ type BotInfo = { id: number; username?: string };
 
 const AUTO_SAVE_MS = 5 * 60 * 1000;
 const DRAFT_PREVIEW_MAX = 500;
+const MAX_REPLY_CHARS = 4000;
 
 function stripEntities(text: string, entities?: MessageEntity[]): string {
   if (!entities) return text;
@@ -93,6 +95,22 @@ function isCaptureTrigger(ctx: Context, botInfo: BotInfo): boolean {
   return false;
 }
 
+function determineAskScopes(ctx: Context): AskScope[] {
+  const simonId = process.env.SIMON_TELEGRAM_USER_ID;
+  const userId = ctx.from?.id?.toString();
+  const isDM = ctx.chat?.type === "private";
+  if (isDM && simonId && userId === simonId) {
+    return ["personal", "family"];
+  }
+  return ["family"];
+}
+
+function truncateForTelegram(text: string): string {
+  return text.length > MAX_REPLY_CHARS
+    ? text.slice(0, MAX_REPLY_CHARS - 15) + "\n…(truncated)"
+    : text;
+}
+
 export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
   const bot = new Bot(token);
 
@@ -104,6 +122,26 @@ export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
     await ctx.reply(
       `Chat ID: ${chatId}\nChat type: ${chatType}\nYour user ID: ${userId}\nAuthorized: ${allowed}`
     );
+  });
+
+  bot.command("ask", async (ctx) => {
+    if (!authorize(ctx, config)) return;
+    const query = ctx.match?.trim();
+    if (!query) {
+      await ctx.reply("Usage: /ask <your question>");
+      return;
+    }
+
+    const scopes = determineAskScopes(ctx);
+
+    await ctx.replyWithChatAction("typing");
+    try {
+      const answer = await askFamilyArchive(query, scopes);
+      await ctx.reply(truncateForTelegram(answer));
+    } catch (err) {
+      console.error("[familyAsk] Error:", err);
+      await ctx.reply("Sorry, couldn't search the archive right now.");
+    }
   });
 
   bot.on("message:text", async (ctx) => {
