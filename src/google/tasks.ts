@@ -13,6 +13,10 @@ function inferListType(name: string): string | null {
   return LIST_TYPE_MAP[lower] || null;
 }
 
+function inferListScope(name: string): "personal" | "family" {
+  return name.toLowerCase().trim() === "family" ? "family" : "personal";
+}
+
 export async function syncTasks(): Promise<void> {
   const auth = await getAuthenticatedClient();
   const service = google.tasks({ version: "v1", auth });
@@ -24,6 +28,7 @@ export async function syncTasks(): Promise<void> {
     if (!list.id || !list.title) continue;
 
     const listType = inferListType(list.title);
+    const listScope = inferListScope(list.title);
 
     const { rows: projectRows } = await pool.query(
       `INSERT INTO project_ref (user_id, external_system, external_list_id, name, list_type, updated_at)
@@ -53,8 +58,8 @@ export async function syncTasks(): Promise<void> {
           `INSERT INTO task_ref
              (user_id, external_system, external_task_id, external_list_id,
               project_ref_id, title, notes, status, due_at, completed_at,
-              parent_external_task_id, position, updated_at)
-           VALUES ('default', 'google_tasks', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+              parent_external_task_id, position, scope, updated_at)
+           VALUES ('default', 'google_tasks', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
            ON CONFLICT (external_system, external_task_id) DO UPDATE
              SET title = EXCLUDED.title,
                  notes = EXCLUDED.notes,
@@ -63,6 +68,7 @@ export async function syncTasks(): Promise<void> {
                  completed_at = EXCLUDED.completed_at,
                  parent_external_task_id = EXCLUDED.parent_external_task_id,
                  position = EXCLUDED.position,
+                 scope = EXCLUDED.scope,
                  updated_at = now()`,
           [
             task.id,
@@ -75,6 +81,7 @@ export async function syncTasks(): Promise<void> {
             task.completed ? new Date(task.completed) : null,
             task.parent || null,
             task.position || null,
+            listScope,
           ]
         );
       }
