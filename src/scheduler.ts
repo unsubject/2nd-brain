@@ -1,10 +1,14 @@
 import { generateMorningReview } from "./review";
 
-export function startScheduler(): void {
-  const reviewTime = process.env.MORNING_REVIEW_TIME || "06:00";
-  const timezone = process.env.TIMEZONE || "UTC";
+type Deliver = (content: string) => Promise<void>;
 
-  const [targetHour, targetMinute] = reviewTime.split(":").map(Number);
+function runDailyAt(
+  label: string,
+  timeHHMM: string,
+  timezone: string,
+  run: () => Promise<void>
+): void {
+  const [targetHour, targetMinute] = timeHHMM.split(":").map(Number);
   let lastRunDate = "";
 
   setInterval(() => {
@@ -32,14 +36,31 @@ export function startScheduler(): void {
       lastRunDate !== today
     ) {
       lastRunDate = today;
-      console.log("Generating morning review...");
-      generateMorningReview().catch((err) =>
-        console.error("Error generating morning review:", err)
-      );
+      console.log(`[${label}] running at ${timeHHMM} (${timezone})...`);
+      run().catch((err) => console.error(`[${label}] error:`, err));
     }
   }, 60_000);
 
-  console.log(
-    `Morning review scheduled at ${reviewTime} (${timezone})`
-  );
+  console.log(`[${label}] scheduled at ${timeHHMM} (${timezone})`);
+}
+
+export function startScheduler(): void {
+  const reviewTime = process.env.MORNING_REVIEW_TIME || "06:00";
+  const timezone = process.env.TIMEZONE || "UTC";
+  runDailyAt("personal-review", reviewTime, timezone, async () => {
+    await generateMorningReview();
+  });
+}
+
+export function startFamilyScheduler(deliver: Deliver): void {
+  const reviewTime = process.env.FAMILY_MORNING_REVIEW_TIME || "06:30";
+  const timezone =
+    process.env.FAMILY_TIMEZONE || "Asia/Hong_Kong";
+  runDailyAt("family-review", reviewTime, timezone, async () => {
+    await generateMorningReview({
+      scope: "family",
+      queryScopes: ["family"],
+      deliver,
+    });
+  });
 }
