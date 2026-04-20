@@ -10,6 +10,7 @@ import {
   confirmStaleFamilyDrafts,
 } from "./db/familyQueries";
 import { askFamilyArchive, AskScope } from "./familyAsk";
+import { insertTask } from "./google/tasks";
 
 export interface FamilyBotConfig {
   groupChatId: string;
@@ -105,6 +106,16 @@ function determineAskScopes(ctx: Context): AskScope[] {
   return ["family"];
 }
 
+function determineTaskList(ctx: Context): string {
+  const simonId = process.env.SIMON_TELEGRAM_USER_ID;
+  const userId = ctx.from?.id?.toString();
+  const isDM = ctx.chat?.type === "private";
+  if (isDM && simonId && userId === simonId) {
+    return "Do";
+  }
+  return "Family";
+}
+
 function truncateForTelegram(text: string): string {
   return text.length > MAX_REPLY_CHARS
     ? text.slice(0, MAX_REPLY_CHARS - 15) + "\n…(truncated)"
@@ -141,6 +152,24 @@ export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
     } catch (err) {
       console.error("[familyAsk] Error:", err);
       await ctx.reply("Sorry, couldn't search the archive right now.");
+    }
+  });
+
+  bot.command("task", async (ctx) => {
+    if (!authorize(ctx, config)) return;
+    const title = ctx.match?.trim();
+    if (!title) {
+      await ctx.reply("Usage: /task <title>");
+      return;
+    }
+    const listName = determineTaskList(ctx);
+    try {
+      const result = await insertTask({ listName, title });
+      await ctx.reply(`✅ Added to "${result.listTitle}" tasklist.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[familyBot] /task error:", err);
+      await ctx.reply(`Couldn't add task: ${msg}`);
     }
   });
 

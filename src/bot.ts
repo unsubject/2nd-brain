@@ -7,6 +7,7 @@ import * as queries from "./db/queries";
 import { getAuthUrl, handleCallback } from "./google/auth";
 import { archiveRoutes } from "./archive/routes";
 import { ask, formatForTelegram } from "./archive/ask";
+import { insertTask } from "./google/tasks";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -28,6 +29,22 @@ export function createBot(token: string): Bot {
     } catch (err) {
       console.error("[ask] Error:", err);
       await ctx.reply("Sorry, couldn't search the archive right now.");
+    }
+  });
+
+  bot.command("task", async (ctx) => {
+    const title = ctx.match?.trim();
+    if (!title) {
+      await ctx.reply("Usage: /task <title>");
+      return;
+    }
+    try {
+      const result = await insertTask({ listName: "Do", title });
+      await ctx.reply(`✅ Added to "${result.listTitle}" tasklist.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[bot] /task error:", err);
+      await ctx.reply(`Couldn't add task: ${msg}`);
     }
   });
 
