@@ -93,10 +93,6 @@ export async function appendToFamilyDraft(
   );
 }
 
-// Backdating stitch_window_end by 11 minutes means the pending-entry worker
-// (which waits for stitch_window_end < now - stitch_window, default 10 min)
-// picks this up on its next tick rather than waiting out a stitch window
-// that doesn't apply to an explicitly-confirmed draft.
 export async function confirmFamilyDraft(
   db: DB,
   id: string
@@ -142,4 +138,169 @@ export async function confirmStaleFamilyDrafts(
     [seconds]
   );
   return rows.map((r) => r.id);
+}
+
+// ---------- /ask retrievers ----------
+
+function extractKeywords(q: string): string[] {
+  const matches = q.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) || [];
+  return Array.from(new Set(matches)).slice(0, 6);
+}
+
+function vectorLiteral(embedding: number[]): string {
+  return `[${embedding.join(",")}]`;
+}
+
+export async function searchJournalForAsk(
+  embedding: number[],
+  scopes: string[],
+  limit: number
+): Promise<
+  {
+    id: string;
+    created_at: Date;
+    summary: string | null;
+    full_text: string;
+    scope: string;
+    similarity: number;
+  }[]
+> {
+  const { rows } = await pool.query(
+    `SELECT id, created_at, summary, full_text, scope,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM journal_entry
+     WHERE processing_status = 'processed'
+       AND embedding IS NOT NULL
+       AND scope = ANY($2)
+     ORDER BY embedding <=> $1::vector
+     LIMIT $3`,
+    [vectorLiteral(embedding), scopes, limit]
+  );
+  return rows;
+}
+
+export async function searchEmailsForAsk(
+  embedding: number[],
+  scopes: string[],
+  limit: number
+): Promise<
+  {
+    id: string;
+    subject: string | null;
+    from_address: string;
+    sent_at: Date | null;
+    snippet: string | null;
+    body_text: string | null;
+    scope: string;
+    similarity: number;
+  }[]
+> {
+  const { rows } = await pool.query(
+    `SELECT id, subject, from_address, sent_at, snippet, body_text, scope,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM email_ref
+     WHERE embedding IS NOT NULL
+       AND scope = ANY($2)
+     ORDER BY embedding <=> $1::vector
+     LIMIT $3`,
+    [vectorLiteral(embedding), scopes, limit]
+  );
+  return rows;
+}
+
+export async function searchCalendarForAsk(
+  question: string,
+  scopes: string[],
+  limit: number
+): Promise<
+  {
+    id: string;
+    title: string;
+    description: string | null;
+    location: string | null;
+    start_at: Date;
+    scope: string;
+  }[]
+> {
+  const keywords = extractKeywords(question);
+  if (keywords.length === 0) return [];
+
+  const params: unknown[] = [scopes, limit];
+  const placeholders = keywords.map((k) => {
+    params.push(`%${k}%`);
+    return `$${params.length}`;
+  });
+
+  const anyMatch = placeholders
+    .map(
+      (p) =>
+        `(title ILIKE ${p} OR description ILIKE ${p} OR location ILIKE ${p})`
+    )
+    .join(" OR ");
+  const score = placeholders
+    .map(
+      (p) =>
+        `(CASE WHEN title ILIKE ${p} OR description ILIKE ${p} OR location ILIKE ${p} THEN 1 ELSE 0 END)`
+    )
+    .join(" + ");
+
+  const { rows } = await pool.query(
+    `SELECT id, title, description, location, start_at, scope,
+            (${score}) AS score
+     FROM calendar_event_ref
+     WHERE scope = ANY($1)
+       AND (${anyMatch})
+     ORDER BY score DESC, start_at DESC
+     LIMIT $2`,
+    params
+  );
+  return rows;
+}
+
+export async function searchTasksForAsk(
+  question: string,
+  scopes: string[],
+  limit: number
+): Promise<
+  {
+    id: string;
+    title: string;
+    notes: string | null;
+    due_at: Date | null;
+    list_name: string | null;
+    scope: string;
+  }[]
+> {
+  const keywords = extractKeywords(question);
+  if (keywords.length === 0) return [];
+
+  const params: unknown[] = [scopes, limit];
+  const placeholders = keywords.map((k) => {
+    params.push(`%${k}%`);
+    return `$${params.length}`;
+  });
+
+  const anyMatch = placeholders
+    .map((p) => `(t.title ILIKE ${p} OR t.notes ILIKE ${p})`)
+    .join(" OR ");
+  const score = placeholders
+    .map(
+      (p) =>
+        `(CASE WHEN t.title ILIKE ${p} OR t.notes ILIKE ${p} THEN 1 ELSE 0 END)`
+    )
+    .join(" + ");
+
+  const { rows } = await pool.query(
+    `SELECT t.id, t.title, t.notes, t.due_at, t.scope, p.name AS list_name,
+            (${score}) AS score
+     FROM task_ref t
+     LEFT JOIN project_ref p ON t.project_ref_id = p.id
+     WHERE t.scope = ANY($1)
+       AND t.status = 'needsAction'
+       AND (${anyMatch})
+     ORDER BY score DESC, t.due_at ASC NULLS LAST
+     LIMIT $2`,
+    params
+  );
+  return rows;
 }
