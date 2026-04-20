@@ -2,7 +2,7 @@ import { google } from "googleapis";
 import { pool } from "../db/client";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/tasks.readonly",
+  "https://www.googleapis.com/auth/tasks",
   "https://www.googleapis.com/auth/contacts.readonly",
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/gmail.readonly",
