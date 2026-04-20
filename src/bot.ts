@@ -8,6 +8,7 @@ import { getAuthUrl, handleCallback } from "./google/auth";
 import { archiveRoutes } from "./archive/routes";
 import { ask, formatForTelegram } from "./archive/ask";
 import { insertTask } from "./google/tasks";
+import { handleSuggestionCallback } from "./taskSuggestionCallback";
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -48,10 +49,17 @@ export function createBot(token: string): Bot {
     }
   });
 
+  bot.callbackQuery(/^suggest:(add|skip):(.+)$/, async (ctx) => {
+    const action = ctx.match![1] as "add" | "skip";
+    const id = ctx.match![2];
+    await handleSuggestionCallback(ctx, action, id);
+  });
+
   bot.on("message:text", async (ctx) => {
     const result = await handleMessage({
       userId: ctx.from.id.toString(),
       channel: "telegram",
+      chatId: ctx.chat.id.toString(),
       channelMessageId: ctx.message.message_id.toString(),
       rawText: ctx.message.text,
       receivedAt: new Date(ctx.message.date * 1000),

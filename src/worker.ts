@@ -2,6 +2,7 @@ import * as queries from "./db/queries";
 import { processEntry } from "./processor";
 import { generateEmbedding } from "./embeddings";
 import { generateLinks } from "./google/linker";
+import { maybeCreateTaskSuggestion } from "./taskSuggest";
 
 const POLL_INTERVAL_MS = 30_000;
 const STITCH_WINDOW_MS = 10 * 60 * 1000;
@@ -17,6 +18,15 @@ async function tick(): Promise<void> {
       const embedding = await generateEmbedding(result.clean_text);
       await queries.saveProcessingResult(entry.id, result, embedding);
       console.log(`Processed entry ${entry.id}`);
+
+      try {
+        await maybeCreateTaskSuggestion(entry.id, result);
+      } catch (err) {
+        console.error(
+          `[worker] task suggestion failed for entry ${entry.id}:`,
+          err
+        );
+      }
 
       await generateLinks({
         id: entry.id,

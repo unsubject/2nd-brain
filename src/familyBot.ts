@@ -11,6 +11,7 @@ import {
 } from "./db/familyQueries";
 import { askFamilyArchive, AskScope } from "./familyAsk";
 import { insertTask } from "./google/tasks";
+import { handleSuggestionCallback } from "./taskSuggestionCallback";
 
 export interface FamilyBotConfig {
   groupChatId: string;
@@ -47,17 +48,17 @@ function isCancelSignal(text: string): boolean {
 
 function draftKeyboard(draftId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("✅ Save", `family:save:${draftId}`)
-    .text("➕ Add more", `family:add:${draftId}`)
-    .text("❌ Cancel", `family:cancel:${draftId}`);
+    .text("\u2705 Save", `family:save:${draftId}`)
+    .text("\u2795 Add more", `family:add:${draftId}`)
+    .text("\u274c Cancel", `family:cancel:${draftId}`);
 }
 
 function formatDraftReply(fullText: string): string {
   const preview =
     fullText.length > DRAFT_PREVIEW_MAX
-      ? fullText.slice(0, DRAFT_PREVIEW_MAX - 1) + "…"
+      ? fullText.slice(0, DRAFT_PREVIEW_MAX - 1) + "\u2026"
       : fullText;
-  return `📝 Drafting:\n\n${preview}\n\n(Say "done" or tap ✅ to save. Auto-saves after 5 min.)`;
+  return `\ud83d\udcdd Drafting:\n\n${preview}\n\n(Say "done" or tap \u2705 to save. Auto-saves after 5 min.)`;
 }
 
 function authorize(ctx: Context, config: FamilyBotConfig): boolean {
@@ -267,6 +268,16 @@ export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
       }
       return;
     }
+  });
+
+  bot.callbackQuery(/^suggest:(add|skip):(.+)$/, async (ctx) => {
+    if (!authorize(ctx, config)) {
+      await ctx.answerCallbackQuery({ text: "Unauthorized" });
+      return;
+    }
+    const action = ctx.match![1] as "add" | "skip";
+    const id = ctx.match![2];
+    await handleSuggestionCallback(ctx, action, id);
   });
 
   return bot;

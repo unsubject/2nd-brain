@@ -35,16 +35,17 @@ export async function createJournalEntry(
   params: {
     userId: string;
     channel: string;
+    chatId?: string | null;
     rawText: string;
     receivedAt: Date;
   }
 ): Promise<string> {
   const { rows } = await db.query(
     `INSERT INTO journal_entry
-       (user_id, channel, created_at, updated_at, stitch_window_start, stitch_window_end, full_text)
-     VALUES ($1, $2, $3, $3, $3, $3, $4)
+       (user_id, channel, chat_id, created_at, updated_at, stitch_window_start, stitch_window_end, full_text)
+     VALUES ($1, $2, $3, $4, $4, $4, $4, $5)
      RETURNING id`,
-    [params.userId, params.channel, params.receivedAt, params.rawText]
+    [params.userId, params.channel, params.chatId ?? null, params.receivedAt, params.rawText]
   );
   return rows[0].id;
 }
@@ -70,6 +71,7 @@ export async function insertCaptureEvent(
   params: {
     userId: string;
     channel: string;
+    chatId?: string | null;
     channelMessageId: string;
     rawText: string;
     receivedAt: Date;
@@ -80,13 +82,14 @@ export async function insertCaptureEvent(
 ): Promise<string> {
   const { rows } = await db.query(
     `INSERT INTO capture_event
-       (user_id, channel, channel_message_id, raw_text, received_at,
+       (user_id, channel, chat_id, channel_message_id, raw_text, received_at,
         journal_entry_id, is_system_command, system_command_type)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       params.userId,
       params.channel,
+      params.chatId ?? null,
       params.channelMessageId,
       params.rawText,
       params.receivedAt,

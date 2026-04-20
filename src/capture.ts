@@ -17,6 +17,7 @@ export interface IncomingMessage {
   channelMessageId: string;
   rawText: string;
   receivedAt: Date;
+  chatId?: string | null;
 }
 
 export async function handleMessage(
@@ -27,6 +28,7 @@ export async function handleMessage(
   if (NEW_NOTE_COMMANDS.has(normalized)) {
     await queries.insertCaptureEvent(pool, {
       ...msg,
+      chatId: msg.chatId ?? null,
       journalEntryId: null,
       isSystemCommand: true,
       systemCommandType: "new_note",
@@ -57,6 +59,7 @@ export async function handleMessage(
       journalEntryId = await queries.createJournalEntry(client, {
         userId: msg.userId,
         channel: msg.channel,
+        chatId: msg.chatId ?? null,
         rawText: msg.rawText,
         receivedAt: msg.receivedAt,
       });
@@ -64,6 +67,7 @@ export async function handleMessage(
 
     await queries.insertCaptureEvent(client, {
       ...msg,
+      chatId: msg.chatId ?? null,
       journalEntryId,
       isSystemCommand: false,
       systemCommandType: null,

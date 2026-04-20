@@ -5,6 +5,7 @@ import { startWorker } from "./worker";
 import { startScheduler, startFamilyScheduler } from "./scheduler";
 import { startGoogleSync } from "./google/sync";
 import { startArchiveWorker } from "./archive/worker";
+import { startTaskSuggestionSweeper } from "./taskSuggestionSweeper";
 
 const TELEGRAM_MAX_CHARS = 3900;
 
@@ -83,6 +84,7 @@ async function main() {
   startScheduler();
   startGoogleSync();
   startArchiveWorker();
+  startTaskSuggestionSweeper({ personalBot: bot, familyBot });
 
   if (familyBot && familyGroupChatId) {
     startFamilyDraftSweeper();
