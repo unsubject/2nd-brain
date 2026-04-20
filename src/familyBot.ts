@@ -1,0 +1,224 @@
+import { Bot, Context, InlineKeyboard } from "grammy";
+import type { MessageEntity } from "grammy/types";
+import { pool } from "./db/client";
+import {
+  findFamilyDraft,
+  createFamilyDraft,
+  appendToFamilyDraft,
+  confirmFamilyDraft,
+  cancelFamilyDraft,
+  confirmStaleFamilyDrafts,
+} from "./db/familyQueries";
+
+export interface FamilyBotConfig {
+  groupChatId: string;
+  familyUserIds: Set<string>;
+}
+
+type BotInfo = { id: number; username?: string };
+
+const AUTO_SAVE_MS = 5 * 60 * 1000;
+const DRAFT_PREVIEW_MAX = 500;
+
+function stripEntities(text: string, entities?: MessageEntity[]): string {
+  if (!entities) return text;
+  const toStrip = entities
+    .filter((e) => e.type === "mention" || e.type === "bot_command")
+    .sort((a, b) => b.offset - a.offset);
+  let out = text;
+  for (const e of toStrip) {
+    out = out.slice(0, e.offset) + out.slice(e.offset + e.length);
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
+function isDoneSignal(text: string): boolean {
+  const n = text.trim().toLowerCase().replace(/[.!?]$/, "");
+  return n === "done" || n === "/done";
+}
+
+function isCancelSignal(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  return n === "cancel" || n === "/cancel";
+}
+
+function draftKeyboard(draftId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ Save", `family:save:${draftId}`)
+    .text("➕ Add more", `family:add:${draftId}`)
+    .text("❌ Cancel", `family:cancel:${draftId}`);
+}
+
+function formatDraftReply(fullText: string): string {
+  const preview =
+    fullText.length > DRAFT_PREVIEW_MAX
+      ? fullText.slice(0, DRAFT_PREVIEW_MAX - 1) + "…"
+      : fullText;
+  return `📝 Drafting:\n\n${preview}\n\n(Say "done" or tap ✅ to save. Auto-saves after 5 min.)`;
+}
+
+function authorize(ctx: Context, config: FamilyBotConfig): boolean {
+  const chatType = ctx.chat?.type;
+  if (chatType === "group" || chatType === "supergroup") {
+    return ctx.chat?.id?.toString() === config.groupChatId;
+  }
+  if (chatType === "private") {
+    return config.familyUserIds.has(ctx.from?.id?.toString() ?? "");
+  }
+  return false;
+}
+
+function isCaptureTrigger(ctx: Context, botInfo: BotInfo): boolean {
+  const chatType = ctx.chat?.type;
+  if (chatType === "private") return true;
+
+  if (ctx.message?.reply_to_message?.from?.id === botInfo.id) return true;
+
+  const text = ctx.message?.text || "";
+  const entities = ctx.message?.entities || [];
+  const botUsernameLower = botInfo.username?.toLowerCase();
+  if (!botUsernameLower) return false;
+
+  for (const e of entities) {
+    if (e.type === "mention") {
+      const mention = text
+        .slice(e.offset + 1, e.offset + e.length)
+        .toLowerCase();
+      if (mention === botUsernameLower) return true;
+    } else if (e.type === "bot_command") {
+      const cmd = text.slice(e.offset, e.offset + e.length).toLowerCase();
+      if (cmd.endsWith("@" + botUsernameLower)) return true;
+    }
+  }
+  return false;
+}
+
+export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
+  const bot = new Bot(token);
+
+  bot.command("whoami", async (ctx) => {
+    const chatId = ctx.chat?.id?.toString() ?? "unknown";
+    const chatType = ctx.chat?.type ?? "unknown";
+    const userId = ctx.from?.id?.toString() ?? "unknown";
+    const allowed = authorize(ctx, config);
+    await ctx.reply(
+      `Chat ID: ${chatId}\nChat type: ${chatType}\nYour user ID: ${userId}\nAuthorized: ${allowed}`
+    );
+  });
+
+  bot.on("message:text", async (ctx) => {
+    if (!authorize(ctx, config)) return;
+    if (!bot.botInfo) return;
+    if (!isCaptureTrigger(ctx, bot.botInfo)) return;
+
+    const userId = ctx.from!.id.toString();
+    const chatId = ctx.chat!.id.toString();
+    const channelMessageId = ctx.message.message_id.toString();
+    const receivedAt = new Date(ctx.message.date * 1000);
+    const text = stripEntities(ctx.message.text, ctx.message.entities);
+
+    if (!text) return;
+
+    const draft = await findFamilyDraft(pool, userId, chatId);
+
+    if (draft && isDoneSignal(text)) {
+      const res = await confirmFamilyDraft(pool, draft.id);
+      if (res.confirmed) {
+        await ctx.reply("✅ Saved to the family knowledge base.");
+      }
+      return;
+    }
+
+    if (draft && isCancelSignal(text)) {
+      const res = await cancelFamilyDraft(pool, draft.id);
+      if (res.cancelled) {
+        await ctx.reply("❌ Draft cancelled.");
+      }
+      return;
+    }
+
+    let draftId: string;
+    let fullText: string;
+    if (draft) {
+      await appendToFamilyDraft(pool, {
+        draftId: draft.id,
+        userId,
+        chatId,
+        channelMessageId,
+        rawText: text,
+        receivedAt,
+      });
+      draftId = draft.id;
+      fullText = draft.full_text + "\n" + text;
+    } else {
+      draftId = await createFamilyDraft(pool, {
+        userId,
+        chatId,
+        channelMessageId,
+        rawText: text,
+        receivedAt,
+      });
+      fullText = text;
+    }
+
+    await ctx.reply(formatDraftReply(fullText), {
+      reply_markup: draftKeyboard(draftId),
+    });
+  });
+
+  bot.callbackQuery(/^family:(save|add|cancel):(.+)$/, async (ctx) => {
+    if (!authorize(ctx, config)) {
+      await ctx.answerCallbackQuery({ text: "Unauthorized" });
+      return;
+    }
+    const action = ctx.match![1];
+    const draftId = ctx.match![2];
+
+    if (action === "add") {
+      await ctx.answerCallbackQuery({ text: "Keep writing." });
+      return;
+    }
+
+    if (action === "save") {
+      const res = await confirmFamilyDraft(pool, draftId);
+      if (res.confirmed) {
+        await ctx.answerCallbackQuery({ text: "Saved." });
+        await ctx.editMessageText("✅ Saved to the family knowledge base.");
+      } else {
+        await ctx.answerCallbackQuery({ text: "Already saved or cancelled." });
+      }
+      return;
+    }
+
+    if (action === "cancel") {
+      const res = await cancelFamilyDraft(pool, draftId);
+      if (res.cancelled) {
+        await ctx.answerCallbackQuery({ text: "Cancelled." });
+        await ctx.editMessageText("❌ Draft cancelled.");
+      } else {
+        await ctx.answerCallbackQuery({ text: "Already saved or cancelled." });
+      }
+      return;
+    }
+  });
+
+  return bot;
+}
+
+export function startFamilyDraftSweeper(): void {
+  const tick = async () => {
+    try {
+      const confirmed = await confirmStaleFamilyDrafts(AUTO_SAVE_MS);
+      if (confirmed.length > 0) {
+        console.log(
+          `[familyBot] Auto-saved ${confirmed.length} stale draft(s)`
+        );
+      }
+    } catch (err) {
+      console.error("[familyBot] Sweeper error:", err);
+    } finally {
+      setTimeout(tick, 60_000);
+    }
+  };
+  tick();
+}
