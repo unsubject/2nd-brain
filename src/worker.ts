@@ -3,6 +3,7 @@ import { processEntry } from "./processor";
 import { generateEmbedding } from "./embeddings";
 import { generateLinks } from "./google/linker";
 import { maybeCreateTaskSuggestion } from "./taskSuggest";
+import { isAiFeedbackText, parseFirstLineHashtags } from "./utils";
 
 const POLL_INTERVAL_MS = 30_000;
 const STITCH_WINDOW_MS = 10 * 60 * 1000;
@@ -14,6 +15,19 @@ async function tick(): Promise<void> {
 
     console.log(`Processing entry ${entry.id}...`);
     try {
+      if (isAiFeedbackText(entry.full_text)) {
+        const tags = parseFirstLineHashtags(entry.full_text);
+        const embedding = await generateEmbedding(entry.full_text);
+        await queries.saveAiFeedbackResult(
+          entry.id,
+          entry.full_text,
+          tags,
+          embedding
+        );
+        console.log(`Processed ai_feedback entry ${entry.id}`);
+        continue;
+      }
+
       const result = await processEntry(entry.full_text);
       const embedding = await generateEmbedding(result.clean_text);
       await queries.saveProcessingResult(entry.id, result, embedding);

@@ -1,5 +1,6 @@
 import { pool, withTransaction } from "./db/client";
 import * as queries from "./db/queries";
+import { isAiFeedbackText } from "./utils";
 
 const NEW_NOTE_COMMANDS = new Set([
   "new note",
@@ -36,14 +37,18 @@ export async function handleMessage(
     return { isSystemCommand: true };
   }
 
+  const isAiFeedback = isAiFeedbackText(msg.rawText);
+
   await withTransaction(async (client) => {
-    const recentEntry = await queries.findRecentJournalEntry(
-      client,
-      msg.userId,
-      msg.channel,
-      msg.receivedAt,
-      STITCH_WINDOW_MS
-    );
+    const recentEntry = isAiFeedback
+      ? null
+      : await queries.findRecentJournalEntry(
+          client,
+          msg.userId,
+          msg.channel,
+          msg.receivedAt,
+          STITCH_WINDOW_MS
+        );
 
     let journalEntryId: string;
 
@@ -72,6 +77,20 @@ export async function handleMessage(
       isSystemCommand: false,
       systemCommandType: null,
     });
+
+    if (isAiFeedback) {
+      await queries.insertCaptureEvent(client, {
+        userId: msg.userId,
+        channel: msg.channel,
+        chatId: msg.chatId ?? null,
+        channelMessageId: `${msg.channelMessageId}:ai-feedback-boundary`,
+        rawText: "",
+        receivedAt: new Date(msg.receivedAt.getTime() + 1),
+        journalEntryId: null,
+        isSystemCommand: true,
+        systemCommandType: "new_note",
+      });
+    }
   });
 
   return { isSystemCommand: false };

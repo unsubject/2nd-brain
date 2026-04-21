@@ -149,6 +149,29 @@ export async function saveProcessingResult(
   );
 }
 
+export async function saveAiFeedbackResult(
+  id: string,
+  cleanText: string,
+  tags: string[],
+  embedding: number[]
+): Promise<void> {
+  const vectorStr = `[${embedding.join(",")}]`;
+  await pool.query(
+    `UPDATE journal_entry
+     SET clean_text = $2,
+         summary = NULL,
+         language = 'en',
+         tags = $3,
+         primary_type = 'archive_only',
+         primary_type_confidence = 1.0,
+         suggested_actions = '[]'::jsonb,
+         embedding = $4::vector,
+         processing_status = 'processed'
+     WHERE id = $1`,
+    [id, cleanText, tags, vectorStr]
+  );
+}
+
 export async function findSimilarEntries(
   embedding: number[],
   excludeId: string,
