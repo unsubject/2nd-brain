@@ -1,6 +1,7 @@
 import { syncTasks } from "./tasks";
 import { syncContacts } from "./contacts";
 import { syncCalendar } from "./calendar";
+import { syncGmail } from "./gmail";
 import { pool } from "../db/client";
 
 const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -39,6 +40,13 @@ async function runSync(): Promise<void> {
     console.log("  Calendar synced");
   } catch (err) {
     console.error("  Calendar sync error:", err);
+  }
+
+  try {
+    await syncGmail();
+    console.log("  Gmail synced");
+  } catch (err) {
+    console.error("  Gmail sync error:", err);
   }
 
   console.log(`Google sync complete (${Math.round((Date.now() - start) / 1000)}s)`);
