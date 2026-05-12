@@ -2,6 +2,7 @@ import { Router, json } from "express";
 import multer from "multer";
 import { importNotionExport } from "./ingest/notion-export";
 import { syncNotionDatabase, NotionSyncResult } from "./ingest/notion-api";
+import { importYouTubeVideo, YouTubeImportBody } from "./ingest/youtube";
 import { hybridSearch, SearchRequest } from "./search";
 import * as archiveQueries from "./queries";
 
@@ -101,6 +102,24 @@ export function archiveRoutes(): Router {
       return;
     }
     res.json(currentSync);
+  });
+
+  router.post("/archive/import/youtube", json(), async (req, res) => {
+    const body = req.body as Partial<YouTubeImportBody> | undefined;
+    if (!body?.video_id || !body?.title || !body?.transcript) {
+      res.status(400).json({
+        error: "video_id, title, and transcript are required",
+      });
+      return;
+    }
+
+    try {
+      const result = await importYouTubeVideo(body as YouTubeImportBody);
+      res.json(result);
+    } catch (err) {
+      console.error(`[archive] YouTube import error for ${body.video_id}:`, err);
+      res.status(500).json({ error: "Import failed" });
+    }
   });
 
   router.post("/archive/search", json(), async (req, res) => {
