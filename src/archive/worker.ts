@@ -23,12 +23,24 @@ async function processOne(): Promise<boolean> {
       artifact.tags
     );
 
+    // Prefer a Notion-provided summary over the LLM's when one is present
+    const existingSummary = artifact.summary?.trim();
+    const finalSummary =
+      existingSummary && existingSummary.length > 0
+        ? artifact.summary!
+        : analysis.summary;
+    if (existingSummary && existingSummary.length > 0) {
+      console.log(
+        `[archive] Using source summary for "${artifact.title}" (${existingSummary.length} chars)`
+      );
+    }
+
     // 3. Chunk
     const chunks = chunkArtifact(cleanText);
 
     // 3. Embed chunks + summary
     const textsToEmbed = [
-      analysis.summary,
+      finalSummary,
       ...chunks.map((c) => c.chunkText),
     ];
     const embeddings = await batchEmbed(textsToEmbed);
@@ -38,7 +50,7 @@ async function processOne(): Promise<boolean> {
     // 4. Save artifact processing result
     await archiveQueries.saveArtifactProcessingResult(artifact.id, {
       cleanText,
-      summary: analysis.summary,
+      summary: finalSummary,
       excerpt: analysis.excerpt,
       tags: analysis.tags,
       language: analysis.language,

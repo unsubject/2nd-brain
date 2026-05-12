@@ -13,14 +13,16 @@ export async function upsertArtifact(params: {
   tags: string[] | null;
   sourceSystem: string;
   sourceExternalId: string;
+  notionSummary?: string | null;
 }): Promise<{ id: string; created: boolean }> {
   const { rows } = await pool.query(
     `INSERT INTO public_artifact
        (user_id, type, title, slug, published_at, raw_source,
         canonical_url, series, series_position, tags,
-        source_system, source_external_id, source_last_synced_at,
+        source_system, source_external_id, summary,
+        source_last_synced_at,
         word_count, processing_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(),
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(),
              array_length(regexp_split_to_array(trim($6), '\s+'), 1),
              'pending')
      ON CONFLICT (source_system, source_external_id) DO UPDATE
@@ -32,6 +34,7 @@ export async function upsertArtifact(params: {
            series = EXCLUDED.series,
            series_position = EXCLUDED.series_position,
            tags = EXCLUDED.tags,
+           summary = COALESCE(EXCLUDED.summary, public_artifact.summary),
            word_count = EXCLUDED.word_count,
            source_last_synced_at = now(),
            updated_at = now(),
@@ -55,6 +58,7 @@ export async function upsertArtifact(params: {
       params.tags,
       params.sourceSystem,
       params.sourceExternalId,
+      params.notionSummary ?? null,
     ]
   );
   return { id: rows[0].id, created: rows[0].created };
@@ -65,6 +69,7 @@ export async function findPendingArtifact(): Promise<{
   raw_source: string;
   title: string;
   tags: string[] | null;
+  summary: string | null;
 } | null> {
   const { rows } = await pool.query(
     `UPDATE public_artifact
@@ -76,7 +81,7 @@ export async function findPendingArtifact(): Promise<{
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING id, raw_source, title, tags`
+     RETURNING id, raw_source, title, tags, summary`
   );
   return rows[0] || null;
 }

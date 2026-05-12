@@ -9,6 +9,34 @@ import { pickBody } from "./notion-export";
 
 const API_THROTTLE_MS = 350; // stay under Notion's 3 req/sec average
 
+// Per-database configuration. Notion databases differ in property names and
+// where the body content lives. Add an entry here keyed by the 32-hex
+// database id (no dashes, lowercase) to override defaults.
+interface DatabaseConfig {
+  urlProperty?: string;
+  tagsProperty?: string;
+  dateProperty?: string;
+  summaryProperty?: string;
+  bodyProperties?: string[]; // tried in order; first non-empty wins; falls back to page body
+  defaultType?: string;
+}
+
+const DATABASE_CONFIG: Record<string, DatabaseConfig> = {
+  // YouTube videos
+  "33811045597580e1b894f49b8d382ae1": {
+    urlProperty: "Canonical URL",
+    tagsProperty: "Keywords",
+    dateProperty: "Published Date",
+    summaryProperty: "Summary",
+    bodyProperties: ["Transcript", "Manually Uploaded Transcript"],
+    defaultType: "transcript",
+  },
+};
+
+function normalizeDatabaseId(id: string): string {
+  return id.replace(/-/g, "").toLowerCase();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -221,7 +249,7 @@ export interface NotionSyncResult {
   skipped: number;
   errors: number;
   total: number;
-  bodySource: { cleaned_body: number; page_body: number };
+  bodySource: Record<string, number>;
 }
 
 export async function syncNotionDatabase(
@@ -232,6 +260,7 @@ export async function syncNotionDatabase(
     throw new Error("NOTION_TOKEN is not set");
   }
   const notion = new Client({ auth: process.env.NOTION_TOKEN });
+  const config = DATABASE_CONFIG[normalizeDatabaseId(databaseId)] || {};
 
   // 1. Query all pages in the database
   const pages: PageObjectResponse[] = [];
@@ -249,12 +278,15 @@ export async function syncNotionDatabase(
     await sleep(API_THROTTLE_MS);
   } while (cursor);
 
-  console.log(`[archive] Notion API: fetched ${pages.length} pages from database ${databaseId}`);
+  console.log(
+    `[archive] Notion API: fetched ${pages.length} pages from database ${databaseId}` +
+      (Object.keys(config).length > 0 ? ` (config: ${JSON.stringify(config)})` : "")
+  );
 
   let imported = 0;
   let skipped = 0;
   let errors = 0;
-  const bodySource = { cleaned_body: 0, page_body: 0 };
+  const bodySource: Record<string, number> = {};
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
@@ -267,18 +299,33 @@ export async function syncNotionDatabase(
 
       const externalId = page.id.replace(/-/g, "");
 
-      // Fetch page body blocks → markdown
-      const pageBody = await fetchBlocksAsMarkdown(notion, page.id);
-
-      // Pick between Cleaned Body property and page body
-      const cleaned = getRichTextProperty(page, "Cleaned Body");
-      const picked = pickBody(pageBody, cleaned);
-      bodySource[picked.source]++;
+      // Decide body source — try configured properties first, only fetch page
+      // body if all of them are empty (saves a Notion API roundtrip per row).
+      let picked: { source: string; text: string };
+      if (config.bodyProperties && config.bodyProperties.length > 0) {
+        const candidates = config.bodyProperties.map((name) => ({
+          name,
+          text: getRichTextProperty(page, name),
+        }));
+        const firstNonEmpty = candidates.find(
+          (c) => c.text && c.text.trim().length > 0
+        );
+        if (firstNonEmpty) {
+          picked = { source: firstNonEmpty.name, text: firstNonEmpty.text! };
+        } else {
+          const pageBody = await fetchBlocksAsMarkdown(notion, page.id);
+          picked = { source: "page_body", text: pageBody };
+        }
+      } else {
+        // Default path (existing essay DBs): Cleaned Body property or page body
+        const pageBody = await fetchBlocksAsMarkdown(notion, page.id);
+        const cleaned = getRichTextProperty(page, "Cleaned Body");
+        picked = pickBody(pageBody, cleaned);
+      }
+      bodySource[picked.source] = (bodySource[picked.source] ?? 0) + 1;
 
       console.log(
-        `[archive] (${i + 1}/${pages.length}) "${title}" → ${picked.source} (${picked.text.length} chars${
-          cleaned ? `, cleaned=${cleaned.length}, page=${pageBody.length}` : ""
-        })`
+        `[archive] (${i + 1}/${pages.length}) "${title}" → ${picked.source} (${picked.text.length} chars)`
       );
 
       if (!picked.text.trim()) {
@@ -286,22 +333,33 @@ export async function syncNotionDatabase(
         continue;
       }
 
+      // Resolve property mappings from config (or defaults)
+      const canonicalUrl = getUrlProperty(page, config.urlProperty || "URL");
+      const tags = getMultiSelectProperty(page, config.tagsProperty || "Tags");
+      const publishedAt =
+        (config.dateProperty
+          ? getDateProperty(page, config.dateProperty)
+          : getDateProperty(page, "Published") || getDateProperty(page, "Date")) ||
+        (page.created_time ? new Date(page.created_time) : null);
+      const notionSummary = config.summaryProperty
+        ? getRichTextProperty(page, config.summaryProperty)
+        : null;
+      const type = config.defaultType || inferType(page);
+
       const result = await archiveQueries.upsertArtifact({
         userId,
-        type: inferType(page),
+        type,
         title,
         slug: slugify(title),
-        publishedAt:
-          getDateProperty(page, "Published") ||
-          getDateProperty(page, "Date") ||
-          (page.created_time ? new Date(page.created_time) : null),
+        publishedAt,
         rawSource: picked.text,
-        canonicalUrl: getUrlProperty(page, "URL"),
+        canonicalUrl,
         series: getSelectProperty(page, "Series"),
         seriesPosition: null,
-        tags: getMultiSelectProperty(page, "Tags"),
+        tags,
         sourceSystem: "notion",
         sourceExternalId: externalId,
+        notionSummary,
       });
 
       if (result.created) imported++;
@@ -313,7 +371,7 @@ export async function syncNotionDatabase(
   }
 
   console.log(
-    `[archive] Notion sync done: ${imported} imported, ${skipped} skipped, ${errors} errors, total ${pages.length}`
+    `[archive] Notion sync done: ${imported} imported, ${skipped} skipped, ${errors} errors, total ${pages.length}, body sources: ${JSON.stringify(bodySource)}`
   );
 
   return {
