@@ -34,7 +34,13 @@ export async function upsertArtifact(params: {
            series = EXCLUDED.series,
            series_position = EXCLUDED.series_position,
            tags = EXCLUDED.tags,
-           summary = COALESCE(EXCLUDED.summary, public_artifact.summary),
+           -- Invariant: when a row is pending, summary is either NULL or
+           -- source-provided. Never a stale prior LLM output.
+           summary = CASE
+             WHEN EXCLUDED.summary IS NOT NULL THEN EXCLUDED.summary
+             WHEN public_artifact.raw_source = EXCLUDED.raw_source THEN public_artifact.summary
+             ELSE NULL
+           END,
            word_count = EXCLUDED.word_count,
            source_last_synced_at = now(),
            updated_at = now(),
