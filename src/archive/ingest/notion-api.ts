@@ -21,17 +21,7 @@ interface DatabaseConfig {
   defaultType?: string;
 }
 
-const DATABASE_CONFIG: Record<string, DatabaseConfig> = {
-  // YouTube videos
-  "33811045597580e1b894f49b8d382ae1": {
-    urlProperty: "Canonical URL",
-    tagsProperty: "Keywords",
-    dateProperty: "Published Date",
-    summaryProperty: "Summary",
-    bodyProperties: ["Transcript", "Manually Uploaded Transcript"],
-    defaultType: "transcript",
-  },
-};
+const DATABASE_CONFIG: Record<string, DatabaseConfig> = {};
 
 function normalizeDatabaseId(id: string): string {
   return id.replace(/-/g, "").toLowerCase();
@@ -341,7 +331,7 @@ export async function syncNotionDatabase(
           ? getDateProperty(page, config.dateProperty)
           : getDateProperty(page, "Published") || getDateProperty(page, "Date")) ||
         (page.created_time ? new Date(page.created_time) : null);
-      const notionSummary = config.summaryProperty
+      const sourceSummary = config.summaryProperty
         ? getRichTextProperty(page, config.summaryProperty)
         : null;
       const type = config.defaultType || inferType(page);
@@ -359,7 +349,7 @@ export async function syncNotionDatabase(
         tags,
         sourceSystem: "notion",
         sourceExternalId: externalId,
-        notionSummary,
+        sourceSummary,
       });
 
       if (result.created) imported++;

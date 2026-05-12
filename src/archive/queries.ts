@@ -13,7 +13,7 @@ export async function upsertArtifact(params: {
   tags: string[] | null;
   sourceSystem: string;
   sourceExternalId: string;
-  notionSummary?: string | null;
+  sourceSummary?: string | null;
 }): Promise<{ id: string; created: boolean }> {
   const { rows } = await pool.query(
     `INSERT INTO public_artifact
@@ -64,7 +64,7 @@ export async function upsertArtifact(params: {
       params.tags,
       params.sourceSystem,
       params.sourceExternalId,
-      params.notionSummary ?? null,
+      params.sourceSummary ?? null,
     ]
   );
   return { id: rows[0].id, created: rows[0].created };
