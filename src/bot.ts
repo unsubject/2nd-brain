@@ -1,5 +1,4 @@
 import { Bot, webhookCallback } from "grammy";
-import { randomUUID } from "crypto";
 import express from "express";
 import { handleMessage } from "./capture";
 import { generateRssFeed } from "./feed";
@@ -107,34 +106,6 @@ export function startWebhook(
     console.log("Family bot webhook registered");
   }
 
-  app.post("/capture", express.json(), async (req, res) => {
-    const apiKey = process.env.CAPTURE_API_KEY;
-    if (!apiKey || req.headers.authorization !== `Bearer ${apiKey}`) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const { text, channel, channel_message_id, user_id } = req.body;
-    if (!text || !text.trim()) {
-      res.status(400).json({ error: "text is required" });
-      return;
-    }
-
-    try {
-      const result = await handleMessage({
-        userId: user_id || "default",
-        channel: channel || "email",
-        channelMessageId: channel_message_id || randomUUID(),
-        rawText: text.trim(),
-        receivedAt: new Date(),
-      });
-      res.json({ status: result.isSystemCommand ? "command" : "captured" });
-    } catch (err) {
-      console.error("Capture API error:", err);
-      res.status(500).json({ error: "Internal error" });
-    }
-  });
-
   app.get("/auth/google", (_req, res) => {
     const url = getAuthUrl();
     res.redirect(url);
@@ -157,7 +128,7 @@ export function startWebhook(
   });
 
   // Archive routes (bearer auth checked per-route by middleware)
-  const apiKey = process.env.CAPTURE_API_KEY;
+  const apiKey = process.env.ARCHIVE_API_KEY;
   const archiveRouter = archiveRoutes();
   app.use((req, res, next) => {
     if (req.path.startsWith("/archive")) {
