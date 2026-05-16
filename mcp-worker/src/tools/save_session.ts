@@ -43,10 +43,12 @@ export async function saveSessionHandler(
       const rows = await tx<Array<{ id: string }>>`
         INSERT INTO journal_entry (
           user_id, channel, chat_id, full_text, scope,
+          created_at, updated_at,
           stitch_window_start, stitch_window_end, processing_status
         )
         VALUES (
           ${env.BRAIN_USER_ID}, 'ai_chat', null, ${fullText}, ${scope},
+          now(), now(),
           now() - interval '15 minutes',
           now() - interval '15 minutes',
           'pending'
