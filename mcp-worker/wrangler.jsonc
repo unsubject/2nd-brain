@@ -7,17 +7,14 @@
   "observability": {
     "enabled": true
   },
-  // Hyperdrive wraps the Railway PG connection string. Create with:
-  //   wrangler hyperdrive create 2nd-brain-pg --connection-string="$RAILWAY_PG_URL"
-  // Then paste the returned id below.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "REPLACE_WITH_HYPERDRIVE_CONFIG_ID"
+      "id": "f38c11ac89704b7396d469cb0a0db889"
     }
   ]
-  // Secrets (set once per environment via `wrangler secret put`):
-  //   BRAIN_MCP_TOKEN   — bearer token for MCP clients (openssl rand -hex 32)
+  // Secrets set via CF dashboard (Workers & Pages → 2nd-brain-mcp → Settings → Variables):
+  //   BRAIN_MCP_TOKEN   — bearer token for MCP clients
   //   OPENAI_API_KEY    — for query embeddings in search_brain
   //   BRAIN_USER_ID     — single-tenant user UUID (v1)
 }
