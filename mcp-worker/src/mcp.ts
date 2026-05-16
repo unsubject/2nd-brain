@@ -30,7 +30,14 @@ export async function handleMcpRequest(
     return new Response('Use POST with JSON-RPC body', { status: 405 });
   }
   if (!checkBearer(request, env.BRAIN_MCP_TOKEN)) {
-    return new Response(null, { status: 401 });
+    const url = new URL(request.url);
+    const resourceMetadata = `${url.protocol}//${url.host}/.well-known/oauth-protected-resource`;
+    return new Response(null, {
+      status: 401,
+      headers: {
+        'WWW-Authenticate': `Bearer realm="2nd-brain", resource_metadata="${resourceMetadata}"`,
+      },
+    });
   }
 
   let body: any;

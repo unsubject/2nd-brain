@@ -6,7 +6,7 @@ export function checkBearer(request: Request, expectedToken: string): boolean {
   return constantTimeEqual(m[1], expectedToken);
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   const enc = new TextEncoder();
   const aBytes = enc.encode(a);

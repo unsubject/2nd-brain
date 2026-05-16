@@ -1,18 +1,26 @@
 import postgres from 'postgres';
 import type { Env } from './env';
 import { handleMcpRequest } from './mcp';
+import {
+  authServerMetadata,
+  protectedResourceMetadata,
+  registerClient,
+  authorize,
+  token,
+} from './oauth';
 
 export type { Env };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const path = url.pathname;
 
-    if (request.method === 'GET' && url.pathname === '/health') {
+    if (request.method === 'GET' && path === '/health') {
       return new Response('ok', { status: 200 });
     }
 
-    if (request.method === 'GET' && url.pathname === '/db-health') {
+    if (request.method === 'GET' && path === '/db-health') {
       const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, fetch_types: false });
       try {
         const rows = await sql<{ version: string }[]>`SELECT version()`;
@@ -24,7 +32,23 @@ export default {
       }
     }
 
-    if (url.pathname === '/mcp') {
+    if (request.method === 'GET' && path === '/.well-known/oauth-authorization-server') {
+      return authServerMetadata(request);
+    }
+    if (request.method === 'GET' && path === '/.well-known/oauth-protected-resource') {
+      return protectedResourceMetadata(request);
+    }
+    if (path === '/register') {
+      return registerClient(request);
+    }
+    if (path === '/authorize') {
+      return authorize(request, env);
+    }
+    if (path === '/token') {
+      return token(request, env);
+    }
+
+    if (path === '/mcp') {
       return handleMcpRequest(request, env, ctx);
     }
 
