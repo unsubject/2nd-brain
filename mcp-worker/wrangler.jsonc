@@ -16,5 +16,5 @@
   // Secrets set via CF dashboard (Workers & Pages → 2nd-brain-mcp → Settings → Variables):
   //   BRAIN_MCP_TOKEN   — bearer token for MCP clients
   //   OPENAI_API_KEY    — for query embeddings in search_brain
-  //   BRAIN_USER_ID     — single-tenant user UUID (v1)
+  //   BRAIN_USER_ID     — text id used by existing entries (e.g. Telegram numeric id "236871164")
 }
