@@ -131,13 +131,15 @@ export async function analyzeArtifact(
   return JSON.parse(content) as ArtifactProcessingResult;
 }
 
+const ENTITY_MAX_TOKENS = 8192;
+
 export async function extractEntities(
   title: string,
   cleanText: string
 ): Promise<ExtractedEntity[]> {
   const response = await openai.chat.completions.create({
     model: "gpt-5.4-nano",
-    max_completion_tokens: 2048,
+    max_completion_tokens: ENTITY_MAX_TOKENS,
     messages: [
       {
         role: "system",
@@ -159,7 +161,14 @@ export async function extractEntities(
     `[archive] entities tokens: in=${response.usage?.prompt_tokens} out=${response.usage?.completion_tokens}`
   );
 
-  const content = response.choices[0]?.message?.content;
+  const choice = response.choices[0];
+  if (choice?.finish_reason === "length") {
+    throw new Error(
+      `Entity extraction truncated at token cap (${ENTITY_MAX_TOKENS})`
+    );
+  }
+
+  const content = choice?.message?.content;
   if (!content) throw new Error("No content in entity extraction");
 
   const result = JSON.parse(content) as { entities?: ExtractedEntity[] };
