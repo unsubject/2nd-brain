@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "2nd-brain-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  // Hyperdrive wraps the Railway PG connection string. Create with:
+  //   wrangler hyperdrive create 2nd-brain-pg --connection-string="$RAILWAY_PG_URL"
+  // Then paste the returned id below.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_WITH_HYPERDRIVE_CONFIG_ID"
+    }
+  ]
+  // Secrets (set once per environment via `wrangler secret put`):
+  //   BRAIN_MCP_TOKEN   — bearer token for MCP clients (openssl rand -hex 32)
+  //   OPENAI_API_KEY    — for query embeddings in search_brain
+  //   BRAIN_USER_ID     — single-tenant user UUID (v1)
+}

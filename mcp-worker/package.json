@@ -1,0 +1,24 @@
+{
+  "name": "2nd-brain-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "postgres": "^3.4.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.34",
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.1",
+    "wrangler": "^3.78.0"
+  }
+}
