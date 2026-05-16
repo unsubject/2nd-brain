@@ -1,5 +1,7 @@
 import type { Env } from '../env';
 import { searchBrainHandler } from './search_brain';
+import { getEntryHandler } from './get_entry';
+import { listRecentHandler } from './list_recent';
 
 export type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -54,7 +56,7 @@ export const tools: Tool[] = [
       },
       required: ['entry_id'],
     },
-    handler: notImplemented('get_entry'),
+    handler: getEntryHandler,
   },
   {
     name: 'list_recent',
@@ -69,7 +71,7 @@ export const tools: Tool[] = [
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
       },
     },
-    handler: notImplemented('list_recent'),
+    handler: listRecentHandler,
   },
   {
     name: 'save_session',
