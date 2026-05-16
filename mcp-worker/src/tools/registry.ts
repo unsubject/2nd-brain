@@ -1,4 +1,5 @@
 import type { Env } from '../env';
+import { searchBrainHandler } from './search_brain';
 
 export type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -40,7 +41,7 @@ export const tools: Tool[] = [
       },
       required: ['query'],
     },
-    handler: notImplemented('search_brain'),
+    handler: searchBrainHandler,
   },
   {
     name: 'get_entry',
