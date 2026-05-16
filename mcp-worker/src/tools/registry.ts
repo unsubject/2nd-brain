@@ -2,6 +2,7 @@ import type { Env } from '../env';
 import { searchBrainHandler } from './search_brain';
 import { getEntryHandler } from './get_entry';
 import { listRecentHandler } from './list_recent';
+import { saveSessionHandler } from './save_session';
 
 export type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -14,13 +15,6 @@ export type Tool = {
   inputSchema: Record<string, unknown>;
   handler: (args: any, env: Env, ctx: ExecutionContext) => Promise<ToolResult>;
 };
-
-function notImplemented(name: string): Tool['handler'] {
-  return async () => ({
-    content: [{ type: 'text', text: `${name} is not yet implemented in this build` }],
-    isError: true,
-  });
-}
 
 export const tools: Tool[] = [
   {
@@ -76,7 +70,7 @@ export const tools: Tool[] = [
   {
     name: 'save_session',
     description:
-      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript.",
+      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript. Returns an entry_id; processing (tags, classification, embedding) is async and completes within ~30–60s.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -93,6 +87,6 @@ export const tools: Tool[] = [
       },
       required: ['title', 'summary'],
     },
-    handler: notImplemented('save_session'),
+    handler: saveSessionHandler,
   },
 ];
