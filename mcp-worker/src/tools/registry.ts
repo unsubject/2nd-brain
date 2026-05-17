@@ -47,11 +47,18 @@ export const tools: Tool[] = [
   {
     name: 'get_entry',
     description:
-      'Fetch a single journal entry by id, including full text, summary, tags, and linked entities. Use after a search_brain hit when the user wants the full content.',
+      "Fetch a single journal entry by id, including full text, summary, tags, and outbound links to people, calendar events, tasks, emails, public artifacts, and entities. Each link includes a resolved target_title (full_name / title / subject / display_name depending on target_type) so no second tool call is needed to identify the target. Links are filtered by min_confidence (default 0.5) and deduped by target_id keeping the highest-confidence row. Use after a search_brain hit when the user wants the full entry and its connections.",
     inputSchema: {
       type: 'object',
       properties: {
         entry_id: { type: 'string', format: 'uuid', description: 'journal_entry.id' },
+        min_confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          default: 0.5,
+          description: 'Minimum link confidence to return (default 0.5 — drops noisy same-day-as-event floor and similar low-signal links)',
+        },
       },
       required: ['entry_id'],
     },
