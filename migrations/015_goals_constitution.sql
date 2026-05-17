@@ -111,12 +111,14 @@ CREATE TABLE IF NOT EXISTS goal_amendments (
   status TEXT NOT NULL DEFAULT 'proposed'
     CHECK (status IN ('proposed','committed','withdrawn')),
   proposed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- cooldown_until is set by a BEFORE INSERT trigger below. We can't use
-  -- GENERATED ALWAYS AS (proposed_at + interval '72 hours') STORED because
-  -- timestamptz + interval is STABLE (timezone-dependent), and Postgres
-  -- requires generation expressions to be IMMUTABLE. The trigger gives
-  -- equivalent semantics — clients can't meaningfully override the value
-  -- because the trigger always overwrites.
+  -- cooldown_until is set by a BEFORE INSERT OR UPDATE trigger (see below).
+  -- We can't use GENERATED ALWAYS AS (proposed_at + interval '72 hours')
+  -- STORED because timestamptz + interval is STABLE (timezone-dependent),
+  -- and Postgres requires generation expressions to be IMMUTABLE.
+  --
+  -- The trigger restores the original invariant: clients cannot move the
+  -- cooldown on any code path — INSERT sets it from proposed_at, UPDATE
+  -- pins both proposed_at and cooldown_until back to their OLD values.
   cooldown_until TIMESTAMPTZ NOT NULL DEFAULT now(),
   committed_at TIMESTAMPTZ,
   CONSTRAINT goal_amendments_new_has_justification
@@ -127,14 +129,23 @@ CREATE TABLE IF NOT EXISTS goal_amendments (
 
 CREATE OR REPLACE FUNCTION set_goal_amendment_cooldown() RETURNS TRIGGER AS $$
 BEGIN
-  NEW.cooldown_until := NEW.proposed_at + interval '72 hours';
+  IF TG_OP = 'INSERT' THEN
+    NEW.cooldown_until := NEW.proposed_at + interval '72 hours';
+  ELSIF TG_OP = 'UPDATE' THEN
+    -- Pin both columns to their original values. No legitimate code path
+    -- in this repo updates them; the lock prevents accidental or hostile
+    -- bypass of the cooldown window. commit_amendment only updates
+    -- status, committed_at, and goal_id — those flow through normally.
+    NEW.proposed_at := OLD.proposed_at;
+    NEW.cooldown_until := OLD.cooldown_until;
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS goal_amendments_set_cooldown ON goal_amendments;
 CREATE TRIGGER goal_amendments_set_cooldown
-  BEFORE INSERT ON goal_amendments
+  BEFORE INSERT OR UPDATE ON goal_amendments
   FOR EACH ROW EXECUTE FUNCTION set_goal_amendment_cooldown();
 
 CREATE INDEX IF NOT EXISTS idx_goal_amendments_pending
