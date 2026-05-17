@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS undertakings (
   test_criteria TEXT NOT NULL,
   primary_goal_id UUID NOT NULL REFERENCES goals(id),
   -- Rare: an undertaking serving >1 goal. Postgres can't FK array elements;
-  -- handlers validate existence app-side.
+  -- handlers validate existence app-side (both create_undertaking and
+  -- update_undertaking).
   secondary_goal_ids UUID[] NOT NULL DEFAULT '{}',
   kind TEXT NOT NULL DEFAULT 'outcome'
     CHECK (kind IN ('outcome','habit_forming')),
@@ -110,17 +111,32 @@ CREATE TABLE IF NOT EXISTS goal_amendments (
   status TEXT NOT NULL DEFAULT 'proposed'
     CHECK (status IN ('proposed','committed','withdrawn')),
   proposed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- Generated, unbreakable: commit cannot happen before this except for
-  -- the founding-period bypass (kind='new' AND <3 lifetime committed new
-  -- amendments), checked server-side in commit_amendment.
-  cooldown_until TIMESTAMPTZ NOT NULL
-    GENERATED ALWAYS AS (proposed_at + interval '72 hours') STORED,
+  -- cooldown_until is set by a BEFORE INSERT trigger below. We can't use
+  -- GENERATED ALWAYS AS (proposed_at + interval '72 hours') STORED because
+  -- timestamptz + interval is STABLE (timezone-dependent), and Postgres
+  -- requires generation expressions to be IMMUTABLE. The trigger gives
+  -- equivalent semantics — clients can't meaningfully override the value
+  -- because the trigger always overwrites.
+  cooldown_until TIMESTAMPTZ NOT NULL DEFAULT now(),
   committed_at TIMESTAMPTZ,
   CONSTRAINT goal_amendments_new_has_justification
     CHECK (kind <> 'new' OR irreducibility_justification IS NOT NULL),
   CONSTRAINT goal_amendments_synthesize_has_sources
     CHECK (kind <> 'synthesize' OR cardinality(source_goal_ids) >= 2)
 );
+
+CREATE OR REPLACE FUNCTION set_goal_amendment_cooldown() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.cooldown_until := NEW.proposed_at + interval '72 hours';
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS goal_amendments_set_cooldown ON goal_amendments;
+CREATE TRIGGER goal_amendments_set_cooldown
+  BEFORE INSERT ON goal_amendments
+  FOR EACH ROW EXECUTE FUNCTION set_goal_amendment_cooldown();
+
 CREATE INDEX IF NOT EXISTS idx_goal_amendments_pending
   ON goal_amendments (proposed_at DESC) WHERE status = 'proposed';
 CREATE INDEX IF NOT EXISTS idx_goal_amendments_goal

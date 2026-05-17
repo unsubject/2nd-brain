@@ -62,6 +62,29 @@ export async function updateUndertakingHandler(
 
   const sql = getDb(env);
   try {
+    // Validate secondary_goal_ids before any write — mirrors
+    // create_undertaking's validation since Postgres can't FK array
+    // elements. Without this, an update could leave an undertaking
+    // pointing at retired, missing, or another user's goals, silently
+    // corrupting the graph returned by list_undertakings/get_undertaking.
+    if (
+      fields.secondary_goal_ids !== undefined &&
+      fields.secondary_goal_ids.length > 0
+    ) {
+      const literal = `{${fields.secondary_goal_ids.join(',')}}`;
+      const found = await sql<Array<{ id: string }>>`
+        SELECT id FROM goals
+         WHERE user_id = ${env.BRAIN_USER_ID}
+           AND id = ANY(${literal}::uuid[])
+           AND status = 'active'
+      `;
+      if (found.length !== fields.secondary_goal_ids.length) {
+        return errorResult(
+          'One or more secondary goals not found, not active, or not yours',
+        );
+      }
+    }
+
     const result = await sql<Array<{ id: string }>>`
       UPDATE undertakings SET
         name          = COALESCE(${fields.name          ?? null}::text, name),

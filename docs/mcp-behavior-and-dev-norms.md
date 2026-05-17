@@ -96,7 +96,7 @@ The goal system is the user's **constitution**: few, stable, crisis-rooted state
 - **`list_pending_amendments`** — when the user asks "do I have any pending goal changes", or after a multi-day absence where they may have left an amendment in cooldown.
 - **`list_undertakings`** / **`get_undertaking`** — when the user wants to see what concrete efforts are in flight under their goals. Filter by `goal_id` when zooming on one goal's portfolio.
 - **`create_undertaking`** — when the user describes a focused effort they want to commit to under an existing goal. Walk them through purpose / outcome / test_criteria explicitly; reject vague ones. For habit-forming kind, the test_criteria should describe cadence + tolerance.
-- **`update_undertaking`** — partial update; most common use is attaching a `gtasks_parent_id` once the Google Tasks parent has been created, or marking status='completed' / 'sleeping'.
+- **`update_undertaking`** — partial update; most common use is attaching a `gtasks_parent_id` once the Google Tasks parent has been created, or marking status='completed' / 'sleeping'. If `secondary_goal_ids` is provided, the same active-goal-belongs-to-this-user validation as `create_undertaking` runs.
 - **`start_cycle`** — start a new 4-week cycle on a habit-forming undertaking. Refuses if another cycle is already active — close it first.
 - **`close_cycle`** — at the end of a 4-week window. Capture streak data (typically queried from Google Tasks subtasks under the undertaking's `gtasks_parent_id`) and reformulation notes (what to change about the design next cycle). Does NOT auto-start the next cycle — that's the user's call.
 
@@ -119,7 +119,7 @@ A few hard rules:
 
 ### Worker boundaries
 
-- The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), and now `goals`, `undertakings`, `undertaking_cycles`, `goal_amendments` (this PR). Any further new write target needs a deliberate decision and a doc update here.
+- The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), and now `goals`, `undertakings`, `undertaking_cycles`, `goal_amendments` (PR #49). Any further new write target needs a deliberate decision and a doc update here.
 - **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (tags, classification, embedding) in a single place.
 - The Worker should not own its own scheduled jobs in v1. If something needs to run periodically, it lives in the Node monolith's scheduler.
 
@@ -182,7 +182,8 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 
 - Per-user data tables stamp `user_id TEXT NOT NULL` from `env.BRAIN_USER_ID` (e.g. `journal_entry`, `task_ref`, `goals`, `undertakings`, `goal_amendments`). `editorial_pick` is the exception — it's training-signal storage and the upstream candidates are organization-wide.
 - Schema changes (new columns, new tables) live in `migrations/` and are run by the Node monolith on boot. The Worker never runs migrations.
-- Constraints belong in the schema, not just the handler. Examples shipped this PR: `goals.crisis_origin NOT NULL`, the `goals_merge_consistency` CHECK, the partial unique index on `undertaking_cycles` enforcing one-active-per-undertaking, and `goal_amendments.cooldown_until` as a `GENERATED ALWAYS … STORED` column so clients can't override it.
+- Constraints belong in the schema, not just the handler. Examples shipped in PR #49: `goals.crisis_origin NOT NULL`, the `goals_merge_consistency` CHECK, the partial unique index on `undertaking_cycles` enforcing one-active-per-undertaking, and `goal_amendments.cooldown_until` set by a `BEFORE INSERT` trigger that writes `proposed_at + interval '72 hours'`. (The original plan called for a `GENERATED ALWAYS … STORED` column, but PG requires generation expressions to be IMMUTABLE and `timestamptz + interval` is STABLE — the trigger has equivalent semantics: clients can't meaningfully override the value.)
+- Array foreign keys are enforced app-side. Postgres can't FK individual elements of a `uuid[]`, so any handler accepting an array of foreign UUIDs (e.g. `create_undertaking.secondary_goal_ids`, `update_undertaking.secondary_goal_ids`, `propose_amendment.source_goal_ids`) must `SELECT ... WHERE id = ANY(...)` and refuse the write if any ID fails to resolve to an active row owned by the current user.
 
 ### What lives where
 
