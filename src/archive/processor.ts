@@ -175,3 +175,52 @@ export async function extractEntities(
   const result = JSON.parse(content) as { entities?: ExtractedEntity[] };
   return Array.isArray(result.entities) ? result.entities : [];
 }
+
+const JOURNAL_ENTITY_MAX_TOKENS = 2048;
+
+export async function extractEntitiesFromJournal(
+  fullText: string,
+  tags: string[] | null
+): Promise<ExtractedEntity[]> {
+  const tagHint = tags?.length
+    ? `\nTags the user attached (use as context, not as canonical entities): ${tags.join(", ")}.`
+    : "";
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-5.4-nano",
+    max_completion_tokens: JOURNAL_ENTITY_MAX_TOKENS,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You extract named entities from a private journal entry. Short conversational notes are normal — extract the people, organizations, named concepts/works the writer is talking about or interacting with, even from brief mentions. Skip incidental geography (e.g. 'Hong Kong' as a background location is a 'place' but should be assigned low salience; only flag a place as salient when it's the topic). Do not invent entities that are not in the text. Set salience to reflect how central each entity is to what the writer is actually saying (1.0 = the topic; 0.3 = mentioned in passing).",
+      },
+      {
+        role: "user",
+        content: `Extract named entities from this journal entry:${tagHint}\n\n${fullText.slice(0, 10000)}`,
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: ENTITY_SCHEMA,
+    },
+  });
+
+  const choice = response.choices[0];
+
+  console.log(
+    `[journal] entities tokens: in=${response.usage?.prompt_tokens} out=${response.usage?.completion_tokens} finish=${choice?.finish_reason}`
+  );
+
+  if (choice?.finish_reason === "length") {
+    throw new Error(
+      `Journal entity extraction truncated: in=${response.usage?.prompt_tokens} out=${response.usage?.completion_tokens} cap=${JOURNAL_ENTITY_MAX_TOKENS}`
+    );
+  }
+
+  const content = choice?.message?.content;
+  if (!content) throw new Error("No content in journal entity extraction");
+
+  const result = JSON.parse(content) as { entities?: ExtractedEntity[] };
+  return Array.isArray(result.entities) ? result.entities : [];
+}

@@ -14,6 +14,11 @@
 //   the title would leak. Personal readers see everything via spillover.
 
 import { pool } from "../db/client";
+import {
+  extractEntitiesFromJournal,
+  type ExtractedEntity,
+} from "../archive/processor";
+import { upsertEntity } from "../archive/queries";
 
 interface LinkableEntry {
   id: string;
@@ -63,56 +68,122 @@ async function insertLinks(links: LinkRow[]): Promise<void> {
   );
 }
 
-async function linkMentionedContacts(entry: LinkableEntry): Promise<LinkRow[]> {
+function tokenize(name: string): Set<string> {
+  return new Set(
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 0)
+  );
+}
+
+interface ContactMatch {
+  contactId: string;
+  contactName: string;
+  jaccard: number;
+}
+
+// Match an extracted person name against a contact list using token-set Jaccard
+// with a min-overlap guard. Returns the best contact if unambiguous; null if
+// no match or if multiple contacts tied at the top score (ambiguous → skip).
+//
+// Algorithm:
+//   - tokenize both names (strip punctuation, lowercase, split on whitespace)
+//   - require at least min(2, |extracted|) overlapping tokens (so single-token
+//     "Frances" can still match "Frances Li", but "France" can't match "Lee Pak Hong")
+//   - score remaining candidates by Jaccard
+//   - on a tie at the top, return null (don't guess)
+function matchPersonByTokens(
+  extractedName: string,
+  contacts: Array<{ id: string; full_name: string }>
+): ContactMatch | null {
+  const extracted = tokenize(extractedName);
+  if (extracted.size === 0) return null;
+  const minOverlap = Math.min(2, extracted.size);
+
+  let best: ContactMatch | null = null;
+  let tiedCount = 0;
+
+  for (const c of contacts) {
+    const contactSet = tokenize(c.full_name);
+    if (contactSet.size === 0) continue;
+
+    let intersection = 0;
+    for (const t of extracted) if (contactSet.has(t)) intersection++;
+    if (intersection < minOverlap) continue;
+
+    const union = extracted.size + contactSet.size - intersection;
+    const jaccard = union === 0 ? 0 : intersection / union;
+
+    if (!best || jaccard > best.jaccard) {
+      best = { contactId: c.id, contactName: c.full_name, jaccard };
+      tiedCount = 1;
+    } else if (jaccard === best.jaccard) {
+      tiedCount++;
+    }
+  }
+
+  return tiedCount > 1 ? null : best;
+}
+
+async function linkMentionedContacts(
+  entry: LinkableEntry,
+  entities: ExtractedEntity[]
+): Promise<LinkRow[]> {
+  const personEntities = entities.filter((e) => e.entity_type === "person");
+  if (personEntities.length === 0) return [];
+
   const { rows: contacts } = await pool.query(
     `SELECT id, full_name FROM person_ref WHERE user_id = 'default'`
   );
 
-  const textLower = entry.full_text.toLowerCase();
   const links: LinkRow[] = [];
+  const linkedContactIds = new Set<string>();
 
-  for (const contact of contacts) {
-    const name = contact.full_name as string;
-    if (name.length < 3) continue;
-
-    // Check for name mention with word boundary awareness
-    const nameLower = name.toLowerCase();
-
-    // Match full name or last name (if multi-word) in entry text
-    let matched = false;
-    if (textLower.includes(nameLower)) {
-      matched = true;
-    } else {
-      const nameWords = nameLower.split(/\s+/);
-      if (nameWords.length > 1) {
-        // Try last name match (must be at least 4 chars to avoid false positives)
-        const lastName = nameWords[nameWords.length - 1];
-        if (lastName.length >= 4 && textLower.includes(lastName)) {
-          matched = true;
-        }
+  for (const entity of personEntities) {
+    // Try the canonical display_name first, then each alias.
+    const candidates = [entity.display_name, ...(entity.aliases ?? [])];
+    let match: ContactMatch | null = null;
+    let matchedVia = "";
+    for (const cand of candidates) {
+      const m = matchPersonByTokens(cand, contacts);
+      if (m) {
+        match = m;
+        matchedVia = cand;
+        break;
       }
     }
+    if (!match) continue;
+    if (linkedContactIds.has(match.contactId)) continue;
+    linkedContactIds.add(match.contactId);
 
-    if (matched) {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "person_ref",
-        targetId: contact.id,
-        linkType: "mentions_person",
-        confidence: 0.8,
-        explanation: `Entry text mentions "${name}"`,
-      });
-    }
+    // Confidence floor 0.5 (the get_entry default filter), scaled by LLM salience.
+    const confidence = 0.5 + 0.4 * Math.max(0, Math.min(1, entity.salience));
+
+    links.push({
+      sourceType: "journal_entry",
+      sourceId: entry.id,
+      targetType: "person_ref",
+      targetId: match.contactId,
+      linkType: "mentions_person",
+      confidence,
+      explanation: `Entity "${matchedVia}" (salience ${entity.salience.toFixed(2)}) matched contact "${match.contactName}" (jaccard ${match.jaccard.toFixed(2)})`,
+    });
   }
 
   return links;
 }
 
 async function linkNearbyCalendarEvents(
-  entry: LinkableEntry
+  entry: LinkableEntry,
+  entities: ExtractedEntity[]
 ): Promise<LinkRow[]> {
-  // Find calendar events on the same day as the entry
+  // Date-window query is unchanged — the gating principle is "same-day events
+  // are a candidate set." But the matcher is now entity-driven, not substring:
+  // only emit relates_to_event when an extracted entity's tokens overlap the
+  // event title. The old confidence-0.3 same_day_as_event floor is gone —
+  // calendar-only coincidence is noise.
   const entryDate = entry.created_at;
   const dayStart = new Date(entryDate);
   dayStart.setHours(0, 0, 0, 0);
@@ -120,74 +191,83 @@ async function linkNearbyCalendarEvents(
   dayEnd.setHours(23, 59, 59, 999);
 
   const { rows: events } = await pool.query(
-    `SELECT id, title, location, scope FROM calendar_event_ref
+    `SELECT id, title FROM calendar_event_ref
      WHERE user_id = 'default'
        AND start_at >= $1 AND start_at <= $2`,
     [dayStart, dayEnd]
   );
+  if (events.length === 0) return [];
 
-  const textLower = entry.full_text.toLowerCase();
-  const links: LinkRow[] = [];
-
-  for (const event of events) {
-    const titleLower = (event.title as string).toLowerCase();
-    const titleWords = titleLower
-      .split(/\s+/)
-      .filter((w: string) => w.length >= 4);
-    const mentionsTitle = titleWords.some((w: string) =>
-      textLower.includes(w)
-    );
-
-    const location = (event.location as string | null) || "";
-    const locationLower = location.toLowerCase();
-    const locationWords = locationLower
-      .split(/[,\s]+/)
-      .filter((w: string) => w.length >= 4);
-    const mentionsLocation = locationWords.some((w: string) =>
-      textLower.includes(w)
-    );
-
-    if (mentionsTitle && mentionsLocation) {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "calendar_event_ref",
-        targetId: event.id,
-        linkType: "relates_to_event",
-        confidence: 0.9,
-        explanation: `Entry mentions event "${event.title}" and location "${location}"`,
-      });
-    } else if (mentionsTitle) {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "calendar_event_ref",
-        targetId: event.id,
-        linkType: "relates_to_event",
-        confidence: 0.7,
-        explanation: `Entry on same day mentions event "${event.title}"`,
-      });
-    } else if (mentionsLocation) {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "calendar_event_ref",
-        targetId: event.id,
-        linkType: "relates_to_location",
-        confidence: 0.7,
-        explanation: `Entry mentions event location "${location}"`,
-      });
-    } else {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "calendar_event_ref",
-        targetId: event.id,
-        linkType: "same_day_as_event",
-        confidence: 0.3,
-        explanation: `Entry created on same day as event "${event.title}"`,
-      });
+  // Union of tokens across all extracted entity names (skip 'place' — too
+  // background-y; "Hong Kong" shouldn't match every HK event).
+  const entityTokens = new Set<string>();
+  for (const e of entities) {
+    if (e.entity_type === "place") continue;
+    for (const t of tokenize(e.display_name)) entityTokens.add(t);
+    for (const alias of e.aliases ?? []) {
+      for (const t of tokenize(alias)) entityTokens.add(t);
     }
+  }
+  if (entityTokens.size === 0) return [];
+
+  const links: LinkRow[] = [];
+  for (const event of events) {
+    const titleTokens = new Set(
+      Array.from(tokenize(event.title as string)).filter((t) => t.length >= 4)
+    );
+    if (titleTokens.size === 0) continue;
+
+    let overlap = 0;
+    for (const t of titleTokens) if (entityTokens.has(t)) overlap++;
+    if (overlap === 0) continue;
+
+    // Confidence = fraction of title tokens covered, floored at 0.6 (above the
+    // get_entry default filter so any match makes it through).
+    const confidence = Math.max(0.6, overlap / titleTokens.size);
+    links.push({
+      sourceType: "journal_entry",
+      sourceId: entry.id,
+      targetType: "calendar_event_ref",
+      targetId: event.id,
+      linkType: "relates_to_event",
+      confidence,
+      explanation: `Extracted entities overlap event title "${event.title}" by ${overlap}/${titleTokens.size} token(s)`,
+    });
+  }
+
+  return links;
+}
+
+async function linkMentionedEntities(
+  entry: LinkableEntry,
+  entities: ExtractedEntity[]
+): Promise<LinkRow[]> {
+  const linkableEntities = entities.filter(
+    (e) =>
+      e.entity_type === "organization" ||
+      e.entity_type === "concept" ||
+      e.entity_type === "work"
+  );
+  if (linkableEntities.length === 0) return [];
+
+  const links: LinkRow[] = [];
+  for (const entity of linkableEntities) {
+    const entityRefId = await upsertEntity(
+      "default",
+      entity.entity_type,
+      entity.display_name,
+      entity.aliases ?? []
+    );
+    const confidence = 0.5 + 0.4 * Math.max(0, Math.min(1, entity.salience));
+    links.push({
+      sourceType: "journal_entry",
+      sourceId: entry.id,
+      targetType: "entity_ref",
+      targetId: entityRefId,
+      linkType: "mentions_entity",
+      confidence,
+      explanation: `Entry mentions ${entity.entity_type} "${entity.display_name}" (salience ${entity.salience.toFixed(2)})`,
+    });
   }
 
   return links;
@@ -330,9 +410,23 @@ async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
 
 export async function generateLinks(entry: LinkableEntry): Promise<void> {
   try {
+    // One LLM call up front; reused by every entity-driven matcher.
+    let entities: ExtractedEntity[] = [];
+    try {
+      entities = await extractEntitiesFromJournal(entry.full_text, entry.tags);
+    } catch (err) {
+      // Entity extraction failure shouldn't kill embedding-based linkers —
+      // log and proceed with an empty entity list.
+      console.error(
+        `[linker] entity extraction failed for entry ${entry.id}, continuing without entity-driven links:`,
+        err
+      );
+    }
+
     const results = await Promise.all([
-      linkMentionedContacts(entry),
-      linkNearbyCalendarEvents(entry),
+      linkMentionedContacts(entry, entities),
+      linkNearbyCalendarEvents(entry, entities),
+      linkMentionedEntities(entry, entities),
       linkRelatedTasks(entry),
       linkRelatedEmails(entry),
       linkRelatedArtifacts(entry),
@@ -342,7 +436,7 @@ export async function generateLinks(entry: LinkableEntry): Promise<void> {
     if (links.length > 0) {
       const byType: Record<string, number> = {};
       for (const l of links) {
-        byType[l.targetType] = (byType[l.targetType] || 0) + 1;
+        byType[l.linkType] = (byType[l.linkType] || 0) + 1;
       }
       const breakdown = Object.entries(byType)
         .map(([t, n]) => `${t}=${n}`)

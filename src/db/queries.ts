@@ -422,6 +422,7 @@ export async function getLinksForRecentEntries(
         WHEN 'calendar_event_ref' THEN ce.scope
         WHEN 'task_ref' THEN tr.scope
         WHEN 'email_ref' THEN er.scope
+        WHEN 'entity_ref' THEN je.scope
         ELSE 'personal'
       END = ANY($${params.length})
     )`;
@@ -434,6 +435,7 @@ export async function getLinksForRecentEntries(
               WHEN 'task_ref' THEN tr.title
               WHEN 'email_ref' THEN er.subject
               WHEN 'person_ref' THEN pr.full_name
+              WHEN 'entity_ref' THEN ent.display_name
             END AS target_title,
             CASE le.target_type
               WHEN 'public_artifact' THEN pa.published_at
@@ -449,6 +451,7 @@ export async function getLinksForRecentEntries(
      LEFT JOIN task_ref tr ON le.target_type = 'task_ref' AND tr.id = le.target_id
      LEFT JOIN email_ref er ON le.target_type = 'email_ref' AND er.id = le.target_id
      LEFT JOIN person_ref pr ON le.target_type = 'person_ref' AND pr.id = le.target_id
+     LEFT JOIN entity_ref ent ON le.target_type = 'entity_ref' AND ent.id = le.target_id
      WHERE je.created_at >= $1
        ${sourceFilter}
        AND (le.confidence IS NULL OR le.confidence >= 0.5)
