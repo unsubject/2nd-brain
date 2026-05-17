@@ -23,7 +23,7 @@ async function processOne(): Promise<boolean> {
       artifact.tags
     );
 
-    // Prefer a Notion-provided summary over the LLM's when one is present
+    // Prefer a source-provided summary over the LLM's when one is present
     const existingSummary = artifact.summary?.trim();
     const finalSummary =
       existingSummary && existingSummary.length > 0
