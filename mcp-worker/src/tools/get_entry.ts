@@ -58,6 +58,11 @@ export async function getEntryHandler(
     // For a family-scope entry, only family-scope targets may be returned —
     // otherwise personal contact/task/email/calendar titles leak through.
     // Personal-scope entries see both scopes (spillover convention).
+    //
+    // postgres-js can't bind a JS array inline as a typed PG array (it
+    // serializes ['personal','family'] as the literal text 'personal,family'
+    // and PG rejects it as malformed). Use the sql() helper, which expands
+    // an array into ($1,$2,...) for IN-clause use.
     const allowedTargetScopes =
       e.scope === 'family' ? ['family'] : ['personal', 'family'];
 
@@ -89,7 +94,7 @@ export async function getEntryHandler(
              WHEN 'email_ref'          THEN em.scope
              WHEN 'entity_ref'         THEN ${e.scope}::text
              ELSE 'personal'
-           END = ANY(${allowedTargetScopes}::text[])
+           END IN ${sql(allowedTargetScopes)}
          )
        ORDER BY le.confidence DESC NULLS LAST, le.link_type
     `;

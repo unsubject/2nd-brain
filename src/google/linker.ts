@@ -408,45 +408,56 @@ async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
   });
 }
 
+// Core link-generation: throws on any failure (DB error, OpenAI failure
+// outside the entity-extraction branch, etc). Callers in the live worker
+// path use generateLinks() which catches and logs; the backfill script
+// uses this directly so it can count failures and exit non-zero.
+export async function generateLinksStrict(entry: LinkableEntry): Promise<void> {
+  // One LLM call up front; reused by every entity-driven matcher.
+  let entities: ExtractedEntity[] = [];
+  try {
+    entities = await extractEntitiesFromJournal(entry.full_text, entry.tags);
+  } catch (err) {
+    // Entity extraction failure shouldn't kill embedding-based linkers —
+    // log and proceed with an empty entity list.
+    console.error(
+      `[linker] entity extraction failed for entry ${entry.id}, continuing without entity-driven links:`,
+      err
+    );
+  }
+
+  const results = await Promise.all([
+    linkMentionedContacts(entry, entities),
+    linkNearbyCalendarEvents(entry, entities),
+    linkMentionedEntities(entry, entities),
+    linkRelatedTasks(entry),
+    linkRelatedEmails(entry),
+    linkRelatedArtifacts(entry),
+  ]);
+  const links = results.flat();
+  await insertLinks(links);
+  if (links.length > 0) {
+    const byType: Record<string, number> = {};
+    for (const l of links) {
+      byType[l.linkType] = (byType[l.linkType] || 0) + 1;
+    }
+    const breakdown = Object.entries(byType)
+      .map(([t, n]) => `${t}=${n}`)
+      .join(", ");
+    console.log(
+      `[linker] entry ${entry.id}: ${links.length} link(s) written (${breakdown})`
+    );
+  }
+}
+
+// Wrapper used by the live worker path: link generation is non-critical
+// for journal processing, so swallow failures here. For backfills that
+// need failure counts and a non-zero exit, call generateLinksStrict
+// directly.
 export async function generateLinks(entry: LinkableEntry): Promise<void> {
   try {
-    // One LLM call up front; reused by every entity-driven matcher.
-    let entities: ExtractedEntity[] = [];
-    try {
-      entities = await extractEntitiesFromJournal(entry.full_text, entry.tags);
-    } catch (err) {
-      // Entity extraction failure shouldn't kill embedding-based linkers —
-      // log and proceed with an empty entity list.
-      console.error(
-        `[linker] entity extraction failed for entry ${entry.id}, continuing without entity-driven links:`,
-        err
-      );
-    }
-
-    const results = await Promise.all([
-      linkMentionedContacts(entry, entities),
-      linkNearbyCalendarEvents(entry, entities),
-      linkMentionedEntities(entry, entities),
-      linkRelatedTasks(entry),
-      linkRelatedEmails(entry),
-      linkRelatedArtifacts(entry),
-    ]);
-    const links = results.flat();
-    await insertLinks(links);
-    if (links.length > 0) {
-      const byType: Record<string, number> = {};
-      for (const l of links) {
-        byType[l.linkType] = (byType[l.linkType] || 0) + 1;
-      }
-      const breakdown = Object.entries(byType)
-        .map(([t, n]) => `${t}=${n}`)
-        .join(", ");
-      console.log(
-        `[linker] entry ${entry.id}: ${links.length} link(s) written (${breakdown})`
-      );
-    }
+    await generateLinksStrict(entry);
   } catch (err) {
-    // Link generation is non-critical — log and continue
     console.error(`Link generation error for entry ${entry.id}:`, err);
   }
 }

@@ -9,7 +9,7 @@
 // Idempotent: re-running just re-wipes and re-emits the same link types.
 
 import { pool } from "../src/db/client";
-import { generateLinks } from "../src/google/linker";
+import { generateLinksStrict } from "../src/google/linker";
 
 // Link types this script regenerates (and therefore wipes first to avoid
 // stacking old + new rows on the unique index).
@@ -63,7 +63,10 @@ async function main() {
   let failed = 0;
   for (const row of rows) {
     try {
-      await generateLinks({
+      // Strict variant throws on any failure so the script can count it.
+      // The default generateLinks wrapper catches internally — every
+      // iteration would look successful even when nothing got written.
+      await generateLinksStrict({
         id: row.id,
         full_text: row.full_text,
         tags: row.tags ?? [],
@@ -77,6 +80,7 @@ async function main() {
     }
   }
   console.log(`[relink] done: ${succeeded} ok, ${failed} failed`);
+  if (failed > 0) process.exitCode = 1;
 }
 
 main()
