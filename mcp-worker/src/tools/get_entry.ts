@@ -52,6 +52,15 @@ export async function getEntryHandler(
     }
     const e = entries[0];
 
+    // Scope filter mirrors src/db/queries.ts → getLinksForRecentEntries.
+    // link_edge rows are written scope-agnostic by the linker (see file
+    // header of src/google/linker.ts); reader-side enforcement lives here.
+    // For a family-scope entry, only family-scope targets may be returned —
+    // otherwise personal contact/task/email/calendar titles leak through.
+    // Personal-scope entries see both scopes (spillover convention).
+    const allowedTargetScopes =
+      e.scope === 'family' ? ['family'] : ['personal', 'family'];
+
     const linkRows = await sql<
       Array<{
         target_id: string;
@@ -73,6 +82,15 @@ export async function getEntryHandler(
         LEFT JOIN entity_ref         er ON le.target_type='entity_ref'         AND er.id = le.target_id
        WHERE le.source_id = ${entry_id} AND le.source_type='journal_entry'
          AND le.confidence >= ${minConfidence}
+         AND (
+           CASE le.target_type
+             WHEN 'calendar_event_ref' THEN c.scope
+             WHEN 'task_ref'           THEN t.scope
+             WHEN 'email_ref'          THEN em.scope
+             WHEN 'entity_ref'         THEN ${e.scope}::text
+             ELSE 'personal'
+           END = ANY(${allowedTargetScopes}::text[])
+         )
        ORDER BY le.confidence DESC NULLS LAST, le.link_type
     `;
 
