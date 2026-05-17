@@ -112,7 +112,8 @@ async function processOne(): Promise<boolean> {
     return true;
   } catch (err) {
     console.error(`[archive] Error processing "${artifact.title}":`, err);
-    await archiveQueries.markArtifactError(artifact.id);
+    const message = err instanceof Error ? err.message : String(err);
+    await archiveQueries.markArtifactError(artifact.id, message);
     return true;
   }
 }

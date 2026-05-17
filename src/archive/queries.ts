@@ -115,6 +115,7 @@ export async function saveArtifactProcessingResult(
          embedding = $7::vector,
          embedding_model = $8,
          processing_status = 'processed',
+         last_error = NULL,
          updated_at = now()
      WHERE id = $1`,
     [
@@ -210,12 +211,17 @@ export async function clearArtifactEntities(artifactId: string): Promise<void> {
   );
 }
 
-export async function markArtifactError(id: string): Promise<void> {
+export async function markArtifactError(
+  id: string,
+  errorMessage: string
+): Promise<void> {
   await pool.query(
     `UPDATE public_artifact
-     SET processing_status = 'error', updated_at = now()
+     SET processing_status = 'error',
+         last_error = $2,
+         updated_at = now()
      WHERE id = $1`,
-    [id]
+    [id, errorMessage]
   );
 }
 
@@ -493,7 +499,8 @@ export async function getProcessingDiagnostics(): Promise<{
 export async function resetErroredArtifacts(): Promise<number> {
   const { rowCount } = await pool.query(
     `UPDATE public_artifact
-     SET processing_status = 'pending'
+     SET processing_status = 'pending',
+         last_error = NULL
      WHERE processing_status IN ('error', 'processing')`
   );
   return rowCount ?? 0;
