@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths:
       - 'mcp-worker/**'
+      # Docs bundled into the Worker via src/resources.ts. Allowlist
+      # per-file (not docs/**/*.md) so the bundled surface stays
+      # auditable from this workflow — if you import a doc in
+      # mcp-worker/src/resources.ts, add it here too.
+      - 'docs/goal-amendment-interview.md'
       - '.github/workflows/deploy-mcp-worker.yml'
   workflow_dispatch:
 

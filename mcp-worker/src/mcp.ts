@@ -1,6 +1,7 @@
 import type { Env } from './env';
 import { checkBearer } from './auth';
 import { tools } from './tools/registry';
+import { listResources, readResource, ResourceNotFoundError } from './resources';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_INFO = { name: '2nd-brain', version: '0.0.1' };
@@ -13,7 +14,9 @@ Use save_session ONLY when the user explicitly asks ("save this", "log this", "s
 
 Use get_entry to follow up on a search hit. Use list_recent for "what have I been thinking about this week".
 
-The journal is private — treat with discretion. Entries can include emotional venting and rough takes. Search is fuzzy: similarity below ~0.3 is probably noise, above ~0.5 is worth attention.`;
+The journal is private — treat with discretion. Entries can include emotional venting and rough takes. Search is fuzzy: similarity below ~0.3 is probably noise, above ~0.5 is worth attention.
+
+Reference material is exposed as MCP resources (call resources/list to discover). If the user asks about goals, the constitution, or amendments and your client supports resources, read \`2nd-brain://protocol/goal-amendment\` before calling any propose/commit_*_amendment tool — it contains the executable interview protocol. If resources aren't available, the registry descriptions of those tools point at the same protocol by section number.`;
 
 class RpcError extends Error {
   constructor(public code: number, message: string, public data?: unknown) {
@@ -62,6 +65,9 @@ export async function handleMcpRequest(
     if (err instanceof RpcError) {
       return rpcResponse(body.id, undefined, { code: err.code, message: err.message, data: err.data });
     }
+    if (err instanceof ResourceNotFoundError) {
+      return rpcResponse(body.id, undefined, { code: -32602, message: err.message });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return rpcResponse(body.id, undefined, { code: -32603, message: `Internal: ${msg}` });
   }
@@ -77,7 +83,7 @@ async function dispatch(
     case 'initialize':
       return {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: SERVER_INFO,
         instructions: INSTRUCTIONS,
       };
@@ -100,6 +106,15 @@ async function dispatch(
       const tool = tools.find((t) => t.name === name);
       if (!tool) throw new RpcError(-32602, `Unknown tool: ${name}`);
       return await tool.handler(args, env, ctx);
+    }
+    case 'resources/list':
+      return { resources: listResources() };
+    case 'resources/read': {
+      const uri = params?.uri;
+      if (typeof uri !== 'string' || uri.length === 0) {
+        throw new RpcError(-32602, 'resources/read: uri parameter required');
+      }
+      return readResource(uri);
     }
     default:
       throw new RpcError(-32601, `Method not found: ${method}`);

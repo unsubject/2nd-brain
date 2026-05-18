@@ -7,6 +7,13 @@
   "observability": {
     "enabled": true
   },
+  "rules": [
+    // Bundle markdown docs as string imports so resources.ts can serve
+    // them verbatim without duplicating the content in TS source. Path
+    // resolution follows the import string from the importing module
+    // (e.g. ../../docs/foo.md from src/resources.ts).
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": false }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
