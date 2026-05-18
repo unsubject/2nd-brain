@@ -7,7 +7,7 @@ const inputSchema = z.object({
   id: z.string().uuid(),
 });
 
-export async function getGoalHandler(
+export async function getConstitutionDomainHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -20,35 +20,39 @@ export async function getGoalHandler(
 
   const sql = getDb(env);
   try {
-    const goals = await sql`
-      SELECT id, constitution_domain_id, statement,
-             specific, measurable, achievable, relevant, time_bound,
-             outcome_metric, target_date, last_reviewed_at,
-             status, merged_into_id, created_at, last_amended_at
-        FROM goals
+    const domains = await sql`
+      SELECT id, label, statement, crisis_origin, status, merged_into_id,
+             created_at, last_amended_at
+        FROM constitution_domains
        WHERE id = ${id} AND user_id = ${env.BRAIN_USER_ID}
     `;
-    if (goals.length === 0) {
-      return errorResult(`Goal not found: ${id}`);
+    if (domains.length === 0) {
+      return errorResult(`Constitution domain not found: ${id}`);
     }
 
-    const undertakings = await sql`
-      SELECT id, name, status, kind
-        FROM undertakings
-       WHERE primary_goal_id = ${id} AND user_id = ${env.BRAIN_USER_ID}
-       ORDER BY started_at DESC
+    // Child goals (one layer down). Use get_goal for the SMART breakdown
+    // and undertaking list — kept summary-level here to keep the
+    // get_constitution_domain payload one-page-readable.
+    const goals = await sql`
+      SELECT id, statement, outcome_metric, target_date, status,
+             last_reviewed_at
+        FROM goals
+       WHERE constitution_domain_id = ${id}
+         AND user_id = ${env.BRAIN_USER_ID}
+       ORDER BY created_at ASC
     `;
 
     const amendments = await sql`
       SELECT id, kind, status, proposed_at, committed_at,
-             cooldown_until, rationale
-        FROM goal_amendments
-       WHERE goal_id = ${id} AND user_id = ${env.BRAIN_USER_ID}
+             cooldown_until, rationale, crisis_justification
+        FROM constitution_amendments
+       WHERE constitution_domain_id = ${id}
+         AND user_id = ${env.BRAIN_USER_ID}
        ORDER BY proposed_at DESC
        LIMIT 20
     `;
 
-    return ok({ goal: goals[0], undertakings, amendments });
+    return ok({ domain: domains[0], goals, amendments });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);
   } finally {

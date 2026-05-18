@@ -3,12 +3,9 @@ import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
 
-const inputSchema = z.object({
-  status: z.enum(['active', 'achieved', 'abandoned', 'merged', 'all']).optional(),
-  constitution_domain_id: z.string().uuid().optional(),
-});
+const inputSchema = z.object({}).strict();
 
-export async function listGoalsHandler(
+export async function listPendingGoalAmendmentsHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -17,25 +14,22 @@ export async function listGoalsHandler(
   if (!parsed.success) {
     return errorResult(`Invalid arguments: ${parsed.error.message}`);
   }
-  const status = parsed.data.status ?? 'active';
-  const domainId = parsed.data.constitution_domain_id ?? null;
-  const allStatuses = status === 'all';
-  const noDomainFilter = domainId === null;
 
   const sql = getDb(env);
   try {
     const rows = await sql`
-      SELECT id, constitution_domain_id, statement,
-             specific, measurable, achievable, relevant, time_bound,
-             outcome_metric, target_date, last_reviewed_at,
-             status, merged_into_id, created_at, last_amended_at
-        FROM goals
+      SELECT id, kind, goal_id,
+             COALESCE(to_jsonb(source_goal_ids), '[]'::jsonb) AS source_goal_ids,
+             proposed_payload, rationale,
+             proposed_at, cooldown_until,
+             GREATEST(0, EXTRACT(EPOCH FROM (cooldown_until - now())))::bigint
+               AS cooldown_remaining_seconds
+        FROM goal_amendments
        WHERE user_id = ${env.BRAIN_USER_ID}
-         AND (${allStatuses} OR status = ${status})
-         AND (${noDomainFilter} OR constitution_domain_id = ${domainId})
-       ORDER BY created_at ASC
+         AND status = 'proposed'
+       ORDER BY proposed_at DESC
     `;
-    return ok({ count: rows.length, goals: rows });
+    return ok({ count: rows.length, amendments: rows });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);
   } finally {

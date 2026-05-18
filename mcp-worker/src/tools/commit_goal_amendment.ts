@@ -9,18 +9,17 @@ const inputSchema = z.object({
 
 type AmendmentRow = {
   id: string;
-  kind: 'new' | 'amend' | 'synthesize' | 'retire';
+  kind: 'new' | 'amend' | 'synthesize' | 'achieve' | 'abandon';
   goal_id: string | null;
   source_goal_ids: string[];
   proposed_payload: Record<string, unknown>;
   rationale: string;
-  irreducibility_justification: string | null;
   status: string;
   proposed_at: Date | string;
   cooldown_until: Date | string;
 };
 
-export async function commitAmendmentHandler(
+export async function commitGoalAmendmentHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -36,11 +35,8 @@ export async function commitAmendmentHandler(
     const committed = await sql.begin(async (tx) => {
       const rows = await tx<Array<AmendmentRow>>`
         SELECT id, kind, goal_id,
-               -- Coerce text[] → JS array via to_jsonb (fetch_types: false
-               -- skips OID resolution so raw text[] returns as a PG literal
-               -- string otherwise).
                COALESCE(to_jsonb(source_goal_ids), '[]'::jsonb) AS source_goal_ids,
-               proposed_payload, rationale, irreducibility_justification,
+               proposed_payload, rationale,
                status, proposed_at, cooldown_until
           FROM goal_amendments
          WHERE id = ${amendment_id} AND user_id = ${env.BRAIN_USER_ID}
@@ -57,65 +53,53 @@ export async function commitAmendmentHandler(
         );
       }
 
-      // Founding bypass: kind='new' AND fewer than 3 lifetime committed
-      // 'new' amendments. Irreversible — counted from the audit log, so
-      // retire/merge don't refund the counter.
-      let bypassCooldown = false;
-      if (a.kind === 'new') {
-        const counted = await tx<Array<{ n: string }>>`
-          SELECT count(*)::text AS n FROM goal_amendments
-           WHERE user_id = ${env.BRAIN_USER_ID}
-             AND kind = 'new' AND status = 'committed'
-        `;
-        if (Number(counted[0].n) < 3) {
-          bypassCooldown = true;
-        }
-      }
-
-      if (!bypassCooldown) {
-        const now = new Date();
-        const cooldownUntil =
-          a.cooldown_until instanceof Date
-            ? a.cooldown_until
-            : new Date(String(a.cooldown_until));
-        if (now < cooldownUntil) {
-          const secondsLeft = Math.ceil(
-            (cooldownUntil.getTime() - now.getTime()) / 1000,
-          );
-          throw new HandlerError(
-            'cooldown_active',
-            `Cooldown not elapsed: ${secondsLeft}s remaining (cooldown_until=${cooldownUntil.toISOString()}). Constitutional gravity is the point — sit with the proposal.`,
-          );
-        }
+      const now = new Date();
+      const cooldownUntil =
+        a.cooldown_until instanceof Date
+          ? a.cooldown_until
+          : new Date(String(a.cooldown_until));
+      if (now < cooldownUntil) {
+        const secondsLeft = Math.ceil(
+          (cooldownUntil.getTime() - now.getTime()) / 1000,
+        );
+        throw new HandlerError(
+          'cooldown_active',
+          `Cooldown not elapsed: ${secondsLeft}s remaining (cooldown_until=${cooldownUntil.toISOString()}).`,
+        );
       }
 
       const payload = a.proposed_payload as {
+        constitution_domain_id?: string;
         statement?: string;
         specific?: string;
         measurable?: string;
         achievable?: string;
         relevant?: string;
         time_bound?: string;
-        crisis_origin?: string;
+        outcome_metric?: string;
+        target_date?: string | null;
       };
 
       let resultGoalId: string;
 
       if (a.kind === 'new' || a.kind === 'synthesize') {
-        ensureFullPayload(payload);
+        ensureFullGoalPayload(payload);
         const ins = await tx<Array<{ id: string }>>`
           INSERT INTO goals (
-            user_id, statement, specific, measurable, achievable, relevant,
-            time_bound, crisis_origin, status
+            user_id, constitution_domain_id, statement,
+            specific, measurable, achievable, relevant, time_bound,
+            outcome_metric, target_date, status
           ) VALUES (
             ${env.BRAIN_USER_ID},
+            ${payload.constitution_domain_id},
             ${payload.statement},
             ${payload.specific},
             ${payload.measurable},
             ${payload.achievable},
             ${payload.relevant},
             ${payload.time_bound},
-            ${payload.crisis_origin},
+            ${payload.outcome_metric},
+            ${payload.target_date ?? null}::date,
             'active'
           )
           RETURNING id
@@ -144,26 +128,45 @@ export async function commitAmendmentHandler(
         if (!a.goal_id) {
           throw new HandlerError('invalid_state', 'amend amendment has no goal_id');
         }
+        // target_date is the only nullable field; for the rest, COALESCE
+        // preserves the existing value when the payload omits the key.
+        // target_date supports null-to-clear if explicitly null in payload,
+        // otherwise omitted = leave; not adding explicit tri-state because
+        // the proposal flow encourages full-payload re-statement at
+        // quarterly review.
         await tx`
           UPDATE goals SET
-            statement       = COALESCE(${payload.statement     ?? null}::text, statement),
-            specific        = COALESCE(${payload.specific      ?? null}::text, specific),
-            measurable      = COALESCE(${payload.measurable    ?? null}::text, measurable),
-            achievable      = COALESCE(${payload.achievable    ?? null}::text, achievable),
-            relevant        = COALESCE(${payload.relevant      ?? null}::text, relevant),
-            time_bound      = COALESCE(${payload.time_bound    ?? null}::text, time_bound),
-            crisis_origin   = COALESCE(${payload.crisis_origin ?? null}::text, crisis_origin),
-            last_amended_at = now()
+            statement       = COALESCE(${payload.statement       ?? null}::text, statement),
+            specific        = COALESCE(${payload.specific        ?? null}::text, specific),
+            measurable      = COALESCE(${payload.measurable      ?? null}::text, measurable),
+            achievable      = COALESCE(${payload.achievable      ?? null}::text, achievable),
+            relevant        = COALESCE(${payload.relevant        ?? null}::text, relevant),
+            time_bound      = COALESCE(${payload.time_bound      ?? null}::text, time_bound),
+            outcome_metric  = COALESCE(${payload.outcome_metric  ?? null}::text, outcome_metric),
+            target_date     = COALESCE(${payload.target_date     ?? null}::date, target_date),
+            last_reviewed_at = now(),
+            last_amended_at  = now()
           WHERE id = ${a.goal_id} AND user_id = ${env.BRAIN_USER_ID}
         `;
         resultGoalId = a.goal_id;
-      } else if (a.kind === 'retire') {
+      } else if (a.kind === 'achieve') {
         if (!a.goal_id) {
-          throw new HandlerError('invalid_state', 'retire amendment has no goal_id');
+          throw new HandlerError('invalid_state', 'achieve amendment has no goal_id');
         }
         await tx`
           UPDATE goals
-             SET status = 'retired',
+             SET status = 'achieved',
+                 last_amended_at = now()
+           WHERE id = ${a.goal_id} AND user_id = ${env.BRAIN_USER_ID}
+        `;
+        resultGoalId = a.goal_id;
+      } else if (a.kind === 'abandon') {
+        if (!a.goal_id) {
+          throw new HandlerError('invalid_state', 'abandon amendment has no goal_id');
+        }
+        await tx`
+          UPDATE goals
+             SET status = 'abandoned',
                  last_amended_at = now()
            WHERE id = ${a.goal_id} AND user_id = ${env.BRAIN_USER_ID}
         `;
@@ -180,7 +183,7 @@ export async function commitAmendmentHandler(
          WHERE id = ${amendment_id}
       `;
 
-      return { goal_id: resultGoalId, kind: a.kind, bypassed_cooldown: bypassCooldown };
+      return { goal_id: resultGoalId, kind: a.kind };
     });
     return ok({ ok: true, ...committed });
   } catch (e) {
@@ -193,30 +196,33 @@ export async function commitAmendmentHandler(
   }
 }
 
-function ensureFullPayload(p: Record<string, unknown>): asserts p is {
+function ensureFullGoalPayload(p: Record<string, unknown>): asserts p is {
+  constitution_domain_id: string;
   statement: string;
   specific: string;
   measurable: string;
   achievable: string;
   relevant: string;
   time_bound: string;
-  crisis_origin: string;
+  outcome_metric: string;
+  target_date?: string | null;
 } {
   const required = [
+    'constitution_domain_id',
     'statement',
     'specific',
     'measurable',
     'achievable',
     'relevant',
     'time_bound',
-    'crisis_origin',
+    'outcome_metric',
   ] as const;
   for (const k of required) {
     const v = p[k];
     if (typeof v !== 'string' || v.length < 1) {
       throw new HandlerError(
         'invalid_state',
-        `Amendment payload missing required SMART field: ${k}`,
+        `Amendment payload missing required goal field: ${k}`,
       );
     }
   }

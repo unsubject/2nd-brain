@@ -2,35 +2,46 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { smartFieldsSchema, smartFieldsPartialSchema } from './goal_types';
+import { goalFieldsSchema, goalFieldsPartialSchema } from './goal_types';
+
+// Goal-layer payload for 'new' / 'synthesize' kinds requires the parent
+// constitution_domain_id. For 'amend' the parent is immutable — to
+// re-parent a goal, abandon + new under the new domain.
+const newOrSynthesizePayload = goalFieldsSchema.extend({
+  constitution_domain_id: z.string().uuid(),
+});
 
 const inputSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('new'),
-    payload: smartFieldsSchema,
+    payload: newOrSynthesizePayload,
     rationale: z.string().min(3).max(4000),
-    irreducibility_justification: z.string().min(3).max(4000),
   }),
   z.object({
     kind: z.literal('amend'),
     goal_id: z.string().uuid(),
-    payload: smartFieldsPartialSchema,
+    payload: goalFieldsPartialSchema,
     rationale: z.string().min(3).max(4000),
   }),
   z.object({
     kind: z.literal('synthesize'),
     source_goal_ids: z.array(z.string().uuid()).min(2),
-    payload: smartFieldsSchema,
+    payload: newOrSynthesizePayload,
     rationale: z.string().min(3).max(4000),
   }),
   z.object({
-    kind: z.literal('retire'),
+    kind: z.literal('achieve'),
+    goal_id: z.string().uuid(),
+    rationale: z.string().min(3).max(4000),
+  }),
+  z.object({
+    kind: z.literal('abandon'),
     goal_id: z.string().uuid(),
     rationale: z.string().min(3).max(4000),
   }),
 ]);
 
-export async function proposeAmendmentHandler(
+export async function proposeGoalAmendmentHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -43,7 +54,7 @@ export async function proposeAmendmentHandler(
 
   const sql = getDb(env);
   try {
-    if (args.kind === 'amend' || args.kind === 'retire') {
+    if (args.kind === 'amend' || args.kind === 'achieve' || args.kind === 'abandon') {
       const existing = await sql<Array<{ id: string }>>`
         SELECT id FROM goal_amendments
          WHERE user_id = ${env.BRAIN_USER_ID}
@@ -64,15 +75,35 @@ export async function proposeAmendmentHandler(
         return errorResult(`Goal not found: ${args.goal_id}`);
       }
       if (goal[0].status !== 'active') {
-        return errorResult(`Goal ${args.goal_id} is ${goal[0].status}; cannot amend/retire`);
+        return errorResult(
+          `Goal ${args.goal_id} is ${goal[0].status}; cannot amend/achieve/abandon`,
+        );
+      }
+    }
+
+    if (args.kind === 'new') {
+      const domain = await sql<Array<{ status: string }>>`
+        SELECT status FROM constitution_domains
+         WHERE id = ${args.payload.constitution_domain_id}
+           AND user_id = ${env.BRAIN_USER_ID}
+      `;
+      if (domain.length === 0) {
+        return errorResult(
+          `Constitution domain not found: ${args.payload.constitution_domain_id}`,
+        );
+      }
+      if (domain[0].status !== 'active') {
+        return errorResult(
+          `Domain ${args.payload.constitution_domain_id} is ${domain[0].status}; cannot add goals under it`,
+        );
       }
     }
 
     if (args.kind === 'synthesize') {
       const ids = args.source_goal_ids;
       const sourceLiteral = `{${ids.join(',')}}`;
-      const found = await sql<Array<{ id: string; status: string }>>`
-        SELECT id, status FROM goals
+      const found = await sql<Array<{ id: string; status: string; constitution_domain_id: string }>>`
+        SELECT id, status, constitution_domain_id FROM goals
          WHERE user_id = ${env.BRAIN_USER_ID}
            AND id = ANY(${sourceLiteral}::uuid[])
       `;
@@ -85,19 +116,34 @@ export async function proposeAmendmentHandler(
           `Source goals must all be active. Non-active: ${nonActive.map((r) => r.id).join(', ')}`,
         );
       }
+      // Synthesis must stay within one domain — cross-domain merges are
+      // a constitution-level change, not a goal-level one.
+      const uniqDomains = new Set(found.map((r) => r.constitution_domain_id));
+      if (uniqDomains.size !== 1) {
+        return errorResult(
+          'Source goals must all belong to the same constitution_domain. Cross-domain synthesis requires a constitution amendment first.',
+        );
+      }
+      const sourceDomain = found[0].constitution_domain_id;
+      if (args.payload.constitution_domain_id !== sourceDomain) {
+        return errorResult(
+          `Synthesized goal's constitution_domain_id (${args.payload.constitution_domain_id}) must match the source goals' shared domain (${sourceDomain}).`,
+        );
+      }
     }
 
     const payload = 'payload' in args ? args.payload : {};
-    const irred = args.kind === 'new' ? args.irreducibility_justification : null;
     const goalId =
-      args.kind === 'amend' || args.kind === 'retire' ? args.goal_id : null;
+      args.kind === 'amend' || args.kind === 'achieve' || args.kind === 'abandon'
+        ? args.goal_id
+        : null;
     const sourceIds = args.kind === 'synthesize' ? args.source_goal_ids : [];
     const sourceLiteral = sourceIds.length > 0 ? `{${sourceIds.join(',')}}` : '{}';
 
     const rows = await sql<Array<{ id: string; cooldown_until: Date | string }>>`
       INSERT INTO goal_amendments (
         user_id, kind, goal_id, source_goal_ids,
-        proposed_payload, rationale, irreducibility_justification
+        proposed_payload, rationale
       )
       VALUES (
         ${env.BRAIN_USER_ID},
@@ -105,8 +151,7 @@ export async function proposeAmendmentHandler(
         ${goalId},
         ${sourceLiteral}::uuid[],
         ${JSON.stringify(payload)}::jsonb,
-        ${args.rationale},
-        ${irred}
+        ${args.rationale}
       )
       RETURNING id, cooldown_until
     `;
@@ -115,7 +160,7 @@ export async function proposeAmendmentHandler(
       kind: args.kind,
       cooldown_until: toIso(rows[0].cooldown_until),
       note:
-        'Proposal staged. Call commit_amendment after the cooldown elapses (except the founding bypass: first 3 lifetime kind="new" commits skip cooldown).',
+        'Proposal staged. Call commit_goal_amendment after the 72h cooldown elapses. No founding bypass at this layer — overlapping proposals are fine.',
     });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);

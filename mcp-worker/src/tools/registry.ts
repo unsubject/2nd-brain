@@ -7,11 +7,16 @@ import { archiveSearchHandler } from './archive_search';
 import { archiveSearchTextHandler } from './archive_search_text';
 import { recordPickHandler } from './record_pick';
 import { recordEpisodeLinkHandler } from './record_episode_link';
+import { listConstitutionDomainsHandler } from './list_constitution_domains';
+import { getConstitutionDomainHandler } from './get_constitution_domain';
+import { proposeConstitutionAmendmentHandler } from './propose_constitution_amendment';
+import { commitConstitutionAmendmentHandler } from './commit_constitution_amendment';
+import { listPendingConstitutionAmendmentsHandler } from './list_pending_constitution_amendments';
 import { listGoalsHandler } from './list_goals';
 import { getGoalHandler } from './get_goal';
-import { proposeAmendmentHandler } from './propose_amendment';
-import { commitAmendmentHandler } from './commit_amendment';
-import { listPendingAmendmentsHandler } from './list_pending_amendments';
+import { proposeGoalAmendmentHandler } from './propose_goal_amendment';
+import { commitGoalAmendmentHandler } from './commit_goal_amendment';
+import { listPendingGoalAmendmentsHandler } from './list_pending_goal_amendments';
 import { listUndertakingsHandler } from './list_undertakings';
 import { getUndertakingHandler } from './get_undertaking';
 import { createUndertakingHandler } from './create_undertaking';
@@ -187,17 +192,16 @@ export const tools: Tool[] = [
     handler: recordEpisodeLinkHandler,
   },
 
-  // ── Personal goal system ──────────────────────────────────────────────
-  // Goals = the user's "constitution": few, stable, crisis-rooted SMART
-  // statements that red-flag drift. Undertakings = focused efforts under
-  // a goal. Tasks remain in Google Tasks, linked via
-  // undertakings.gtasks_parent_id. The amendment ritual lives in
-  // docs/goal-amendment-interview.md — propose_amendment / commit_amendment
-  // MUST be driven by an explicit user request, never autonomously.
+  // ── Constitution (5 north-star domains) ─────────────────────────────
+  // The crisis-rooted, stable layer. 14-day cooldown, mandatory
+  // crisis_justification on every amendment, founding bypass of 5 covers
+  // the typical Mind/Body/Family/Wealth/Social bootstrap. Drive these tools
+  // ONLY from a deliberate user request, never autonomously. See
+  // docs/goal-amendment-interview.md Section 1A.
   {
-    name: 'list_goals',
+    name: 'list_constitution_domains',
     description:
-      "List the user's goals (their personal constitution). Default returns only status='active'. Pass status='all' to include merged/retired for audit/history. Goals are the stable crisis-rooted SMART statements that anchor planning — read these BEFORE proposing any amendment, and proactively at the start of any planning session.",
+      "List the user's constitution domains (the north-star principles). Default returns only status='active'. Pass status='all' for audit/history including merged or retired domains. Read these BEFORE any planning session: the constitution anchors all goals beneath it.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -208,12 +212,118 @@ export const tools: Tool[] = [
         },
       },
     },
+    handler: listConstitutionDomainsHandler,
+  },
+  {
+    name: 'get_constitution_domain',
+    description:
+      'Fetch a single constitution domain with its child SMART goals (summary rows) and recent amendment history (up to 20). Use after list_constitution_domains when the user wants depth on one domain.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+      required: ['id'],
+    },
+    handler: getConstitutionDomainHandler,
+  },
+  {
+    name: 'propose_constitution_amendment',
+    description:
+      "Stage a constitutional change: a brand-new domain, an amendment to an existing one, a synthesis of two reinforcing domains, or a retirement. Enters a 14-day cooldown. crisis_justification is REQUIRED for every kind — if the user cannot name the crisis, the change is not constitutional yet. ONLY call from a deliberate user-driven session, never autonomously. Follow the protocol in docs/goal-amendment-interview.md Section 1A. Returns {amendment_id, kind, cooldown_until}.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['new', 'amend', 'synthesize', 'retire'] },
+        constitution_domain_id: {
+          type: 'string',
+          format: 'uuid',
+          description: "Required for kind='amend' or kind='retire'",
+        },
+        source_constitution_domain_ids: {
+          type: 'array',
+          items: { type: 'string', format: 'uuid' },
+          minItems: 2,
+          description: "Required for kind='synthesize' — the domains being unified",
+        },
+        payload: {
+          type: 'object',
+          description:
+            "Required for new/amend/synthesize. For 'new' and 'synthesize' all 3 fields are required. For 'amend' all 3 are optional; omitted fields preserved by COALESCE.",
+          properties: {
+            label: { type: 'string', minLength: 1, maxLength: 40 },
+            statement: { type: 'string', minLength: 3, maxLength: 500 },
+            crisis_origin: {
+              type: 'string',
+              minLength: 3,
+              maxLength: 4000,
+              description:
+                'The precipitating event/insight that grounds this domain in lived experience.',
+            },
+          },
+        },
+        rationale: {
+          type: 'string',
+          minLength: 3,
+          maxLength: 4000,
+          description: 'Why this change now. Required.',
+        },
+        crisis_justification: {
+          type: 'string',
+          minLength: 3,
+          maxLength: 4000,
+          description:
+            'REQUIRED FOR EVERY KIND. Why this change is constitutional, not a passing preference — a specific event, conversation, failure, or insight that makes this matter now.',
+        },
+      },
+      required: ['kind', 'rationale', 'crisis_justification'],
+    },
+    handler: proposeConstitutionAmendmentHandler,
+  },
+  {
+    name: 'commit_constitution_amendment',
+    description:
+      "Apply a previously-proposed constitution amendment. Refuses unless cooldown_until has elapsed. Founding-period bypass: the first 5 lifetime kind='new' commits skip cooldown — sized for the typical 5-domain bootstrap, irreversible, counted from the audit log so retire/merge don't refund. Applies atomically: 'new' inserts a domain; 'amend' COALESCE-updates; 'synthesize' inserts the unified domain AND marks sources merged; 'retire' marks status='retired'. Returns {ok, constitution_domain_id, kind, bypassed_cooldown}.",
+    inputSchema: {
+      type: 'object',
+      properties: { amendment_id: { type: 'string', format: 'uuid' } },
+      required: ['amendment_id'],
+    },
+    handler: commitConstitutionAmendmentHandler,
+  },
+  {
+    name: 'list_pending_constitution_amendments',
+    description:
+      "List all constitution amendments currently in the 14-day cooldown window (status='proposed'). Each row includes cooldown_remaining_seconds. Use to remind the user of pending constitutional changes that may be ready to commit.",
+    inputSchema: { type: 'object', properties: {} },
+    handler: listPendingConstitutionAmendmentsHandler,
+  },
+
+  // ── Goals (SMART layer, subordinate to constitution) ────────────────────
+  // Up to 3 active goals per constitution_domain. Reviewable quarterly,
+  // commitment ~1yr, outcome-measured. 72h cooldown on amendments; no
+  // founding bypass (proposals can overlap so total bootstrap latency is
+  // ~3 days regardless of count). See docs/goal-amendment-interview.md
+  // Section 1B.
+  {
+    name: 'list_goals',
+    description:
+      "List SMART goals beneath the constitution. Default returns only status='active'. Optionally filter by constitution_domain_id. Cap is 3 active per domain (DB-enforced). Read these before proposing a new goal so you can default to amend/synthesize over new.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['active', 'achieved', 'abandoned', 'merged', 'all'],
+          default: 'active',
+        },
+        constitution_domain_id: { type: 'string', format: 'uuid' },
+      },
+    },
     handler: listGoalsHandler,
   },
   {
     name: 'get_goal',
     description:
-      'Fetch a single goal with full SMART breakdown, crisis_origin, its undertakings (id/name/status/kind), and recent amendment history (up to 20 most recent). Use after list_goals when the user wants depth on one statement.',
+      'Fetch a single SMART goal with full breakdown (specific/measurable/achievable/relevant/time_bound + outcome_metric + target_date), its undertakings (id/name/status/kind), and recent amendment history (up to 20). Use after list_goals for depth on one goal.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', format: 'uuid' } },
@@ -222,80 +332,75 @@ export const tools: Tool[] = [
     handler: getGoalHandler,
   },
   {
-    name: 'propose_amendment',
+    name: 'propose_goal_amendment',
     description:
-      "Stage a constitutional change: a brand-new goal, an amendment to an existing goal, a synthesis of two reinforcing goals into a unified one, or a retirement. The proposal enters a 72h cooldown (cooldown_until on the response). ONLY call from a deliberate user-driven session — NEVER autonomously. Always follow the protocol in docs/goal-amendment-interview.md: read all current goals first; default to 'amend' over 'new'; require the user to name the precipitating crisis; scan for contradictions and reinforcement across existing goals before writing. Returns {amendment_id, kind, cooldown_until}.",
+      "Stage a SMART-goal change: new goal under a constitution_domain, amendment to an existing one, synthesis of reinforcing goals (must share the same domain), or status transitions 'achieve' (outcome reached) and 'abandon' (gave up). 72h cooldown. Re-parenting a goal between domains is NOT supported via amend — abandon + new under the new domain. ONLY call from a deliberate user-driven session.",
     inputSchema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['new', 'amend', 'synthesize', 'retire'] },
+        kind: {
+          type: 'string',
+          enum: ['new', 'amend', 'synthesize', 'achieve', 'abandon'],
+        },
         goal_id: {
           type: 'string',
           format: 'uuid',
-          description: "Required for kind='amend' or kind='retire'",
+          description: "Required for kind in {'amend','achieve','abandon'}",
         },
         source_goal_ids: {
           type: 'array',
           items: { type: 'string', format: 'uuid' },
           minItems: 2,
-          description: "Required for kind='synthesize' — the goals being unified",
+          description:
+            "Required for kind='synthesize'. Sources must all be active and share the same constitution_domain_id.",
         },
         payload: {
           type: 'object',
           description:
-            "Required for new/amend/synthesize. For 'new' and 'synthesize' all 7 fields are required. For 'amend' all 7 are optional; omitted fields are preserved by COALESCE.",
+            "Required for new/amend/synthesize. 'new' and 'synthesize' need the full SMART set plus constitution_domain_id. 'amend' allows any subset (constitution_domain_id is immutable).",
           properties: {
+            constitution_domain_id: { type: 'string', format: 'uuid' },
             statement: { type: 'string', minLength: 3, maxLength: 500 },
             specific: { type: 'string', minLength: 3, maxLength: 2000 },
             measurable: { type: 'string', minLength: 3, maxLength: 2000 },
             achievable: { type: 'string', minLength: 3, maxLength: 2000 },
             relevant: { type: 'string', minLength: 3, maxLength: 2000 },
             time_bound: { type: 'string', minLength: 3, maxLength: 2000 },
-            crisis_origin: {
+            outcome_metric: {
               type: 'string',
               minLength: 3,
-              maxLength: 4000,
-              description:
-                'The precipitating event/insight. Required by schema — if the user cannot name it, the goal is not yet constitutional.',
+              maxLength: 2000,
+              description: 'Outcome (e.g. "lose 10 lbs"), not output (e.g. "go to gym 3x/week")',
             },
+            target_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
           },
         },
-        rationale: {
-          type: 'string',
-          minLength: 3,
-          maxLength: 4000,
-          description: 'What crisis or insight prompts this change. Required.',
-        },
-        irreducibility_justification: {
-          type: 'string',
-          minLength: 3,
-          maxLength: 4000,
-          description:
-            "Required for kind='new'. Why this CANNOT be expressed as an amendment to any existing goal.",
-        },
+        rationale: { type: 'string', minLength: 3, maxLength: 4000 },
       },
       required: ['kind', 'rationale'],
     },
-    handler: proposeAmendmentHandler,
+    handler: proposeGoalAmendmentHandler,
   },
   {
-    name: 'commit_amendment',
+    name: 'commit_goal_amendment',
     description:
-      "Apply a previously-proposed amendment. Refuses unless cooldown_until has elapsed. Founding-period bypass: the first 3 lifetime kind='new' commits skip cooldown — this is irreversible and counted from the audit log, so retire/merge don't refund the counter. Applies the change atomically: 'new' inserts a goal; 'amend' COALESCE-updates (omitted fields preserved); 'synthesize' inserts the unified goal AND marks source goals merged with merged_into_id; 'retire' marks status='retired'. Returns {ok, goal_id, kind, bypassed_cooldown}.",
+      "Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
     inputSchema: {
       type: 'object',
       properties: { amendment_id: { type: 'string', format: 'uuid' } },
       required: ['amendment_id'],
     },
-    handler: commitAmendmentHandler,
+    handler: commitGoalAmendmentHandler,
   },
   {
-    name: 'list_pending_amendments',
+    name: 'list_pending_goal_amendments',
     description:
-      "List all amendments currently in the 72h cooldown window (status='proposed'). Each row includes cooldown_remaining_seconds. Use to remind the user of pending constitutional changes that may be ready to commit.",
+      "List all goal amendments currently in the 72h cooldown window (status='proposed'). Each row includes cooldown_remaining_seconds. Multiple proposals can be in flight simultaneously — unlike constitution-layer, where one open proposal per domain is enforced.",
     inputSchema: { type: 'object', properties: {} },
-    handler: listPendingAmendmentsHandler,
+    handler: listPendingGoalAmendmentsHandler,
   },
+
+  // ── Undertakings & cycles (existing layer, unchanged) ──────────────────
   {
     name: 'list_undertakings',
     description:
@@ -327,7 +432,7 @@ export const tools: Tool[] = [
   {
     name: 'create_undertaking',
     description:
-      "Create a new undertaking. Must reference an active primary_goal_id. secondary_goal_ids is a rare exception for undertakings serving multiple goals genuinely. kind defaults to 'outcome'. gtasks_parent_id can be set later via update_undertaking once the Google Tasks parent has been created.",
+      "Create a new undertaking. Must reference an active primary_goal_id (a SMART goal, not a constitution domain). secondary_goal_ids is a rare exception for undertakings serving multiple goals genuinely. kind defaults to 'outcome'. gtasks_parent_id can be set later via update_undertaking once the Google Tasks parent has been created.",
     inputSchema: {
       type: 'object',
       properties: {

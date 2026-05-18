@@ -4,11 +4,10 @@ import type { ToolResult } from './registry';
 import { getDb } from '../db';
 
 const inputSchema = z.object({
-  status: z.enum(['active', 'achieved', 'abandoned', 'merged', 'all']).optional(),
-  constitution_domain_id: z.string().uuid().optional(),
+  status: z.enum(['active', 'merged', 'retired', 'all']).optional(),
 });
 
-export async function listGoalsHandler(
+export async function listConstitutionDomainsHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -18,24 +17,25 @@ export async function listGoalsHandler(
     return errorResult(`Invalid arguments: ${parsed.error.message}`);
   }
   const status = parsed.data.status ?? 'active';
-  const domainId = parsed.data.constitution_domain_id ?? null;
-  const allStatuses = status === 'all';
-  const noDomainFilter = domainId === null;
 
   const sql = getDb(env);
   try {
-    const rows = await sql`
-      SELECT id, constitution_domain_id, statement,
-             specific, measurable, achievable, relevant, time_bound,
-             outcome_metric, target_date, last_reviewed_at,
-             status, merged_into_id, created_at, last_amended_at
-        FROM goals
-       WHERE user_id = ${env.BRAIN_USER_ID}
-         AND (${allStatuses} OR status = ${status})
-         AND (${noDomainFilter} OR constitution_domain_id = ${domainId})
-       ORDER BY created_at ASC
-    `;
-    return ok({ count: rows.length, goals: rows });
+    const rows = status === 'all'
+      ? await sql`
+          SELECT id, label, statement, crisis_origin, status, merged_into_id,
+                 created_at, last_amended_at
+            FROM constitution_domains
+           WHERE user_id = ${env.BRAIN_USER_ID}
+           ORDER BY created_at ASC
+        `
+      : await sql`
+          SELECT id, label, statement, crisis_origin, status, merged_into_id,
+                 created_at, last_amended_at
+            FROM constitution_domains
+           WHERE user_id = ${env.BRAIN_USER_ID} AND status = ${status}
+           ORDER BY created_at ASC
+        `;
+    return ok({ count: rows.length, domains: rows });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);
   } finally {

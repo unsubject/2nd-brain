@@ -5,7 +5,7 @@ import { getDb } from '../db';
 
 const inputSchema = z.object({}).strict();
 
-export async function listPendingAmendmentsHandler(
+export async function listPendingConstitutionAmendmentsHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
@@ -18,13 +18,14 @@ export async function listPendingAmendmentsHandler(
   const sql = getDb(env);
   try {
     const rows = await sql`
-      SELECT id, kind, goal_id,
-             COALESCE(to_jsonb(source_goal_ids), '[]'::jsonb) AS source_goal_ids,
-             proposed_payload, rationale, irreducibility_justification,
+      SELECT id, kind, constitution_domain_id,
+             COALESCE(to_jsonb(source_constitution_domain_ids), '[]'::jsonb)
+               AS source_constitution_domain_ids,
+             proposed_payload, rationale, crisis_justification,
              proposed_at, cooldown_until,
              GREATEST(0, EXTRACT(EPOCH FROM (cooldown_until - now())))::bigint
                AS cooldown_remaining_seconds
-        FROM goal_amendments
+        FROM constitution_amendments
        WHERE user_id = ${env.BRAIN_USER_ID}
          AND status = 'proposed'
        ORDER BY proposed_at DESC
