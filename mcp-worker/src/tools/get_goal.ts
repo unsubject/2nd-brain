@@ -21,9 +21,10 @@ export async function getGoalHandler(
   const sql = getDb(env);
   try {
     const goals = await sql`
-      SELECT id, statement, specific, measurable, achievable, relevant,
-             time_bound, crisis_origin, status, merged_into_id,
-             created_at, last_amended_at
+      SELECT id, constitution_domain_id, statement,
+             specific, measurable, achievable, relevant, time_bound,
+             outcome_metric, target_date, last_reviewed_at,
+             status, merged_into_id, created_at, last_amended_at
         FROM goals
        WHERE id = ${id} AND user_id = ${env.BRAIN_USER_ID}
     `;
