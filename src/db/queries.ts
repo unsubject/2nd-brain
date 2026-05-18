@@ -134,7 +134,8 @@ export async function saveProcessingResult(
          suggested_actions = $8,
          embedding = $9::vector,
          processing_status = 'processed',
-         last_error = NULL
+         last_error = NULL,
+         updated_at = now()
      WHERE id = $1`,
     [
       id,
@@ -168,7 +169,8 @@ export async function saveAiFeedbackResult(
          suggested_actions = '[]'::jsonb,
          embedding = $4::vector,
          processing_status = 'processed',
-         last_error = NULL
+         last_error = NULL,
+         updated_at = now()
      WHERE id = $1`,
     [id, cleanText, tags, vectorStr]
   );
@@ -203,7 +205,8 @@ export async function markProcessingError(
   await pool.query(
     `UPDATE journal_entry
      SET processing_status = 'error',
-         last_error = $2
+         last_error = $2,
+         updated_at = now()
      WHERE id = $1`,
     [id, errorMessage]
   );
