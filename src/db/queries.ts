@@ -133,7 +133,9 @@ export async function saveProcessingResult(
          primary_type_confidence = $7,
          suggested_actions = $8,
          embedding = $9::vector,
-         processing_status = 'processed'
+         processing_status = 'processed',
+         last_error = NULL,
+         updated_at = now()
      WHERE id = $1`,
     [
       id,
@@ -166,7 +168,9 @@ export async function saveAiFeedbackResult(
          primary_type_confidence = 1.0,
          suggested_actions = '[]'::jsonb,
          embedding = $4::vector,
-         processing_status = 'processed'
+         processing_status = 'processed',
+         last_error = NULL,
+         updated_at = now()
      WHERE id = $1`,
     [id, cleanText, tags, vectorStr]
   );
@@ -194,10 +198,17 @@ export async function findSimilarEntries(
   return rows;
 }
 
-export async function markProcessingError(id: string): Promise<void> {
+export async function markProcessingError(
+  id: string,
+  errorMessage: string
+): Promise<void> {
   await pool.query(
-    `UPDATE journal_entry SET processing_status = 'error' WHERE id = $1`,
-    [id]
+    `UPDATE journal_entry
+     SET processing_status = 'error',
+         last_error = $2,
+         updated_at = now()
+     WHERE id = $1`,
+    [id, errorMessage]
   );
 }
 

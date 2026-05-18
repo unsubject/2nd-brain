@@ -52,7 +52,8 @@ async function tick(): Promise<void> {
       console.log(`Links generated for entry ${entry.id}`);
     } catch (err) {
       console.error(`Error processing entry ${entry.id}:`, err);
-      await queries.markProcessingError(entry.id);
+      const message = err instanceof Error ? err.message : String(err);
+      await queries.markProcessingError(entry.id, message);
     }
   }
 }
