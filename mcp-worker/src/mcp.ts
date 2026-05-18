@@ -16,7 +16,7 @@ Use get_entry to follow up on a search hit. Use list_recent for "what have I bee
 
 The journal is private — treat with discretion. Entries can include emotional venting and rough takes. Search is fuzzy: similarity below ~0.3 is probably noise, above ~0.5 is worth attention.
 
-Reference material is exposed as MCP resources (call resources/list to discover). When the user asks anything about goals, the constitution, or amendments, FIRST read the resource \`2nd-brain://protocol/goal-amendment\` — it contains the executable interview protocol that every constitution-domain and SMART-goal change must follow.`;
+Reference material is exposed as MCP resources (call resources/list to discover). If the user asks about goals, the constitution, or amendments and your client supports resources, read \`2nd-brain://protocol/goal-amendment\` before calling any propose/commit_*_amendment tool — it contains the executable interview protocol. If resources aren't available, the registry descriptions of those tools point at the same protocol by section number.`;
 
 class RpcError extends Error {
   constructor(public code: number, message: string, public data?: unknown) {
