@@ -9,10 +9,17 @@
   },
   "rules": [
     // Bundle markdown docs as string imports so resources.ts can serve
-    // them verbatim without duplicating the content in TS source. Path
-    // resolution follows the import string from the importing module
-    // (e.g. ../../docs/foo.md from src/resources.ts).
-    { "type": "Text", "globs": ["**/*.md"], "fallthrough": false }
+    // them verbatim without duplicating the content in TS source.
+    //
+    // Explicit per-file allowlist (defense in depth). Mirror this list
+    // with the imports in src/resources.ts AND with the paths trigger
+    // in .github/workflows/deploy-mcp-worker.yml. Adding a new doc to
+    // the MCP surface is a three-touch change by design.
+    {
+      "type": "Text",
+      "globs": ["**/goal-amendment-interview.md"],
+      "fallthrough": false
+    }
   ],
   "hyperdrive": [
     {
