@@ -93,7 +93,13 @@ export async function commitConstitutionAmendmentHandler(
         }
       }
 
-      const payload = a.proposed_payload as {
+      // propose_constitution_amendment writes the payload as
+      // `${JSON.stringify(payload)}::jsonb`, which in this
+      // Worker + Hyperdrive + postgres.js (fetch_types: false) stack
+      // round-trips as a JSONB string holding the JSON text — not the
+      // expected JSONB object. Unwrap it here so existing 'proposed'
+      // rows commit cleanly rather than failing in ensureFullPayload.
+      const payload = parseJsonbPayload(a.proposed_payload) as {
         label?: string;
         statement?: string;
         crisis_origin?: string;
@@ -188,6 +194,24 @@ export async function commitConstitutionAmendmentHandler(
   } finally {
     ctx.waitUntil(sql.end({ timeout: 5 }));
   }
+}
+
+function parseJsonbPayload(v: unknown): Record<string, unknown> {
+  if (v === null || v === undefined) return {};
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    return v as Record<string, unknown>;
+  }
+  return {};
 }
 
 function ensureFullPayload(p: Record<string, unknown>): asserts p is {
