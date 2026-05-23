@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
-    "express": "^4.21.0",
+    "express": "^4.22.2",
     "googleapis": "^171.4.0",
     "grammy": "^1.31.0",
-    "marked": "^18.0.4",
+    "marked": "^18.0.2",
     "openai": "^6.34.0",
     "pg": "^8.13.1"
   },
