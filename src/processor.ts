@@ -134,6 +134,10 @@ export async function processEntry(
     },
   });
 
+  console.log(
+    `[journal] tokens: in=${response.usage?.prompt_tokens} out=${response.usage?.completion_tokens}`
+  );
+
   const content = response.choices[0]?.message?.content;
   if (!content) {
     throw new Error("No content in processing response");
