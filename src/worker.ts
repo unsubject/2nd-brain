@@ -33,6 +33,11 @@ async function tick(): Promise<void> {
       await queries.saveProcessingResult(entry.id, result, embedding);
       console.log(`Processed entry ${entry.id}`);
 
+      // Downstream concerns are isolated: each runs in its own
+      // try/catch so a failure does NOT flip the row back to 'error'
+      // via the outer markProcessingError. Primary processing has
+      // already succeeded by this point; downstream failures should
+      // log and move on, not corrupt the row state.
       try {
         await maybeCreateTaskSuggestion(entry.id, result);
       } catch (err) {
@@ -42,14 +47,21 @@ async function tick(): Promise<void> {
         );
       }
 
-      await generateLinks({
-        id: entry.id,
-        full_text: entry.full_text,
-        tags: result.tags,
-        created_at: new Date(),
-        embedding,
-      });
-      console.log(`Links generated for entry ${entry.id}`);
+      try {
+        await generateLinks({
+          id: entry.id,
+          full_text: entry.full_text,
+          tags: result.tags,
+          created_at: new Date(),
+          embedding,
+        });
+        console.log(`Links generated for entry ${entry.id}`);
+      } catch (err) {
+        console.error(
+          `[worker] link generation failed for entry ${entry.id}:`,
+          err
+        );
+      }
     } catch (err) {
       console.error(`Error processing entry ${entry.id}:`, err);
       const message = err instanceof Error ? err.message : String(err);
