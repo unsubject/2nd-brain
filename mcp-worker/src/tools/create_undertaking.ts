@@ -7,7 +7,7 @@ import { undertakingKindSchema } from './goal_types';
 const inputSchema = z.object({
   name: z.string().min(1).max(200),
   purpose: z.string().min(3).max(4000),
-  outcome: z.string().min(3).max(4000),
+  output_target: z.string().min(3).max(4000),
   test_criteria: z.string().min(3).max(4000),
   primary_goal_id: z.string().uuid(),
   secondary_goal_ids: z.array(z.string().uuid()).optional(),
@@ -63,14 +63,14 @@ export async function createUndertakingHandler(
 
     const rows = await sql<Array<{ id: string }>>`
       INSERT INTO undertakings (
-        user_id, name, purpose, outcome, test_criteria,
+        user_id, name, purpose, output_target, test_criteria,
         primary_goal_id, secondary_goal_ids, kind,
         gtasks_parent_id, target_date
       ) VALUES (
         ${env.BRAIN_USER_ID},
         ${args.name},
         ${args.purpose},
-        ${args.outcome},
+        ${args.output_target},
         ${args.test_criteria},
         ${args.primary_goal_id},
         ${secondaryLiteral}::uuid[],

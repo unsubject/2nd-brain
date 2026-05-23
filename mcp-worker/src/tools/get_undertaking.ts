@@ -21,7 +21,7 @@ export async function getUndertakingHandler(
   const sql = getDb(env);
   try {
     const rows = await sql`
-      SELECT id, name, purpose, outcome, test_criteria,
+      SELECT id, name, purpose, output_target, test_criteria,
              primary_goal_id,
              COALESCE(to_jsonb(secondary_goal_ids), '[]'::jsonb) AS secondary_goal_ids,
              kind, gtasks_parent_id, status,

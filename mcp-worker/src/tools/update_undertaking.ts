@@ -8,7 +8,7 @@ const inputSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(200).optional(),
   purpose: z.string().min(3).max(4000).optional(),
-  outcome: z.string().min(3).max(4000).optional(),
+  output_target: z.string().min(3).max(4000).optional(),
   test_criteria: z.string().min(3).max(4000).optional(),
   secondary_goal_ids: z.array(z.string().uuid()).optional(),
   status: undertakingStatusSchema.optional(),
@@ -35,7 +35,7 @@ export async function updateUndertakingHandler(
     [
       'name',
       'purpose',
-      'outcome',
+      'output_target',
       'test_criteria',
       'secondary_goal_ids',
       'status',
@@ -89,7 +89,7 @@ export async function updateUndertakingHandler(
       UPDATE undertakings SET
         name          = COALESCE(${fields.name          ?? null}::text, name),
         purpose       = COALESCE(${fields.purpose       ?? null}::text, purpose),
-        outcome       = COALESCE(${fields.outcome       ?? null}::text, outcome),
+        output_target = COALESCE(${fields.output_target ?? null}::text, output_target),
         test_criteria = COALESCE(${fields.test_criteria ?? null}::text, test_criteria),
         secondary_goal_ids = CASE
           WHEN ${secondaryLiteral}::text IS NULL THEN secondary_goal_ids

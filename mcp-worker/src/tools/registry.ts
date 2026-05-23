@@ -192,7 +192,7 @@ export const tools: Tool[] = [
     handler: recordEpisodeLinkHandler,
   },
 
-  // ── Constitution (5 north-star domains) ─────────────────────────────
+  // ── Constitution (5 north-star domains) ───────────────────
   // The crisis-rooted, stable layer. 14-day cooldown, mandatory
   // crisis_justification on every amendment, founding bypass of 5 covers
   // the typical Mind/Body/Family/Wealth/Social bootstrap. Drive these tools
@@ -297,7 +297,7 @@ export const tools: Tool[] = [
     handler: listPendingConstitutionAmendmentsHandler,
   },
 
-  // ── Goals (SMART layer, subordinate to constitution) ────────────────────
+  // ── Goals (SMART layer, subordinate to constitution) ────────────────
   // Up to 3 active goals per constitution_domain. Reviewable quarterly,
   // commitment ~1yr, outcome-measured. 72h cooldown on amendments; no
   // founding bypass (proposals can overlap so total bootstrap latency is
@@ -400,7 +400,7 @@ export const tools: Tool[] = [
     handler: listPendingGoalAmendmentsHandler,
   },
 
-  // ── Undertakings & cycles (existing layer, unchanged) ──────────────────
+  // ── Undertakings & cycles (existing layer, unchanged) ──────────────
   {
     name: 'list_undertakings',
     description:
@@ -438,13 +438,19 @@ export const tools: Tool[] = [
       properties: {
         name: { type: 'string', minLength: 1, maxLength: 200 },
         purpose: { type: 'string', minLength: 3, maxLength: 4000 },
-        outcome: { type: 'string', minLength: 3, maxLength: 4000 },
+        output_target: {
+          type: 'string',
+          minLength: 3,
+          maxLength: 4000,
+          description:
+            'The deliverable produced (output, not outcome). What ships at the end. Outcome-level metrics live one layer up on the parent goal.',
+        },
         test_criteria: {
           type: 'string',
           minLength: 3,
           maxLength: 4000,
           description:
-            "For 'outcome': how you know it shipped. For 'habit_forming': cadence + tolerance language (e.g. '5x/week with warm restart on misses').",
+            "For 'outcome' kind: how you know it shipped. For 'habit_forming': cadence + tolerance language (e.g. '5x/week with warm restart on misses').",
         },
         primary_goal_id: { type: 'string', format: 'uuid' },
         secondary_goal_ids: {
@@ -463,21 +469,21 @@ export const tools: Tool[] = [
           description: 'ISO YYYY-MM-DD',
         },
       },
-      required: ['name', 'purpose', 'outcome', 'test_criteria', 'primary_goal_id'],
+      required: ['name', 'purpose', 'output_target', 'test_criteria', 'primary_goal_id'],
     },
     handler: createUndertakingHandler,
   },
   {
     name: 'update_undertaking',
     description:
-      "Partial update of an undertaking on whitelisted fields. Pass only the fields you want to change. Use to attach gtasks_parent_id once the Google Tasks parent is created, to mark status='completed'/'archived'/'sleeping', or to refine purpose/outcome/test_criteria. gtasks_parent_id and target_date support tri-state: omit = leave; null = clear; value = set.",
+      "Partial update of an undertaking on whitelisted fields. Pass only the fields you want to change. Use to attach gtasks_parent_id once the Google Tasks parent is created, to mark status='completed'/'archived'/'sleeping', or to refine purpose/output_target/test_criteria. gtasks_parent_id and target_date support tri-state: omit = leave; null = clear; value = set.",
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', format: 'uuid' },
         name: { type: 'string' },
         purpose: { type: 'string' },
-        outcome: { type: 'string' },
+        output_target: { type: 'string' },
         test_criteria: { type: 'string' },
         secondary_goal_ids: {
           type: 'array',
