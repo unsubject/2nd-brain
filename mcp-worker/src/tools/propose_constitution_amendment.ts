@@ -101,6 +101,15 @@ export async function proposeConstitutionAmendmentHandler(
     const sourceIds = args.kind === 'synthesize' ? args.source_constitution_domain_ids : [];
     const sourceLiteral = sourceIds.length > 0 ? `{${sourceIds.join(',')}}` : '{}';
 
+    // Pass the payload via sql.json() so postgres-js tags it JSON and PG
+    // stores it as a proper jsonb object. The previous form
+    //   ${JSON.stringify(payload)}::jsonb
+    // round-tripped as a jsonb STRING in this Worker + Hyperdrive +
+    // postgres-js (fetch_types: false) stack, breaking commit-time payload
+    // reads (parseJsonbPayload got back a string after one JSON.parse,
+    // not an object). See commit_constitution_amendment.parseJsonbPayload
+    // for the defensive recursive unwrap that handles already-stored bad
+    // rows.
     const rows = await sql<Array<{ id: string; cooldown_until: Date | string }>>`
       INSERT INTO constitution_amendments (
         user_id, kind, constitution_domain_id, source_constitution_domain_ids,
@@ -111,7 +120,7 @@ export async function proposeConstitutionAmendmentHandler(
         ${args.kind},
         ${domainId},
         ${sourceLiteral}::uuid[],
-        ${JSON.stringify(payload)}::jsonb,
+        ${sql.json(payload)},
         ${args.rationale},
         ${args.crisis_justification}
       )

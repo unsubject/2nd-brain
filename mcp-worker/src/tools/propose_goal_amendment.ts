@@ -140,6 +140,12 @@ export async function proposeGoalAmendmentHandler(
     const sourceIds = args.kind === 'synthesize' ? args.source_goal_ids : [];
     const sourceLiteral = sourceIds.length > 0 ? `{${sourceIds.join(',')}}` : '{}';
 
+    // sql.json(payload) tags the parameter JSON so PG stores it as a
+    // proper jsonb object. Previous form was ${JSON.stringify(payload)}::jsonb
+    // which double-encoded into a jsonb STRING under this stack
+    // (Worker + Hyperdrive + postgres-js fetch_types:false). See
+    // commit_goal_amendment.parseJsonbPayload for the defensive recursive
+    // unwrap that handles existing bad rows.
     const rows = await sql<Array<{ id: string; cooldown_until: Date | string }>>`
       INSERT INTO goal_amendments (
         user_id, kind, goal_id, source_goal_ids,
@@ -150,7 +156,7 @@ export async function proposeGoalAmendmentHandler(
         ${args.kind},
         ${goalId},
         ${sourceLiteral}::uuid[],
-        ${JSON.stringify(payload)}::jsonb,
+        ${sql.json(payload)},
         ${args.rationale}
       )
       RETURNING id, cooldown_until

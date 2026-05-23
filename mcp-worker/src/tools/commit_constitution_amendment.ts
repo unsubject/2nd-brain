@@ -93,12 +93,12 @@ export async function commitConstitutionAmendmentHandler(
         }
       }
 
-      // propose_constitution_amendment writes the payload as
-      // `${JSON.stringify(payload)}::jsonb`, which in this
-      // Worker + Hyperdrive + postgres.js (fetch_types: false) stack
-      // round-trips as a JSONB string holding the JSON text — not the
-      // expected JSONB object. Unwrap it here so existing 'proposed'
-      // rows commit cleanly rather than failing in ensureFullPayload.
+      // Pre-fix rows (before propose_constitution_amendment switched to
+      // sql.json) stored proposed_payload as a JSONB STRING wrapping the
+      // JSON text — double-encoded. parseJsonbPayload recursively unwraps
+      // strings up to 3 levels, so existing 'proposed' rows still commit
+      // cleanly. New rows (post-fix) come back as objects on first read
+      // and short-circuit immediately.
       const payload = parseJsonbPayload(a.proposed_payload) as {
         label?: string;
         statement?: string;
@@ -196,20 +196,30 @@ export async function commitConstitutionAmendmentHandler(
   }
 }
 
+// Recursively unwrap JSON-encoded strings up to MAX_UNWRAP_DEPTH levels.
+// Handles:
+//   - Proper jsonb object   → returned as-is
+//   - jsonb string holding JSON text (pre-fix bug) → 1 JSON.parse
+//   - jsonb string holding a JSON-encoded JSON string → 2 JSON.parses
+// Returns {} on any unrecoverable shape so the caller's ensureFullPayload
+// produces a clear "missing required field" error rather than a runtime crash.
+const MAX_UNWRAP_DEPTH = 3;
 function parseJsonbPayload(v: unknown): Record<string, unknown> {
-  if (v === null || v === undefined) return {};
-  if (typeof v === 'string') {
-    try {
-      const parsed = JSON.parse(v);
-      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch {
-      return {};
+  let cur: unknown = v;
+  for (let i = 0; i < MAX_UNWRAP_DEPTH; i++) {
+    if (cur === null || cur === undefined) return {};
+    if (typeof cur === 'object' && !Array.isArray(cur)) {
+      return cur as Record<string, unknown>;
     }
-  }
-  if (typeof v === 'object' && !Array.isArray(v)) {
-    return v as Record<string, unknown>;
+    if (typeof cur === 'string') {
+      try {
+        cur = JSON.parse(cur);
+        continue;
+      } catch {
+        return {};
+      }
+    }
+    return {};
   }
   return {};
 }
