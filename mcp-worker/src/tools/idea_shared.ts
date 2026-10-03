@@ -21,6 +21,27 @@ export const ideaIntentSchema = z.enum(['episode', 'essay', 'series', 'learning'
 export const linkTypeSchema = z.enum(LINK_TYPES);
 export const linkStatusSchema = z.enum(LINK_STATUSES);
 
+// Ids are compared in JS as well as SQL; Postgres prints uuids in lower
+// case, so normalise inputs the same way.
+export const uuidSchema = z
+  .string()
+  .uuid()
+  .transform((s) => s.toLowerCase());
+
+// One set of field limits for park / import / update / synthesis, so an
+// imported value can always be edited and re-sent.
+export const LIMITS = {
+  title: 500,
+  thoughts: 20000,
+  why_interesting: 8000,
+  encountered_where: 2000,
+  source_url: 2048,
+  source_title: 1000,
+  source_excerpt: 8000,
+  framing: 12000,
+  note: 8000,
+} as const;
+
 export const capturedViaSchema = z
   .object({
     client: z.string().max(100).optional(),

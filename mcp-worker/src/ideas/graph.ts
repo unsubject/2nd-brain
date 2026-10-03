@@ -2,6 +2,7 @@
 // handler does the SQL; everything here is deterministic and unit-tested.
 
 import { LINK_TYPE_INFO, legend, type LinkType } from './linkTypes';
+import { truncateChars } from './text';
 
 export type MapIdea = {
   id: string;
@@ -44,6 +45,8 @@ export type MapNode = {
   tags: string[];
   degree: number;
   pending_degree: number;
+  // Connected component over accepted idea↔idea links (ranked by size,
+  // 1 = largest). Output nodes take the component of an idea they link to.
   component: number;
   component_size: number;
   territory: Territory | null;
@@ -115,21 +118,20 @@ export function buildIdeaMap(
     if (l.target_idea_id) return ideaById.has(l.target_idea_id);
     return opts.include_outputs && !!l.target_artifact_id && artifactById.has(l.target_artifact_id);
   });
-  const accepted = usable.filter((l) => l.status === 'accepted');
-  const pending = usable.filter((l) => l.status === 'proposed');
-  const visibleLinks = opts.include_pending ? usable : accepted;
+  const visibleLinks = opts.include_pending ? usable : usable.filter((l) => l.status === 'accepted');
 
-  // Degrees over the full candidate set (not just the visible subgraph).
+  // Degrees over every link whose idea endpoints are candidates — output
+  // links count even when outputs are hidden, so degree (and therefore
+  // orphan status) doesn't change with include_outputs.
   const degree = new Map<string, number>();
   const pendingDegree = new Map<string, number>();
   const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
-  for (const l of accepted) {
-    bump(degree, l.source_idea_id);
-    bump(degree, targetOf(l));
-  }
-  for (const l of pending) {
-    bump(pendingDegree, l.source_idea_id);
-    bump(pendingDegree, targetOf(l));
+  for (const l of links) {
+    if (!ideaById.has(l.source_idea_id)) continue;
+    if (l.target_idea_id && !ideaById.has(l.target_idea_id)) continue;
+    const m = l.status === 'accepted' ? degree : pendingDegree;
+    bump(m, l.source_idea_id);
+    bump(m, targetOf(l));
   }
 
   // Territory from accepted output links (regardless of include_outputs).
@@ -169,6 +171,9 @@ export function buildIdeaMap(
     for (let d = 0; d < opts.depth && frontier.length > 0; d++) {
       const next: string[] = [];
       for (const id of frontier) {
+        // Outputs are leaves: expanding through a popular episode would
+        // pull in every unrelated idea that also links to it.
+        if (!ideaById.has(id)) continue;
         const neighbours = [...(adj.get(id) ?? [])].sort(
           (a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0) || a.localeCompare(b),
         );
@@ -228,8 +233,9 @@ export function buildIdeaMap(
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 
-  // Connected components over ACCEPTED edges among kept nodes.
-  const parent = new Map<string, string>(kept.map((id) => [id, id]));
+  // Connected components over ACCEPTED idea↔idea edges among kept ideas.
+  const keptIdeas = kept.filter((id) => ideaById.has(id));
+  const parent = new Map<string, string>(keptIdeas.map((id) => [id, id]));
   const find = (x: string): string => {
     let r = x;
     while (parent.get(r) !== r) r = parent.get(r)!;
@@ -242,13 +248,13 @@ export function buildIdeaMap(
     return r;
   };
   for (const e of edges) {
-    if (e.status !== 'accepted') continue;
+    if (e.status !== 'accepted' || !parent.has(e.source) || !parent.has(e.target)) continue;
     const ra = find(e.source);
     const rb = find(e.target);
     if (ra !== rb) parent.set(ra, rb);
   }
   const groups = new Map<string, string[]>();
-  for (const id of kept) {
+  for (const id of keptIdeas) {
     const r = find(id);
     if (!groups.has(r)) groups.set(r, []);
     groups.get(r)!.push(id);
@@ -260,6 +266,15 @@ export function buildIdeaMap(
   ranked.forEach((members, i) => {
     for (const m of members) componentOf.set(m, { id: i + 1, size: members.length });
   });
+  // An output joins the (best-ranked) component of an idea that links to it.
+  for (const id of kept) {
+    if (ideaById.has(id)) continue;
+    const linked = edges
+      .filter((e) => e.target === id && componentOf.has(e.source))
+      .map((e) => componentOf.get(e.source)!)
+      .sort((a, b) => a.id - b.id);
+    componentOf.set(id, linked[0] ?? { id: 0, size: 0 });
+  }
 
   const nodes: MapNode[] = kept.map((id) => {
     const comp = componentOf.get(id)!;
@@ -303,12 +318,6 @@ export function buildIdeaMap(
     };
   });
 
-  const connected = new Set<string>();
-  for (const e of edges) {
-    if (e.status !== 'accepted') continue;
-    connected.add(e.source);
-    connected.add(e.target);
-  }
 
   return {
     format: 'idea-map/v1',
@@ -318,7 +327,8 @@ export function buildIdeaMap(
       nodes: nodes.length,
       edges: edges.length,
       components: ranked.length,
-      orphans: nodes.filter((n) => n.node_type !== 'output' && !connected.has(n.id)).length,
+      // Ideas with no accepted link of any kind (same as list_ideas unlinked).
+      orphans: nodes.filter((n) => n.node_type !== 'output' && n.degree === 0).length,
     },
     truncated: omitted > 0,
     omitted_count: omitted,
@@ -336,8 +346,9 @@ export function buildIdeaMap(
 
 function xmlEscape(s: string): string {
   return s
-    // XML 1.0 forbids most C0 control characters.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    // XML 1.0 forbids most C0 controls, U+FFFE/U+FFFF and lone surrogates.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -391,11 +402,11 @@ export function toGraphML(map: IdeaMap): string {
     }
     lines.push('    </node>');
   }
+  // Symmetric links carry directed=false in the e_directed data key rather
+  // than a per-edge XML attribute: mixed graphs break common readers
+  // (networkx refuses them).
   for (const e of map.edges) {
-    const dir = e.directed ? '' : ' directed="false"';
-    lines.push(
-      `    <edge id="${xmlEscape(e.id)}" source="${xmlEscape(e.source)}" target="${xmlEscape(e.target)}"${dir}>`,
-    );
+    lines.push(`    <edge id="${xmlEscape(e.id)}" source="${xmlEscape(e.source)}" target="${xmlEscape(e.target)}">`);
     for (const [k] of EDGE_KEYS) {
       lines.push(`      <data key="e_${k}">${xmlEscape(String(e[k]))}</data>`);
     }
@@ -409,11 +420,26 @@ export function toGraphML(map: IdeaMap): string {
 // ── Mermaid ───────────────────────────────────────────────────────────
 
 export const MERMAID_MAX_NODES = 150;
+// Mermaid refuses to render more than 500 edges by default (maxEdges).
+export const MERMAID_MAX_EDGES = 500;
 
-function mermaidLabel(s: string, max = 60): string {
-  const flat = s.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const cut = flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-  return cut.replace(/"/g, '#quot;');
+const MERMAID_ENTITIES: Record<string, string> = {
+  '#': '#35;',
+  '"': '#quot;',
+  '&': '#38;',
+  '<': '#60;',
+  '>': '#62;',
+  '`': '#96;',
+  '%': '#37;',
+};
+
+// Labels go inside ["…"]: flatten, truncate by code point, then encode the
+// characters Mermaid would treat as markup (one pass, so '#' is never
+// double-encoded).
+export function mermaidLabel(s: string, max = 60): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  if (!flat) return '(untitled)';
+  return truncateChars(flat, max).replace(/[#"&<>`%]/g, (c) => MERMAID_ENTITIES[c]);
 }
 
 export function toMermaid(map: IdeaMap): string {
@@ -427,7 +453,9 @@ export function toMermaid(map: IdeaMap): string {
     else if (n.node_type === 'output') lines.push(`  ${id}(["${label}"])`);
     else lines.push(`  ${id}["${label}"]`);
   }
-  for (const e of map.edges) {
+  // Accepted edges first, so a cap drops proposals before decisions.
+  const edges = [...map.edges].sort((x, y) => (x.status === y.status ? 0 : x.status === 'accepted' ? -1 : 1));
+  for (const e of edges.slice(0, MERMAID_MAX_EDGES)) {
     const a = idFor.get(e.source);
     const b = idFor.get(e.target);
     if (!a || !b) continue;

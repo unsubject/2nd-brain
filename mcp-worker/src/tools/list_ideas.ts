@@ -25,6 +25,7 @@ const inputSchema = z
     until: isoDateTimeSchema.optional(),
     unlinked: z.boolean().optional(),
     has_output: z.boolean().optional(),
+    territory: z.enum(['frontier', 'adjacent', 'territory']).optional(),
     sort: z.enum(['captured_at', 'updated_at']).optional(),
     limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).optional(),
@@ -63,6 +64,7 @@ export async function listIdeasHandler(
         link_count: string | number;
         pending_count: string | number;
         has_output: boolean;
+        revisits_output: boolean;
         embedded: boolean;
         total: string | number;
         as_of: Date;
@@ -81,7 +83,10 @@ export async function listIdeasHandler(
                    AND (l.source_idea_id = i.id OR l.target_idea_id = i.id)) AS pending_count,
                EXISTS (SELECT 1 FROM idea_link l
                         WHERE l.source_idea_id = i.id AND l.status = 'accepted'
-                          AND l.link_type = 'became') AS has_output
+                          AND l.link_type = 'became') AS has_output,
+               EXISTS (SELECT 1 FROM idea_link l
+                        WHERE l.source_idea_id = i.id AND l.status = 'accepted'
+                          AND l.link_type = 'revisits') AS revisits_output
           FROM idea i
          WHERE i.user_id = ${env.BRAIN_USER_ID}
            AND i.status = ANY(${textArray(sql, statuses)})
@@ -99,6 +104,15 @@ export async function listIdeasHandler(
         FROM base b
        WHERE ${args.unlinked === undefined ? sql`TRUE` : args.unlinked ? sql`b.link_count = 0` : sql`b.link_count > 0`}
          AND ${args.has_output === undefined ? sql`TRUE` : sql`b.has_output = ${args.has_output}`}
+         AND ${
+           args.territory === 'territory'
+             ? sql`b.has_output`
+             : args.territory === 'adjacent'
+               ? sql`NOT b.has_output AND b.revisits_output`
+               : args.territory === 'frontier'
+                 ? sql`NOT b.has_output AND NOT b.revisits_output`
+                 : sql`TRUE`
+         }
        ORDER BY ${args.sort === 'updated_at' ? sql`b.updated_at` : sql`b.captured_at`} DESC, b.id
        LIMIT ${limit} OFFSET ${offset}
     `;
@@ -120,6 +134,7 @@ export async function listIdeasHandler(
         link_count: Number(r.link_count),
         pending_count: Number(r.pending_count),
         has_output: r.has_output,
+        territory: r.has_output ? 'territory' : r.revisits_output ? 'adjacent' : 'frontier',
         embedded: r.embedded,
       })),
     });

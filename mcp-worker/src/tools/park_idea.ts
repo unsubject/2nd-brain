@@ -9,6 +9,7 @@ import {
   errorResult,
   isoDateTimeSchema,
   jsonParam,
+  LIMITS,
   ok,
   tagsSchema,
   textArray,
@@ -17,19 +18,19 @@ import {
 
 const inputSchema = z
   .object({
-    title: z.string().min(1).max(500),
-    thoughts: z.string().max(20000).optional(),
-    why_interesting: z.string().max(4000).optional(),
-    encountered_where: z.string().max(1000).optional(),
+    title: z.string().min(1).max(LIMITS.title),
+    thoughts: z.string().max(LIMITS.thoughts).optional(),
+    why_interesting: z.string().max(LIMITS.why_interesting).optional(),
+    encountered_where: z.string().max(LIMITS.encountered_where).optional(),
     source: z
       .object({
-        url: z.string().url().max(2048).optional(),
-        title: z.string().max(1000).optional(),
-        excerpt: z.string().max(8000).optional(),
+        url: z.string().url().max(LIMITS.source_url).optional(),
+        title: z.string().max(LIMITS.source_title).optional(),
+        excerpt: z.string().max(LIMITS.source_excerpt).optional(),
       })
       .strict()
       .optional(),
-    framing: z.string().max(6000).optional(),
+    framing: z.string().max(LIMITS.framing).optional(),
     tags: tagsSchema.optional(),
     captured_at: isoDateTimeSchema.optional(),
     idempotency_key: z.string().min(1).max(200).optional(),
@@ -84,29 +85,50 @@ export async function parkIdeaHandler(
 
   const sql = getDb(env);
   try {
-    const lookupExisting = async () => {
-      if (key) {
-        const byKey = await sql<Array<{ id: string; title: string; captured_at: Date; status: string }>>`
-          SELECT i.id, i.title, i.captured_at, i.status, now() AS as_of
-            FROM idea_source s JOIN idea i ON i.id = s.idea_id
-           WHERE s.user_id = ${env.BRAIN_USER_ID}
-             AND s.source_system = 'librarian'
-             AND s.source_external_id = ${key}
-        `;
-        if (byKey.length > 0) return byKey[0];
-      }
-      // Retry guard for clients that don't send an idempotency key: the
-      // same title filed by this user in the last 10 minutes.
-      const recent = await sql<Array<{ id: string; title: string; captured_at: Date; status: string }>>`
+    type Existing = { id: string; title: string; captured_at: Date; status: string };
+    const byKey = async (): Promise<Existing | null> => {
+      if (!key) return null;
+      const rows = await sql<Existing[]>`
+        SELECT i.id, i.title, i.captured_at, i.status, now() AS as_of
+          FROM idea_source s JOIN idea i ON i.id = s.idea_id
+         WHERE s.user_id = ${env.BRAIN_USER_ID}
+           AND s.source_system = 'librarian'
+           AND s.source_external_id = ${key}
+      `;
+      return rows[0] ?? null;
+    };
+    // Retry guard for clients that resend without (or with a fresh) key:
+    // the same title AND the same content filed in the last 10 minutes.
+    // A different thought under the same title is a new idea.
+    const sameContentRecently = async (): Promise<Existing | null> => {
+      const rows = await sql<Existing[]>`
         SELECT id, title, captured_at, status, now() AS as_of
           FROM idea
          WHERE user_id = ${env.BRAIN_USER_ID}
+           AND kind = 'unit'
            AND lower(btrim(title)) = lower(${title})
+           AND thoughts IS NOT DISTINCT FROM ${thoughts}
+           AND why_interesting IS NOT DISTINCT FROM ${fields.why_interesting}
+           AND source_url IS NOT DISTINCT FROM ${fields.source_url}
            AND created_at > now() - interval '10 minutes'
          ORDER BY created_at DESC
          LIMIT 1
       `;
-      return recent[0] ?? null;
+      return rows[0] ?? null;
+    };
+    const lookupExisting = async (): Promise<Existing | null> => {
+      const k = await byKey();
+      if (k) return k;
+      const recent = await sameContentRecently();
+      if (recent && key) {
+        // Remember the new key too, so later retries with it stay consistent.
+        await sql`
+          INSERT INTO idea_source (idea_id, user_id, source_system, source_external_id)
+          VALUES (${recent.id}, ${env.BRAIN_USER_ID}, 'librarian', ${key})
+          ON CONFLICT DO NOTHING
+        `;
+      }
+      return recent;
     };
 
     const existing = await lookupExisting();
@@ -173,7 +195,7 @@ function receipt(
     embedding: deduplicated ? 'unchanged' : 'pending',
     deduplicated,
     note: deduplicated
-      ? 'Already filed (same idempotency key, or the same title within the last 10 minutes). Nothing new was written.'
+      ? 'Already filed (same idempotency key, or the same title and content within the last 10 minutes). Nothing new was written.'
       : RECEIPT_NOTE,
   };
 }

@@ -1,7 +1,8 @@
-// DB-backed test for the idea embedding sweeper. Gated on TEST_DATABASE_URL
-// (a local *_test database with migrations applied, e.g. via
-// `DATABASE_URL=$TEST_DATABASE_URL npm run migrate`). The embedding call
-// is injected — no OpenAI traffic.
+// DB-backed test for the idea embedding sweeper. Gated on TEST_DATABASE_URL:
+// a local *_test database with all migrations applied — either run
+// `DATABASE_URL=$TEST_DATABASE_URL npm run migrate`, or run the mcp-worker
+// vitest suite once against it (its setup resets and migrates the DB).
+// The embedding call is injected — no OpenAI traffic.
 
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -11,7 +12,7 @@ const url = process.env.TEST_DATABASE_URL;
 const skip = !url ? "TEST_DATABASE_URL not set" : false;
 
 let db: Pool;
-let embedPendingIdeas: typeof import("../src/ideas/worker").embedPendingIdeas;
+let worker: typeof import("../src/ideas/worker");
 
 const vec = (x: number) => {
   const v = new Array(1536).fill(0);
@@ -20,16 +21,25 @@ const vec = (x: number) => {
   return v;
 };
 
+class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 before(async () => {
   if (!url) return;
-  const u = new URL(url);
-  if (!["localhost", "127.0.0.1", "::1", "postgres"].includes(u.hostname) || !u.pathname.endsWith("_test")) {
-    throw new Error("TEST_DATABASE_URL must point at a local *_test database");
-  }
   // src/archive/embeddings constructs an OpenAI client at import time.
   process.env.OPENAI_API_KEY ??= "test-dummy";
-  ({ embedPendingIdeas } = await import("../src/ideas/worker"));
+  worker = await import("../src/ideas/worker");
   db = new Pool({ connectionString: url, max: 2 });
+  // Check where we actually connected, not just what the URL says.
+  const { rows } = await db.query("SELECT current_database() AS db, inet_server_addr()::text AS addr");
+  const addr: string | null = rows[0].addr;
+  if (!String(rows[0].db).endsWith("_test") || (addr !== null && !/^(127\.|::1)/.test(addr))) {
+    await db.end();
+    throw new Error(`Refusing to run against ${rows[0].db}@${addr}: needs a local *_test database`);
+  }
 });
 
 after(async () => {
@@ -49,10 +59,22 @@ async function insertIdea(title: string, extra: Record<string, unknown> = {}): P
   return rows[0].id;
 }
 
+const ok = async (texts: string[]) => texts.map(() => vec(0.5));
+
+async function state(id: string) {
+  const { rows } = await db.query(
+    `SELECT embedding IS NOT NULL AS has, embed_attempts, embed_error,
+            embed_retry_at IS NOT NULL AND embed_retry_at > now() AS backing_off
+       FROM idea WHERE id = $1`,
+    [id]
+  );
+  return rows[0];
+}
+
 test("embeds pending ideas with the recipe text", { skip }, async () => {
   const id = await insertIdea("First", { thoughts: "mine", notes: [{ by: "simon", text: "note" }] });
   const seen: string[][] = [];
-  const r = await embedPendingIdeas({
+  const r = await worker.embedPendingIdeas({
     db,
     model: "test-model",
     embed: async (texts) => {
@@ -60,65 +82,104 @@ test("embeds pending ideas with the recipe text", { skip }, async () => {
       return texts.map(() => vec(0.5));
     },
   });
-  assert.deepEqual(r, { embedded: 1, skipped: 0, failed: 0 });
+  assert.deepEqual(r, { embedded: 1, skipped: 0, failed: 0, outage: false });
   assert.deepEqual(seen, [["First\n\nmine\n\nnote"]]);
-  const { rows } = await db.query(
-    "SELECT embedding IS NOT NULL AS has, embedding_model, embedded_at IS NOT NULL AS stamped FROM idea WHERE id = $1",
-    [id]
-  );
-  assert.deepEqual(rows[0], { has: true, embedding_model: "test-model", stamped: true });
-  const again = await embedPendingIdeas({ db, embed: async () => assert.fail("nothing left to embed") });
-  assert.deepEqual(again, { embedded: 0, skipped: 0, failed: 0 });
+  const { rows } = await db.query("SELECT embedding_model, embedded_at IS NOT NULL AS stamped FROM idea WHERE id = $1", [id]);
+  assert.deepEqual(rows[0], { embedding_model: "test-model", stamped: true });
+  assert.equal((await state(id)).has, true);
+  const again = await worker.embedPendingIdeas({ db, embed: async () => assert.fail("nothing left to embed") });
+  assert.deepEqual(again, { embedded: 0, skipped: 0, failed: 0, outage: false });
 });
 
 test("does not overwrite an idea edited while its embedding was in flight", { skip }, async () => {
   const id = await insertIdea("Before edit");
-  const r = await embedPendingIdeas({
+  const r = await worker.embedPendingIdeas({
     db,
     embed: async (texts) => {
       await db.query("UPDATE idea SET title = 'After edit', updated_at = now() WHERE id = $1", [id]);
       return texts.map(() => vec(0.5));
     },
   });
-  assert.deepEqual(r, { embedded: 0, skipped: 1, failed: 0 });
-  const { rows } = await db.query("SELECT embedding IS NULL AS pending FROM idea WHERE id = $1", [id]);
-  assert.equal(rows[0].pending, true);
+  assert.deepEqual(r, { embedded: 0, skipped: 1, failed: 0, outage: false });
+  assert.equal((await state(id)).has, false);
 });
 
-test("isolates a failing row and counts attempts", { skip }, async () => {
+test("an outage charges no attempts and leaves rows eligible", { skip }, async () => {
+  const id = await insertIdea("During outage");
+  for (const err of [new HttpError(503, "Service Unavailable"), new HttpError(429, "rate limited"), new Error("ECONNRESET")]) {
+    const r = await worker.embedPendingIdeas({
+      db,
+      embed: async () => {
+        throw err;
+      },
+    });
+    assert.deepEqual(r, { embedded: 0, skipped: 0, failed: 0, outage: true });
+  }
+  assert.deepEqual(await state(id), { has: false, embed_attempts: 0, embed_error: null, backing_off: false });
+  const r = await worker.embedPendingIdeas({ db, embed: ok });
+  assert.equal(r.embedded, 1);
+});
+
+test("isolates a bad row, backs it off, and tick() terminates", { skip }, async () => {
   const good = await insertIdea("Good");
   const bad = await insertIdea("BAD");
   const embed = async (texts: string[]) => {
-    if (texts.some((t) => t.startsWith("BAD"))) throw new Error("rejected input");
+    if (texts.some((t) => t.startsWith("BAD"))) throw new HttpError(400, "invalid input");
     return texts.map(() => vec(0.5));
   };
-  const r = await embedPendingIdeas({ db, embed });
-  assert.deepEqual(r, { embedded: 1, skipped: 0, failed: 1 });
-  const { rows } = await db.query(
-    "SELECT id, embedding IS NOT NULL AS has, embed_attempts, embed_error FROM idea ORDER BY title"
-  );
-  const byId = new Map(rows.map((x) => [x.id, x]));
-  assert.equal(byId.get(good).has, true);
-  assert.equal(byId.get(bad).has, false);
-  assert.equal(byId.get(bad).embed_attempts, 1);
-  assert.match(byId.get(bad).embed_error, /rejected input/);
+  const r = await worker.tick({ db, embed });
+  assert.deepEqual(r, { embedded: 1, skipped: 0, failed: 1, outage: false });
+  assert.equal((await state(good)).has, true);
+  assert.deepEqual(await state(bad), { has: false, embed_attempts: 1, embed_error: "invalid input", backing_off: true });
 
-  // Gives up after maxAttempts.
-  for (let i = 0; i < 3; i++) await embedPendingIdeas({ db, embed, maxAttempts: 3 });
-  const last = await embedPendingIdeas({ db, embed: async () => assert.fail("should not retry"), maxAttempts: 3 });
-  assert.deepEqual(last, { embedded: 0, skipped: 0, failed: 0 });
+  // Not retried while backing off …
+  const again = await worker.embedPendingIdeas({ db, embed: async () => assert.fail("should be backing off") });
+  assert.equal(again.embedded + again.failed, 0);
+  // … but retried once the backoff has elapsed.
+  await db.query("UPDATE idea SET embed_retry_at = now() - interval '1 second' WHERE id = $1", [bad]);
+  assert.equal((await worker.embedPendingIdeas({ db, embed: ok })).embedded, 1);
+});
+
+test("a failure on an idea edited mid-flight is not recorded", { skip }, async () => {
+  const id = await insertIdea("BAD then edited");
+  const r = await worker.embedPendingIdeas({
+    db,
+    embed: async () => {
+      await db.query("UPDATE idea SET title = 'fixed', updated_at = now() WHERE id = $1", [id]);
+      throw new HttpError(400, "invalid input");
+    },
+  });
+  assert.equal(r.skipped, 1);
+  assert.deepEqual(await state(id), { has: false, embed_attempts: 0, embed_error: null, backing_off: false });
+});
+
+test("retries over-long input with a shorter text", { skip }, async () => {
+  const id = await insertIdea("Long", { thoughts: "粵".repeat(3000) });
+  const r = await worker.embedPendingIdeas({
+    db,
+    embed: async (texts) => {
+      if (texts.some((t) => Array.from(t).length > 2500)) {
+        throw new HttpError(400, "This model's maximum context length is 8192 tokens");
+      }
+      return texts.map(() => vec(0.5));
+    },
+  });
+  assert.equal(r.embedded, 1);
+  assert.equal((await state(id)).has, true);
 });
 
 test("the trigger re-queues an idea when the user's words change", { skip }, async () => {
   const id = await insertIdea("Trigger");
-  await embedPendingIdeas({ db, embed: async (t) => t.map(() => vec(0.5)) });
+  await worker.embedPendingIdeas({ db, embed: ok });
   await db.query(
     `UPDATE idea SET notes = notes || '[{"by":"agent","text":"x"}]'::jsonb, updated_at = now() WHERE id = $1`,
     [id]
   );
-  let { rows } = await db.query("SELECT embedding IS NOT NULL AS has FROM idea WHERE id = $1", [id]);
-  assert.equal(rows[0].has, true);
+  assert.equal((await state(id)).has, true);
+  await db.query(
+    "UPDATE idea SET embed_attempts = 3, embed_retry_at = now() + interval '1 day' WHERE id = $1",
+    [id]
+  );
   await db.query("UPDATE idea SET thoughts = 'new words', updated_at = now() WHERE id = $1", [id]);
-  ({ rows } = await db.query("SELECT embedding IS NOT NULL AS has FROM idea WHERE id = $1", [id]));
-  assert.equal(rows[0].has, false);
+  assert.deepEqual(await state(id), { has: false, embed_attempts: 0, embed_error: null, backing_off: false });
 });

@@ -564,8 +564,8 @@ export const tools: Tool[] = [
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 500, description: 'Short title, confirmed with the user' },
         thoughts: { type: 'string', maxLength: 20000, description: "The user's own words, verbatim (may be omitted)" },
-        why_interesting: { type: 'string', maxLength: 4000, description: 'Why the user finds it interesting, in their framing' },
-        encountered_where: { type: 'string', maxLength: 1000, description: 'Where/how they encountered it (medium, place, conversation…)' },
+        why_interesting: { type: 'string', maxLength: 8000, description: 'Why the user finds it interesting, in their framing' },
+        encountered_where: { type: 'string', maxLength: 2000, description: 'Where/how they encountered it (medium, place, conversation…)' },
         source: {
           type: 'object',
           properties: {
@@ -575,13 +575,18 @@ export const tools: Tool[] = [
           },
           additionalProperties: false,
         },
-        framing: { type: 'string', maxLength: 6000, description: 'Optional AI-written framing — never the user\'s words' },
+        framing: { type: 'string', maxLength: 12000, description: 'Optional AI-written framing — never the user\'s words' },
         tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         captured_at: { type: 'string', format: 'date-time', description: 'Only if the user says the idea came earlier than now' },
-        idempotency_key: { type: 'string', minLength: 1, maxLength: 200, description: 'Any unique string; makes retries safe' },
+        idempotency_key: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          description: 'Any unique string; makes retries safe (a retry with the same title and content is also recognised)',
+        },
         captured_via: {
           type: 'object',
-          properties: { client: { type: 'string' }, model: { type: 'string' } },
+          properties: { client: { type: 'string', maxLength: 100 }, model: { type: 'string', maxLength: 100 } },
           additionalProperties: false,
         },
       },
@@ -593,15 +598,20 @@ export const tools: Tool[] = [
   {
     name: 'import_ideas',
     description:
-      "One-time import of up to 25 ideas from the old Notion Idea Parking Lot or the Google Tasks 'Subjects' list. ONLY call while running the import protocol (§4) that the user explicitly started. Idempotent on (source_system, source_external_id): re-sent rows come back 'already_imported' and are not changed. Put the original row, verbatim, in import_payload. merge_into_idea_id attaches a duplicate source to an existing idea (earliest captured_at wins, tags union, one verbatim note) instead of creating a new one. captured_at accepts ISO 8601 or Notion's 'March 8, 2026 12:26 PM' form, read at default_utc_offset. notes_raw is split into dated notes on [YYYY-MM-DD] markers.",
+      "One-time import of up to 25 ideas from the old Notion Idea Parking Lot or the Google Tasks 'Subjects' list. ONLY call while running the import protocol (§4) that the user explicitly started. Idempotent on (source_system, source_external_id): re-sent rows come back 'already_imported' and are not changed. Put the original row, verbatim, in import_payload. merge_into_idea_id attaches a duplicate source to an existing idea (earliest captured_at wins, tags union, one verbatim note) instead of creating a new one. captured_at accepts ISO 8601 or Notion's 'March 8, 2026 12:26 PM' form, read in `timezone` (IANA, DST-aware; preferred) or at default_utc_offset. notes_raw is split into dated notes on [YYYY-MM-DD] markers at the start of a line. Items are validated one by one: a bad item comes back as result 'error' without sinking the batch.",
     inputSchema: {
       type: 'object',
       properties: {
         source_system: { type: 'string', enum: ['notion', 'gtasks_subjects'] },
-        default_utc_offset: { type: 'string', description: 'e.g. "+08:00", "-05:00", "Z" (default "+00:00")' },
+        timezone: { type: 'string', maxLength: 64, description: 'IANA zone the source displayed times in, e.g. "Europe/London" (DST-aware)' },
+        default_utc_offset: {
+          type: 'string',
+          maxLength: 10,
+          description: 'Fixed offset used when timezone is absent, e.g. "+08:00", "-05:00", "Z" (default "+00:00")',
+        },
         captured_via: {
           type: 'object',
-          properties: { client: { type: 'string' }, model: { type: 'string' } },
+          properties: { client: { type: 'string', maxLength: 100 }, model: { type: 'string', maxLength: 100 } },
           additionalProperties: false,
         },
         items: {
@@ -615,7 +625,7 @@ export const tools: Tool[] = [
               import_payload: { type: 'object', description: 'The original row, verbatim' },
               merge_into_idea_id: { type: 'string', format: 'uuid' },
               title: { type: 'string', minLength: 1, maxLength: 500, description: 'Required unless merging' },
-              captured_at: { type: 'string' },
+              captured_at: { type: 'string', maxLength: 100 },
               encountered_where: { type: 'string', maxLength: 2000 },
               source_url: { type: 'string', format: 'uri', maxLength: 2048 },
               source_title: { type: 'string', maxLength: 1000 },
@@ -640,13 +650,13 @@ export const tools: Tool[] = [
   {
     name: 'list_subjects_for_import',
     description:
-      "Read the Google Tasks 'Subjects' list items (already synced into 2nd-brain) for the one-time import. ONLY call during the import protocol (§4). Each task shows already_imported and possible_duplicates (existing ideas with a matching title, e.g. Notion rows that came from Google Tasks). first_synced_at is approximate — Google Tasks has no creation date.",
+      "Read the Google Tasks 'Subjects' list items (already synced into 2nd-brain) for the one-time import. ONLY call during the import protocol (§4). Each task shows already_imported, stale (not in the latest sync — probably deleted or moved; confirm with the user) and possible_duplicates (existing ideas with a similar title, each marked match 'exact' or 'contains'). Page with next_offset over the full list; only_not_imported shrinks as you import, so use it only for a final check. first_synced_at is approximate — Google Tasks has no creation date.",
     inputSchema: {
       type: 'object',
       properties: {
         include_completed: { type: 'boolean', default: true },
         only_not_imported: { type: 'boolean', default: false },
-        limit: { type: 'integer', minimum: 1, maximum: 200, default: 100 },
+        limit: { type: 'integer', minimum: 1, maximum: 500, default: 200 },
         offset: { type: 'integer', minimum: 0, default: 0 },
       },
       additionalProperties: false,
@@ -661,13 +671,13 @@ export const tools: Tool[] = [
       type: 'object',
       properties: {
         id: { type: 'string', format: 'uuid' },
-        title: { type: 'string', minLength: 1, maxLength: 500 },
-        encountered_where: { type: ['string', 'null'], maxLength: 1000 },
+        title: { type: 'string', minLength: 1, maxLength: 500, description: 'Cannot be blank' },
+        encountered_where: { type: ['string', 'null'], maxLength: 2000 },
         source_url: { type: ['string', 'null'], format: 'uri', maxLength: 2048 },
         source_title: { type: ['string', 'null'], maxLength: 1000 },
         source_excerpt: { type: ['string', 'null'], maxLength: 8000 },
-        why_interesting: { type: ['string', 'null'], maxLength: 4000 },
-        framing: { type: ['string', 'null'], maxLength: 6000 },
+        why_interesting: { type: ['string', 'null'], maxLength: 8000 },
+        framing: { type: ['string', 'null'], maxLength: 12000 },
         thoughts: { type: ['string', 'null'], maxLength: 20000 },
         tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         add_tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
@@ -709,7 +719,7 @@ export const tools: Tool[] = [
   {
     name: 'list_ideas',
     description:
-      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), has_output (territory vs frontier). Read-only. Protocol §5.",
+      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), territory ('frontier' = no output link, 'adjacent' = only revisits an output, 'territory' = became an output), has_output. Read-only. Protocol §5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -725,6 +735,7 @@ export const tools: Tool[] = [
         until: { type: 'string', format: 'date-time' },
         unlinked: { type: 'boolean' },
         has_output: { type: 'boolean' },
+        territory: { type: 'string', enum: ['frontier', 'adjacent', 'territory'] },
         sort: { type: 'string', enum: ['captured_at', 'updated_at'], default: 'captured_at' },
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
         offset: { type: 'integer', minimum: 0, default: 0 },
@@ -764,7 +775,7 @@ export const tools: Tool[] = [
   {
     name: 'garden_ideas',
     description:
-      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session the user explicitly started ('let's garden', 'tend my parking lot') — never at capture time. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?). Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. Protocol §2.",
+      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session the user explicitly started ('let's garden', 'tend my parking lot') — never at capture time. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours; newest first, paged), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?; 40 ideas per page). Global near/band passes cover the most recently updated ideas; focus_idea_id reaches any idea. Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. Protocol §2.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -772,9 +783,17 @@ export const tools: Tool[] = [
         focus_idea_id: { type: 'string', format: 'uuid' },
         min_similarity: { type: 'number', minimum: -1, maximum: 1 },
         max_similarity: { type: 'number', minimum: -1, maximum: 1 },
-        limit: { type: 'integer', minimum: 1, maximum: 30, default: 12 },
-        per_idea_cap: { type: 'integer', minimum: 1, maximum: 10, default: 2 },
-        cross_domain: { type: 'boolean', description: 'Only pairs with no tag in common' },
+        limit: { type: 'integer', minimum: 1, maximum: 30, description: 'Default 12 (8 orphans in orphans mode)' },
+        per_idea_cap: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          default: 2,
+          description: 'Max candidates per idea (near/band/outputs)',
+        },
+        cross_domain: { type: 'boolean', description: 'Only pairs with no tag in common (near/band/orphans)' },
+        order: { type: 'string', enum: ['newest', 'oldest'], default: 'newest', description: 'orphans/outputs: by captured_at' },
+        offset: { type: 'integer', minimum: 0, default: 0, description: 'orphans/outputs paging (see paging.next_offset)' },
         include_statuses: {
           type: 'array',
           items: { type: 'string', enum: ['parked', 'exploring', 'used', 'composted'] },
@@ -796,7 +815,7 @@ export const tools: Tool[] = [
         origin: { type: 'string', enum: ['gardening', 'import'] },
         proposed_via: {
           type: 'object',
-          properties: { client: { type: 'string' }, model: { type: 'string' } },
+          properties: { client: { type: 'string', maxLength: 100 }, model: { type: 'string', maxLength: 100 } },
           additionalProperties: false,
         },
         reconsider_rejected: { type: 'boolean', default: false },
@@ -883,8 +902,8 @@ export const tools: Tool[] = [
         intent: { type: 'string', enum: ['episode', 'essay', 'series', 'learning', 'undecided'] },
         part_ids: { type: 'array', items: { type: 'string', format: 'uuid' }, minItems: 2, maxItems: 30 },
         thoughts: { type: 'string', maxLength: 20000, description: "The user's own words, verbatim" },
-        framing: { type: 'string', maxLength: 6000 },
-        why_interesting: { type: 'string', maxLength: 4000 },
+        framing: { type: 'string', maxLength: 12000 },
+        why_interesting: { type: 'string', maxLength: 8000 },
         tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         status: { type: 'string', enum: ['parked', 'exploring', 'used', 'composted'] },
         part_rationales: {
@@ -894,7 +913,7 @@ export const tools: Tool[] = [
         },
         captured_via: {
           type: 'object',
-          properties: { client: { type: 'string' }, model: { type: 'string' } },
+          properties: { client: { type: 'string', maxLength: 100 }, model: { type: 'string', maxLength: 100 } },
           additionalProperties: false,
         },
       },

@@ -62,8 +62,8 @@ describe('buildIdeaMap', () => {
     expect(node('c').territory).toBe('frontier');
     expect(node('X').node_type).toBe('output');
     expect(node('a').component).toBe(node('c').component);
-    expect(node('a').component).toBe(node('X').component);
-    expect(node('a').component_size).toBe(4);
+    expect(node('a').component).toBe(node('X').component); // outputs join their idea's component
+    expect(node('a').component_size).toBe(3); // ideas only
     expect(node('e').component).not.toBe(node('a').component);
     expect(node('d').component_size).toBe(1);
     expect(m.stats.orphans).toBe(1);
@@ -119,12 +119,13 @@ describe('serialisers', () => {
   ];
   const tl = [link('p', 'q', 'tension_with'), link('p', 's', 'part_of'), link('q', 's', 'part_of', 'proposed')];
 
-  it('GraphML escapes XML and marks symmetric edges undirected', () => {
+  it('GraphML escapes XML and marks symmetric edges via the directed data key', () => {
     const m = buildIdeaMap(tricky, tl, [], opts({ include_pending: true }));
     const xml = toGraphML(m);
     expect(xml).toContain('Fish &amp; &quot;chips&quot; &lt;b&gt; &apos;q&apos; 中文</data>');
     expect(xml).not.toContain('\u0001');
-    expect(xml).toMatch(/<edge id="[^"]+" source="p" target="q" directed="false">/);
+    expect(xml).not.toContain('directed="false"'); // mixed graphs break networkx
+    expect(xml).toMatch(/<edge id="[^"]+" source="p" target="q">\n      <data key="e_type">tension_with<\/data>[\s\S]*?<data key="e_directed">false<\/data>/);
     expect(xml).toMatch(/<edge id="[^"]+" source="p" target="s">/);
     expect(xml.startsWith('<?xml')).toBe(true);
   });

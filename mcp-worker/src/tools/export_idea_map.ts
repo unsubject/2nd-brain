@@ -23,6 +23,7 @@ import {
   toIso,
   toIsoOrNull,
   uuidArrayLiteral,
+  uuidSchema,
 } from './idea_shared';
 
 // Read-only graph export for any agent's visualisation tool
@@ -32,7 +33,7 @@ import {
 const inputSchema = z
   .object({
     format: z.enum(['json', 'graphml', 'mermaid']).optional(),
-    focus_idea_id: z.string().uuid().optional(),
+    focus_idea_id: uuidSchema.optional(),
     depth: z.number().int().min(1).max(4).optional(),
     statuses: z.array(ideaStatusSchema).min(1).optional(),
     since: isoDateTimeSchema.optional(),

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { titlesLikelySame } from '../ideas/text';
+import { titleMatch } from '../ideas/text';
 import { dbError, errorResult, ok, parseJsonb, toIso, toIsoOrNull } from './idea_shared';
 
 // Read-only source listing for the one-time Subjects import
@@ -14,7 +14,7 @@ const inputSchema = z
   .object({
     include_completed: z.boolean().optional(),
     only_not_imported: z.boolean().optional(),
-    limit: z.number().int().min(1).max(200).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
     offset: z.number().int().min(0).optional(),
   })
   .strict();
@@ -30,7 +30,7 @@ export async function listSubjectsForImportHandler(
   }
   const includeCompleted = parsed.data.include_completed ?? true;
   const onlyNotImported = parsed.data.only_not_imported ?? false;
-  const limit = parsed.data.limit ?? 100;
+  const limit = parsed.data.limit ?? 200;
   const offset = parsed.data.offset ?? 0;
 
   const sql = getDb(env);
@@ -44,6 +44,8 @@ export async function listSubjectsForImportHandler(
         completed_at: Date | null;
         due_at: Date | null;
         first_synced_at: Date;
+        last_seen_at: Date;
+        stale: boolean;
         list_title: string;
         parent_external_task_id: string | null;
         parent_title: string | null;
@@ -53,7 +55,12 @@ export async function listSubjectsForImportHandler(
       }>
     >`
       SELECT t.external_task_id, t.title, t.notes, t.status, t.completed_at, t.due_at,
-             t.created_at AS first_synced_at, p.name AS list_title,
+             t.created_at AS first_synced_at, t.updated_at AS last_seen_at,
+             -- Every sync stamps the list, then each task it still returns;
+             -- a task older than its list's stamp was not in the latest sync
+             -- (deleted or moved in Google Tasks).
+             (t.updated_at < p.updated_at) AS stale,
+             p.name AS list_title,
              t.parent_external_task_id, parent.title AS parent_title,
              s.idea_id AS imported_idea_id,
              count(*) OVER () AS total,
@@ -91,10 +98,13 @@ export async function listSubjectsForImportHandler(
       const possible = r.imported_idea_id
         ? []
         : ideas
-            .filter((i) => titlesLikelySame(i.title, r.title))
-            .map((i) => ({
+            .map((i) => ({ i, match: titleMatch(i.title, r.title) }))
+            .filter((x) => x.match !== null)
+            .sort((a, b) => (a.match === b.match ? 0 : a.match === 'exact' ? -1 : 1))
+            .map(({ i, match }) => ({
               idea_id: i.id,
               title: i.title,
+              match,
               source_systems: parseJsonb<string[]>(i.source_systems, []),
             }));
       return {
@@ -105,6 +115,8 @@ export async function listSubjectsForImportHandler(
         completed_at: toIsoOrNull(r.completed_at),
         due_at: toIsoOrNull(r.due_at),
         first_synced_at: toIso(r.first_synced_at),
+        last_seen_at: toIso(r.last_seen_at),
+        stale: r.stale,
         list_title: r.list_title,
         parent_external_task_id: r.parent_external_task_id,
         parent_title: r.parent_title,
@@ -119,8 +131,9 @@ export async function listSubjectsForImportHandler(
       total: rows.length > 0 ? Number(rows[0].total) : 0,
       count: tasks.length,
       offset,
+      next_offset: offset + tasks.length < (rows.length > 0 ? Number(rows[0].total) : 0) ? offset + tasks.length : null,
       note:
-        'first_synced_at is when 2nd-brain first synced the task, not when it was created in Google Tasks (Google does not expose that). due_at is shown for context only — ideas have no due dates.',
+        'Page with next_offset over the full list (only_not_imported shrinks as you import, so offsets shift — use it only for a final check). first_synced_at is when 2nd-brain first synced the task, not when it was created in Google Tasks (Google does not expose that). stale=true means the task was not in the latest sync (probably deleted or moved) — confirm with the user before importing it. due_at is context only — ideas have no due dates.',
       tasks,
     });
   } catch (e) {

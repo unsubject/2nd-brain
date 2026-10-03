@@ -50,10 +50,11 @@ describe.skipIf(!TEST_DB)('import_ideas', () => {
     expect(row1[0].status).toBe('used');
     expect(new Date(row1[0].captured_at).toISOString()).toBe('2026-03-08T04:26:00.000Z');
     expect(row1[0].tags).toEqual(['time-sensitive', 'project:Series, "one"', 'back\\slash', '中文標籤']);
-    expect(row1[0].notes.map((n: any) => [n.at.slice(0, 10), n.by, n.text])).toEqual([
-      ['2026-03-08', 'import', 'Related Project: A series'],
-      ['2026-03-10', 'import', 'Developed further.'],
-      ['2026-03-11', 'import', 'CLUSTER NOTE: grouped.'],
+    // Dated notes sit at local midnight in the import's zone (+08:00).
+    expect(row1[0].notes.map((n: any) => [n.at, n.by, n.text])).toEqual([
+      ['2026-03-08T04:26:00.000Z', 'import', 'Related Project: A series'],
+      ['2026-03-09T16:00:00.000Z', 'import', 'Developed further.'],
+      ['2026-03-10T16:00:00.000Z', 'import', 'CLUSTER NOTE: grouped.'],
     ]);
 
     const src = await admin`

@@ -2,38 +2,43 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { parseCapturedAt, parseUtcOffset, splitDatedNotes } from '../ideas/parse';
+import { isValidTimeZone, parseCapturedAt, parseUtcOffset, splitDatedNotes, type LocalZone } from '../ideas/parse';
+import { normalizeTags } from '../ideas/text';
 import {
   capturedViaSchema,
   cleanTags,
   errorResult,
+  HandlerError,
   ideaStatusSchema,
+  jsonParam,
+  LIMITS,
   ok,
+  parseJsonb,
   tagsSchema,
   textArray,
-  HandlerError,
-  jsonParam,
+  uuidSchema,
   type Note,
 } from './idea_shared';
 
 // One-time import (docs/idea-parking-lot-protocol.md §4). The agent maps
 // each source row to these fields; the raw row travels in import_payload
 // so nothing is lost. Idempotent on (user, source_system, source_external_id).
+// Items are validated one by one, so a bad row never sinks its batch.
 
 const itemSchema = z
   .object({
     source_external_id: z.string().min(1).max(500),
     import_payload: z.record(z.unknown()),
-    merge_into_idea_id: z.string().uuid().optional(),
-    title: z.string().min(1).max(500).optional(),
+    merge_into_idea_id: uuidSchema.optional(),
+    title: z.string().min(1).max(LIMITS.title).optional(),
     captured_at: z.string().max(100).optional(),
-    encountered_where: z.string().max(2000).optional(),
-    source_url: z.string().url().max(2048).optional(),
-    source_title: z.string().max(1000).optional(),
-    source_excerpt: z.string().max(8000).optional(),
-    why_interesting: z.string().max(8000).optional(),
-    framing: z.string().max(12000).optional(),
-    thoughts: z.string().max(20000).optional(),
+    encountered_where: z.string().max(LIMITS.encountered_where).optional(),
+    source_url: z.string().url().max(LIMITS.source_url).optional(),
+    source_title: z.string().max(LIMITS.source_title).optional(),
+    source_excerpt: z.string().max(LIMITS.source_excerpt).optional(),
+    why_interesting: z.string().max(LIMITS.why_interesting).optional(),
+    framing: z.string().max(LIMITS.framing).optional(),
+    thoughts: z.string().max(LIMITS.thoughts).optional(),
     tags: tagsSchema.optional(),
     status: ideaStatusSchema.optional(),
     notes_raw: z.string().max(40000).optional(),
@@ -43,15 +48,17 @@ const itemSchema = z
 const inputSchema = z
   .object({
     source_system: z.enum(['notion', 'gtasks_subjects']),
+    timezone: z.string().min(1).max(64).optional(),
     default_utc_offset: z.string().max(10).optional(),
     captured_via: capturedViaSchema.optional(),
-    items: z.array(itemSchema).min(1).max(25),
+    items: z.array(z.unknown()).min(1).max(25),
   })
   .strict();
 
 type Item = z.infer<typeof itemSchema>;
 type ItemResult = {
-  source_external_id: string;
+  index: number;
+  source_external_id: string | null;
   result: 'created' | 'merged' | 'already_imported' | 'error';
   idea_id?: string;
   error?: string;
@@ -72,9 +79,18 @@ export async function importIdeasHandler(
     return errorResult(`Invalid arguments: ${parsed.error.message}`);
   }
   const args = parsed.data;
-  const offset = args.default_utc_offset ?? '+00:00';
-  if (parseUtcOffset(offset) === null) {
-    return errorResult(`Invalid arguments: default_utc_offset "${offset}" (use e.g. "+08:00", "-05:00" or "Z")`);
+  let zone: LocalZone;
+  if (args.timezone) {
+    if (!isValidTimeZone(args.timezone)) {
+      return errorResult(`Invalid arguments: unknown timezone "${args.timezone}" (use an IANA name such as "Europe/London")`);
+    }
+    zone = { timeZone: args.timezone };
+  } else {
+    const offset = args.default_utc_offset ?? '+00:00';
+    if (parseUtcOffset(offset) === null) {
+      return errorResult(`Invalid arguments: default_utc_offset "${offset}" (use e.g. "+08:00", "-05:00" or "Z")`);
+    }
+    zone = { offset };
   }
   const capturedVia = { ...(args.captured_via ?? {}), role: 'importer' };
   // gtasks notes are the user's own words; Notion notes were mostly AI-written.
@@ -83,13 +99,25 @@ export async function importIdeasHandler(
   const sql = getDb(env);
   const results: ItemResult[] = [];
   try {
-    for (const item of args.items) {
+    for (const [index, raw] of args.items.entries()) {
+      const ext =
+        raw && typeof raw === 'object' && typeof (raw as { source_external_id?: unknown }).source_external_id === 'string'
+          ? ((raw as { source_external_id: string }).source_external_id as string)
+          : null;
+      const item = itemSchema.safeParse(raw);
+      if (!item.success) {
+        results.push({ index, source_external_id: ext, result: 'error', error: `invalid item: ${item.error.message}` });
+        continue;
+      }
       try {
-        results.push(await importOne(sql, env, item, args.source_system, offset, capturedVia, noteBy));
+        results.push({
+          index,
+          ...(await importOne(sql, env, item.data, args.source_system, zone, capturedVia, noteBy)),
+        });
       } catch (e) {
         const msg =
           e instanceof HandlerError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
-        results.push({ source_external_id: item.source_external_id, result: 'error', error: msg });
+        results.push({ index, source_external_id: ext, result: 'error', error: msg });
       }
     }
   } finally {
@@ -106,14 +134,14 @@ async function importOne(
   env: Env,
   item: Item,
   sourceSystem: 'notion' | 'gtasks_subjects',
-  offset: string,
+  zone: LocalZone,
   capturedVia: Record<string, unknown>,
   noteBy: Note['by'],
-): Promise<ItemResult> {
+): Promise<Omit<ItemResult, 'index'>> {
   const ext = item.source_external_id;
   let capturedAt: string | null = null;
   if (item.captured_at !== undefined && item.captured_at.trim() !== '') {
-    capturedAt = parseCapturedAt(item.captured_at, offset);
+    capturedAt = parseCapturedAt(item.captured_at, zone);
     if (!capturedAt) throw new HandlerError('invalid_date', `unparseable captured_at "${item.captured_at}"`);
   }
 
@@ -134,10 +162,14 @@ async function importOne(
     if (item.merge_into_idea_id) {
       const target = item.merge_into_idea_id;
       return await sql.begin(async (tx) => {
-        const found = await tx<Array<{ id: string }>>`
-          SELECT id FROM idea WHERE id = ${target} AND user_id = ${env.BRAIN_USER_ID} FOR UPDATE
+        const found = await tx<Array<{ id: string; tags: unknown }>>`
+          SELECT id, to_jsonb(tags) AS tags, now() AS as_of
+            FROM idea WHERE id = ${target} AND user_id = ${env.BRAIN_USER_ID}
+           FOR UPDATE
         `;
         if (found.length === 0) throw new HandlerError('not_found', `merge target idea ${target}`);
+        // Case-insensitive, order-preserving union (existing tags first).
+        const mergedTags = normalizeTags([...parseJsonb<string[]>(found[0].tags, []), ...tags]);
 
         const parts = [`[Merged from ${SOURCE_LABEL[sourceSystem]}] ${item.title ?? ''}`.trimEnd()];
         if (item.thoughts && item.thoughts.trim()) parts.push(item.thoughts);
@@ -150,7 +182,7 @@ async function importOne(
               WHEN ${capturedAt}::timestamptz IS NULL THEN captured_at
               ELSE LEAST(captured_at, ${capturedAt}::timestamptz)
             END,
-            tags = ARRAY(SELECT DISTINCT unnest(tags || ${textArray(tx, tags)})),
+            tags = ${textArray(tx, mergedTags)},
             notes = notes || ${jsonParam(tx, [note])},
             updated_at = now()
           WHERE id = ${target}
@@ -167,7 +199,7 @@ async function importOne(
     if (!title) throw new HandlerError('invalid', 'title is required unless merge_into_idea_id is given');
 
     const notes: Note[] = item.notes_raw
-      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso).map((n) => ({ ...n, by: noteBy }))
+      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({ ...n, by: noteBy }))
       : [];
     const blankToNull = (s: string | undefined) => (s !== undefined && s.trim() !== '' ? s : null);
 

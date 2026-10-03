@@ -30,7 +30,7 @@ Design background: `docs/phase-idea-parking-lot-spec.md`.
 | Field | Whose words |
 |---|---|
 | `thoughts` | The user's, **verbatim**. Never paraphrased, summarized, translated or tidied. |
-| `why_interesting` | The user's reason, in their framing. |
+| `why_interesting` | Why it matters — the user's reason in their framing when captured by the Librarian; for imported rows, whatever the source recorded (see `idea_source`). |
 | `framing` | AI-written context ("what it is / what it is not"). Never presented as the user's words. |
 | `notes` | Dated development log; each note records `by`: `simon` (the user), `agent`, `import` or `system`. |
 
@@ -104,12 +104,12 @@ Call `list_idea_links()` (defaults to pending proposals). If there are leftovers
 
 | Mode | Use it for | Defaults |
 |---|---|---|
-| `orphans` | New or never-connected ideas, each with its nearest neighbours | similarity ≥ 0.30 |
+| `orphans` | New or never-connected ideas, each with its nearest neighbours (newest first; `order: 'oldest'` for the backlog) | similarity ≥ 0.30 |
 | `near` | Tightening clusters; spotting duplicates (flagged at ≥ 0.90) | ≥ 0.50 |
 | `band` | Cross-domain analogies (`same_mechanism`), tensions | 0.30–0.45 |
-| `outputs` | Matching ideas to the user's own published essays/episodes (territory) | ≥ 0.45 |
+| `outputs` | Matching ideas to the user's own published essays/episodes (territory); 40 ideas per page | ≥ 0.45 |
 
-`focus_idea_id` narrows any mode to one idea. `cross_domain: true` keeps only pairs with no tag in common.
+`focus_idea_id` narrows any mode to one idea — and is the way to reach any idea when the lot is large (global `near` / `band` passes cover the most recently updated ideas; the response says so in `scope_note`). `cross_domain: true` keeps only pairs with no tag in common (near / band / orphans). `orphans` and `outputs` page with `offset` — follow `paging.next_offset`.
 
 ### Step 2 — Pull candidates
 
@@ -147,7 +147,7 @@ Call `decide_idea_links` with only what the user said:
 | "un-link X and Y" (already accepted) | `retract` |
 | nothing about 6 | leave it pending |
 
-Use `withdraw` only to take back your own proposal (e.g. you proposed it by mistake). Never accept or reject on the user's behalf. After an accepted `became`, the response may carry a hint — ask whether to mark the idea `used`; change status only if they say so (`update_idea`).
+If accepting with a new type collides with an older, rejected or withdrawn link of that type for the same pair, the older link is revived as the accepted one and the response names it (`superseded`). Use `withdraw` only to take back your own proposal (e.g. you proposed it by mistake). Never accept or reject on the user's behalf. After an accepted `became`, the response may carry a hint — ask whether to mark the idea `used`; change status only if they say so (`update_idea`).
 
 ### Syntheses (combining ideas into something bigger)
 
@@ -207,7 +207,7 @@ Offer these as observations; the user decides the direction.
 
 ### Step 0 — Ask once
 
-1. Which timezone the Notion workspace displayed dates in → pass as `default_utc_offset` (e.g. `"+08:00"`, `"+01:00"`).
+1. Which timezone the Notion workspace displayed dates in → pass the IANA name as `timezone` (e.g. `"Europe/London"`, `"Asia/Hong_Kong"`), which handles daylight-saving changes. Use `default_utc_offset` only if the user can't name a zone.
 2. What completed Google Tasks items mean to them (default: import them, tagged `gtasks:completed`).
 
 ### Pass 1 — Notion rows → `import_ideas(source_system: 'notion')`
@@ -218,29 +218,30 @@ Batches of up to 25. One item per CSV row:
 |---|---|---|
 | (row key) | `source_external_id` | `"<Added verbatim>\|<Idea verbatim>"` |
 | Idea | `title` | verbatim |
-| Added | `captured_at` | the verbatim string; the server parses `"Month D, YYYY h:mm AM/PM"` at `default_utc_offset` |
+| Added | `captured_at` | the verbatim string; the server parses `"Month D, YYYY h:mm AM/PM"` in `timezone` |
 | Horizon | `status` / `tags` | `Done` → `status: 'used'`; `Time Sensitive` → tag `time-sensitive`; `Evergreen` → nothing |
 | Source / Trigger | `encountered_where` | verbatim; also `source_url` = the first http(s) URL that is not a Notion link |
 | What is it? + What it is NOT | `framing` | `"<What is it?>\n\nWhat it is NOT: <What it is NOT>"` (omit empty parts) |
 | Why it matters | `why_interesting` | verbatim |
-| Related Project + Notes | `notes_raw` | `"Related Project: <verbatim>\n\n<Notes verbatim>"` (omit empty parts). The server splits Notes on `[YYYY-MM-DD]` markers into dated notes |
-| Related Project | `tags` | if the value is a short channel/series name (≤ 60 chars, not a sentence): tag `project:<value>` |
+| Related Project + Notes | `notes_raw` | `"Related Project: <verbatim>\n\n<Notes verbatim>"` (omit empty parts). The server splits Notes into dated notes on `[YYYY-MM-DD]` markers that start a line; anything else stays verbatim |
+| Related Project | `tags` | if the value is a short channel/series name (≤ 52 chars, not a sentence): tag `project:<value>` (tags are capped at 60 chars). Longer values live only in the note |
 | Next Step, Priority | — | `import_payload` only (ideas have no task fields) |
 | whole row | `import_payload` | all columns as exact strings, including empty ones |
 
-Do not put anything in `thoughts` for Notion rows unless a column is clearly the user's own unedited words.
+Do not put anything in `thoughts` for Notion rows unless a column is clearly the user's own unedited words. Items are validated one by one; an item that fails comes back with `result: 'error'` and its reason — fix and resend just that item (re-sending the others is harmless: they report `already_imported`).
 
 ### Pass 2 — Google Tasks "Subjects" → `import_ideas(source_system: 'gtasks_subjects')`
 
-1. Wait until `list_ideas(source_system: 'notion')` shows the Notion rows (and, for the best duplicate check, `garden_ideas` stats show them embedded).
-2. Page through `list_subjects_for_import(only_not_imported: true)`.
-3. For each task:
-   - `possible_duplicates` contains a Notion idea with the same normalized title → **merge**: `merge_into_idea_id` = that idea.
-   - Otherwise run `search_ideas(query: <title + notes>)`. Any hit with similarity ≥ 0.85 → put it in **one** confirmation table for the user (task title | candidate idea title | merge? y/n). Merge the ones they confirm.
+1. Wait until `list_ideas(source_system: 'notion')` shows the Notion rows with `embedded: true` (about a minute), so `search_ideas` can find semantic duplicates.
+2. Page through `list_subjects_for_import()` following `next_offset` (paging over the full list is stable; `only_not_imported: true` shrinks as you import, so use it only for a final check). Skip tasks that are `already_imported`.
+3. Tasks with `stale: true` were not in Google's latest sync — usually deleted or moved by the user. List them for the user and import only the ones they want.
+4. For each remaining task:
+   - `possible_duplicates` has an entry with `match: 'exact'` whose `source_systems` includes `notion` → **merge**: `merge_into_idea_id` = that idea.
+   - `match: 'contains'` entries, and `search_ideas(query: <title + notes>)` hits with similarity ≥ 0.85 → put them in **one** confirmation table for the user (task title | candidate idea title | merge? y/n). Merge the ones they confirm.
    - Otherwise **create**.
-4. Item mapping: `source_external_id` = `external_task_id`; `title` verbatim; task notes → `thoughts` verbatim (they are the user's own words); `captured_at` = `first_synced_at` (approximate — Google Tasks has no creation date); `encountered_where` = `"Google Tasks: Subjects list"`; completed tasks get tag `gtasks:completed` unless the user said otherwise; `due_at` goes to `import_payload` only; `import_payload` = the task object as listed.
-5. Subtasks (`parent_external_task_id` set): merge into the parent's idea (each subtask keeps its own source row).
-6. Never merge two Notion rows with each other.
+5. Item mapping: `source_external_id` = `external_task_id`; `title` verbatim; task notes → `thoughts` verbatim (they are the user's own words); `captured_at` = `first_synced_at` (approximate — Google Tasks has no creation date); `encountered_where` = `"Google Tasks: Subjects list"`; completed top-level tasks get tag `gtasks:completed` unless the user said otherwise; `due_at` goes to `import_payload` only; `import_payload` = the task object as listed.
+6. Subtasks (`parent_external_task_id` set): merge into the parent's idea (each subtask keeps its own source row). Send no status tags on these merges — the subtask's state stays in its `import_payload`.
+7. Never merge two Notion rows with each other.
 
 ### Pass 3 — Cross-references → proposals only
 
@@ -265,8 +266,8 @@ Everything here happens only when the user asks.
 | "What's in my parking lot?" | `list_ideas()` |
 | "Anything parked about X?" | `search_ideas(query: X)` |
 | "What did I park this week/month?" | `list_ideas(since: <date>)` |
-| "Show me the frontier" | `list_ideas(has_output: false)` |
-| "What became output?" | `list_ideas(has_output: true)` |
+| "Show me the frontier" | `list_ideas(territory: 'frontier')` |
+| "What became output?" | `list_ideas(territory: 'territory')` |
 | "What hasn't found a home?" | `list_ideas(unlinked: true)` — or a gardening session in `orphans` mode |
 | "Tell me about idea X" | `get_idea(id)` |
 | "What could be my next episode?" | `list_ideas(kind: 'synthesis')`, then `get_idea` on the candidates; offer to garden if nothing fits |

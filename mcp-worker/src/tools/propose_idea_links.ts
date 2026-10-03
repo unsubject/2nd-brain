@@ -82,14 +82,14 @@ export async function proposeIdeaLinksHandler(
           }
 
           const owned = await tx<Array<{ id: string }>>`
-            SELECT id FROM idea
+            SELECT id, now() AS as_of FROM idea
              WHERE user_id = ${env.BRAIN_USER_ID}
                AND id IN (${source}, ${targetIdea ?? source})
           `;
           const need = targetIdea ? 2 : 1;
           if (owned.length < need) throw new HandlerError('not_found', 'idea endpoint not found');
           if (targetArtifact) {
-            const art = await tx`SELECT 1 FROM public_artifact WHERE id = ${targetArtifact}`;
+            const art = await tx`SELECT 1 AS found, now() AS as_of FROM public_artifact WHERE id = ${targetArtifact}`;
             if (art.length === 0) throw new HandlerError('not_found', `public_artifact ${targetArtifact}`);
           }
 
@@ -100,7 +100,7 @@ export async function proposeIdeaLinksHandler(
             : tx`source_idea_id = ${source} AND target_artifact_id = ${targetArtifact}`;
           if (!reconsider) {
             const neg = await tx<Array<{ id: string; status: string; link_type: string }>>`
-              SELECT id, status, link_type FROM idea_link
+              SELECT id, status, link_type, now() AS as_of FROM idea_link
                WHERE user_id = ${env.BRAIN_USER_ID} AND ${pairFilter}
                  AND status IN ('rejected', 'retracted')
                LIMIT 1
@@ -131,7 +131,7 @@ export async function proposeIdeaLinksHandler(
           if (inserted.length > 0) return { index, result: 'proposed', link_id: inserted[0].id };
 
           const existing = await tx<Array<{ id: string; status: string }>>`
-            SELECT id, status FROM idea_link
+            SELECT id, status, now() AS as_of FROM idea_link
              WHERE user_id = ${env.BRAIN_USER_ID} AND ${pairFilter}
                AND link_type = ${link.link_type}
              FOR UPDATE

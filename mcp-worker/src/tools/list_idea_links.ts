@@ -13,12 +13,13 @@ import {
   textArray,
   toIso,
   toIsoOrNull,
+  uuidSchema,
 } from './idea_shared';
 
 const inputSchema = z
   .object({
     statuses: z.array(linkStatusSchema).min(1).optional(),
-    idea_id: z.string().uuid().optional(),
+    idea_id: uuidSchema.optional(),
     link_type: linkTypeSchema.optional(),
     proposed_by: z.enum(['gardening', 'import', 'synthesis']).optional(),
     limit: z.number().int().min(1).max(100).optional(),

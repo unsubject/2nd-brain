@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
+import { truncateChars } from '../ideas/text';
 import {
   capturedViaSchema,
   cleanTags,
@@ -11,6 +12,7 @@ import {
   ideaIntentSchema,
   ideaStatusSchema,
   jsonParam,
+  LIMITS,
   ok,
   tagsSchema,
   textArray,
@@ -24,15 +26,24 @@ import {
 
 const inputSchema = z
   .object({
-    title: z.string().min(1).max(500),
+    title: z.string().min(1).max(LIMITS.title),
     intent: ideaIntentSchema,
     part_ids: z.array(z.string().uuid()).min(2).max(30),
-    thoughts: z.string().max(20000).optional(),
-    framing: z.string().max(6000).optional(),
-    why_interesting: z.string().max(4000).optional(),
+    thoughts: z.string().max(LIMITS.thoughts).optional(),
+    framing: z.string().max(LIMITS.framing).optional(),
+    why_interesting: z.string().max(LIMITS.why_interesting).optional(),
     tags: tagsSchema.optional(),
     status: ideaStatusSchema.optional(),
-    part_rationales: z.record(z.string().uuid(), z.string().min(3).max(300)).optional(),
+    // Trimmed to match the btrim-based CHECK on idea_link.rationale.
+    part_rationales: z
+      .record(
+        z.string().uuid(),
+        z
+          .string()
+          .transform((r) => r.trim())
+          .pipe(z.string().min(3).max(300)),
+      )
+      .optional(),
     captured_via: capturedViaSchema.optional(),
   })
   .strict();
@@ -60,7 +71,7 @@ export async function createSynthesisHandler(
   try {
     const out = await sql.begin(async (tx) => {
       const found = await tx<Array<{ id: string; title: string; status: string }>>`
-        SELECT id, title, status FROM idea
+        SELECT id, title, status, now() AS as_of FROM idea
          WHERE user_id = ${env.BRAIN_USER_ID}
            AND id = ANY(${uuidArrayLiteral(partIds)}::uuid[])
       `;
@@ -87,7 +98,7 @@ export async function createSynthesisHandler(
         VALUES (${synthesisId}, ${env.BRAIN_USER_ID}, 'gardening')
       `;
       for (const p of partIds) {
-        const rationale = rationales[p] ?? `Included by the user in synthesis "${title.slice(0, 200)}"`;
+        const rationale = rationales[p] ?? `Included by the user in synthesis "${truncateChars(title, 200)}"`;
         await tx`
           INSERT INTO idea_link (
             user_id, source_idea_id, target_idea_id, link_type, status,

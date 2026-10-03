@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS idea (
   embedded_at TIMESTAMPTZ,
   embed_attempts INT NOT NULL DEFAULT 0,
   embed_error TEXT,
+  -- Backoff after a row-specific embedding failure (NULL = eligible now).
+  embed_retry_at TIMESTAMPTZ,
   status_changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -98,6 +100,7 @@ BEGIN
     NEW.embedded_at := NULL;
     NEW.embed_attempts := 0;
     NEW.embed_error := NULL;
+    NEW.embed_retry_at := NULL;
   END IF;
 
   IF NEW.status IS DISTINCT FROM OLD.status THEN

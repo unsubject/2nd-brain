@@ -11,12 +11,13 @@ import {
   ok,
   toIso,
   toIsoOrNull,
+  uuidSchema,
   type IdeaRow,
 } from './idea_shared';
 
 const inputSchema = z
   .object({
-    id: z.string().uuid(),
+    id: uuidSchema,
     include_payloads: z.boolean().optional(),
     include_pending: z.boolean().optional(),
   })

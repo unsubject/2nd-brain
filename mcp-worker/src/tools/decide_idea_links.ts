@@ -36,6 +36,7 @@ type Result = {
   link_id: string;
   result: (typeof NEXT_STATUS)[keyof typeof NEXT_STATUS] | 'error';
   link_type?: string;
+  superseded?: string;
   error?: string;
 };
 
@@ -68,12 +69,13 @@ export async function decideIdeaLinksHandler(
               source_idea_id: string;
               target_idea_id: string | null;
               target_artifact_id: string | null;
+              rationale: string;
               source_status: string;
               source_title: string;
             }>
           >`
             SELECT l.id, l.status, l.link_type, l.source_idea_id, l.target_idea_id, l.target_artifact_id,
-                   i.status AS source_status, i.title AS source_title
+                   l.rationale, i.status AS source_status, i.title AS source_title, now() AS as_of
               FROM idea_link l JOIN idea i ON i.id = l.source_idea_id
              WHERE l.id = ${d.link_id} AND l.user_id = ${env.BRAIN_USER_ID}
              FOR UPDATE OF l
@@ -111,7 +113,66 @@ export async function decideIdeaLinksHandler(
           }
 
           const next = NEXT_STATUS[d.decision];
-          try {
+          let resultId = link.id;
+          let superseded: string | undefined;
+
+          // A retype can collide with an older row of the new type for the
+          // same pair. A live one (proposed/accepted) is a real conflict; a
+          // dead one (withdrawn/rejected/retracted) is revived as the
+          // accepted link, since the user has just said yes to it.
+          const retyped =
+            d.decision === 'accept' &&
+            (type !== link.link_type || source !== link.source_idea_id || target !== link.target_idea_id);
+          if (retyped) {
+            const clash = await tx<Array<{ id: string; status: string }>>`
+              SELECT id, status, now() AS as_of FROM idea_link
+               WHERE user_id = ${env.BRAIN_USER_ID}
+                 AND id <> ${link.id}
+                 AND link_type = ${type}
+                 AND ${
+                   target
+                     ? tx`LEAST(source_idea_id, target_idea_id) = LEAST(${source}::uuid, ${target}::uuid)
+                          AND GREATEST(source_idea_id, target_idea_id) = GREATEST(${source}::uuid, ${target}::uuid)`
+                     : tx`source_idea_id = ${source} AND target_artifact_id = ${link.target_artifact_id}`
+                 }
+               FOR UPDATE
+            `;
+            if (clash.length > 0) {
+              const c = clash[0];
+              if (c.status === 'proposed' || c.status === 'accepted') {
+                throw new HandlerError(
+                  'conflict',
+                  `a ${type} link for this pair already exists (link ${c.id}, ${c.status}); decide that one instead`,
+                );
+              }
+              await tx`
+                UPDATE idea_link SET
+                  history = history || jsonb_build_array(jsonb_build_object(
+                    'status', status, 'rationale', rationale, 'link_type', link_type,
+                    'source_idea_id', source_idea_id, 'decided_at', decided_at,
+                    'decision_note', decision_note, 'revived_at', now()
+                  )),
+                  status = 'accepted',
+                  source_idea_id = ${source},
+                  target_idea_id = ${target},
+                  rationale = ${link.rationale},
+                  decided_at = now(),
+                  decision_note = ${d.note ?? null}
+                WHERE id = ${c.id}
+              `;
+              await tx`
+                UPDATE idea_link SET
+                  status = 'withdrawn',
+                  decided_at = now(),
+                  decision_note = ${`superseded: accepted as ${type} on link ${c.id}`}
+                WHERE id = ${link.id}
+              `;
+              resultId = c.id;
+              superseded = link.id;
+            }
+          }
+
+          if (!superseded) {
             await tx`
               UPDATE idea_link SET
                 status = ${next},
@@ -122,11 +183,6 @@ export async function decideIdeaLinksHandler(
                 decision_note = ${d.note ?? null}
               WHERE id = ${link.id}
             `;
-          } catch (e) {
-            if ((e as { code?: string }).code === '23505') {
-              throw new HandlerError('conflict', `a ${type} link between these ideas already exists`);
-            }
-            throw e;
           }
 
           if (next === 'accepted' && type === 'became' && link.source_status !== 'used') {
@@ -134,7 +190,7 @@ export async function decideIdeaLinksHandler(
               `"${link.source_title}" now has a \`became\` link but its status is ${link.source_status}; ask the user whether to mark it used (update_idea).`,
             );
           }
-          return { link_id: link.id, result: next, link_type: type };
+          return { link_id: resultId, result: next, link_type: type, ...(superseded ? { superseded } : {}) };
         });
         results.push(r);
       } catch (e) {

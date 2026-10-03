@@ -62,14 +62,14 @@ The Worker never processes rows (norms doc, Part 2): it inserts ideas with `embe
 
 ## 5. Schema (`migrations/019_idea_parking_lot.sql`)
 
-- **`idea`** — `kind`, `intent` (CHECK: present iff synthesis), `title`, `status`, `captured_at` (backdatable), `encountered_where`, `source_url/title/excerpt`, `why_interesting`, `thoughts`, `framing`, `notes jsonb[]`, `tags text[]`, `captured_via jsonb`, `embedding vector(1536)` + bookkeeping (`embedding_model`, `embedded_at`, `embed_attempts`, `embed_error`), timestamps. Indexes: `(user_id, status, captured_at)`, GIN on tags, HNSW on embedding, partial index on rows needing embedding.
+- **`idea`** — `kind`, `intent` (CHECK: present iff synthesis), `title`, `status`, `captured_at` (backdatable), `encountered_where`, `source_url/title/excerpt`, `why_interesting`, `thoughts`, `framing`, `notes jsonb[]`, `tags text[]`, `captured_via jsonb`, `embedding vector(1536)` + bookkeeping (`embedding_model`, `embedded_at`, `embed_attempts`, `embed_error`, `embed_retry_at`), timestamps. Indexes: `(user_id, status, captured_at)`, GIN on tags, HNSW on embedding, partial index on rows needing embedding.
 - **`idea_source`** — provenance; `UNIQUE (user_id, source_system, source_external_id)` makes imports idempotent and doubles as the Librarian's idempotency key store. `import_payload` keeps the original row. One idea can carry several sources (a Notion row and the Google task it came from) — the reason provenance is a table, not columns.
 - **`idea_link`** — `source_idea_id` → `target_idea_id` **or** `target_artifact_id` (FK to `public_artifact`), `link_type`, `status`, `rationale` (required), `similarity`, `proposed_by` (`gardening | import | synthesis`), `proposed_via`, `decided_at`, `decision_note`, `history`.
 - Constraints and triggers:
   - exactly one target; artifact targets only for `became` / `revisits`; no self-links;
   - symmetric types stored in canonical order (`source < target`) and a unique `(LEAST, GREATEST, link_type)` index, so `A→B` and `B→A` can't both exist;
   - `idea_link_validate`: both idea endpoints belong to the link's user; `part_of` targets a synthesis;
-  - `idea_before_update`: `kind` immutable; any change to an embedded field (title, framing, why, thoughts, source title/excerpt, tags, or the user's own notes) clears the embedding; `status_changed_at` maintained.
+  - `idea_before_update`: `kind` immutable; any change to an embedded field (title, framing, why, thoughts, source title/excerpt, tags, or the user's own notes) clears the embedding and its retry bookkeeping; `status_changed_at` maintained.
 
 Why a dedicated `idea_link` instead of `link_edge`: `link_edge` is the machine-made graph (no lifecycle, no FKs, `user_id = 'default'`); idea links are human-confirmed with a lifecycle and rationale. Keeping them apart means no dual writes and no change for `link_edge` readers (morning review, `get_entry`).
 
@@ -93,7 +93,7 @@ The vocabulary is a CHECK enum mirrored in `mcp-worker/src/ideas/linkTypes.ts`. 
 
 | Tool | Kind | Rule |
 |---|---|---|
-| `park_idea` | write | ONLY on an explicit "park this". Receipt only (exact key set tested). Idempotency key + 10-minute same-title guard. |
+| `park_idea` | write | ONLY on an explicit "park this". Receipt only (exact key set tested). Idempotency key, plus a 10-minute guard that treats the same title **and** the same content as a retry (a different thought under the same title is a new idea). |
 | `update_idea` | write | On the user's request or to record a decision they just made. Tri-state fields, tag add/remove, status (logged), synthesis intent, append note. |
 | `get_idea` / `list_ideas` / `search_ideas` | read | Pull-only. |
 | `garden_ideas` | read | ONLY in a gardening session. Modes `near` / `band` / `orphans` / `outputs`. |
@@ -108,7 +108,14 @@ Every write tool's description opens with its ONLY-rule and cites a protocol §;
 
 ## 8. Embedding pipeline
 
-`src/ideas/embeddingText.ts` joins non-empty `title, framing, why_interesting, thoughts, user notes, source_title, source_excerpt (≤ 1,500 chars), "tags: …"`, capped at 6,000 characters (CJK runs ~1–1.5 tokens per character; the model limit is 8,191 tokens). The sweeper batch-embeds up to 50 pending rows, falls back to one-at-a-time to isolate a failing row, gives up after 5 attempts (`embed_error` kept), and writes with an optimistic guard on `updated_at` (compared as text to keep microsecond precision) so an embedding computed for old text never lands on an edited row.
+`src/ideas/embeddingText.ts` joins non-empty `title, framing, why_interesting, thoughts, user notes, source_title, source_excerpt (≤ 1,500 chars), "tags: …"` and truncates by an **estimated token budget** of 7,000 (CJK counted at 1.8 tokens per character — measured cl100k is ~1.6–1.7 for Traditional Chinese/Cantonese — ASCII at 0.3), always on code-point boundaries; the model limit is 8,191 tokens.
+
+The sweeper (`src/ideas/worker.ts`, 30 s poll):
+
+- batches pending rows (≤ 50, and ≤ 200k estimated tokens per request);
+- **systemic failures** (auth, quota/rate limit, 5xx, network) charge nothing — the tick ends and the next poll retries;
+- **row-specific failures** (HTTP 400/413/422) are isolated one row at a time; an over-long input is retried once with a shorter text; a row that still fails gets `embed_attempts + 1` and `embed_retry_at = now() + min(1 min · 2^attempts, 1 day)`, so it never blocks the queue and is still retried daily;
+- writes (success or failure) carry an optimistic guard on `updated_at` (compared as text to keep microsecond precision), so nothing computed for old text lands on an edited row.
 
 ## 9. Search
 
@@ -121,25 +128,27 @@ Ideas are bilingual (English and Traditional Chinese). `search_ideas` merges a v
 | `near` | idea pairs, best first | similarity ≥ 0.50; ≥ 0.90 flagged `possible_duplicate` |
 | `band` | idea pairs inside a similarity band — the zone where cross-domain analogies live | 0.30–0.45 |
 | `orphans` | ideas with no accepted links, oldest first, each with up to 3 unconsidered neighbours | neighbours ≥ 0.30 |
-| `outputs` | up to 40 most recent ideas without an accepted `became`, each with its top-3 published outputs by summary embedding | ≥ 0.45 (the journal linker's `echoes_artifact` threshold); hint `became?` if published after capture, else `revisits?` |
+| `outputs` | a page of 40 ideas (newest first, `offset` paging) without an accepted `became`, each with its top-3 published outputs by summary embedding | ≥ 0.45 (the journal linker's `echoes_artifact` threshold); hint `became?` if published after capture, else `revisits?` |
 
-All modes exclude pairs that already have a proposed, accepted, rejected or retracted link (withdrawn pairs may resurface), cap each idea at `per_idea_cap` appearances (default 2), and can require no shared tags (`cross_domain`). The pair scan is O(N²) over embedded ideas — fine to ~1–2k ideas; beyond that, switch to per-idea HNSW lateral joins.
+All modes exclude pairs that already have a proposed, accepted, rejected or retracted link (withdrawn pairs may resurface). `per_idea_cap` (default 2) limits appearances per idea in near/band/outputs; `cross_domain` (no shared tags) applies to near/band/orphans.
+
+Cost: `near` uses a per-idea HNSW nearest-neighbour lookup (k = 15) over the 1,000 most recently updated ideas — ~0.6 s at 2,000 ideas versus ~9 s for a full pair scan. `band` (low similarity, where an index can't help) scans pairs among the 600 most recently updated ideas, or all pairs of one `focus_idea_id`. Every query runs under `SET LOCAL statement_timeout = '8s'`; a timeout returns a message suggesting `focus_idea_id`.
 
 ## 11. Map export (`idea-map/v1`)
 
 `{format, generated_at, filters, stats{nodes, edges, components, orphans}, truncated, omitted_count, nodes[], edges[], legend}`.
 
-- **Nodes** — `id, node_type (idea | synthesis | output), label, status, kind, intent, captured_at, tags, degree, pending_degree, component, component_size, territory, url, published_at`. Degree counts accepted links; components are computed over accepted edges (ranked by size); territory from accepted output links.
+- **Nodes** — `id, node_type (idea | synthesis | output), label, status, kind, intent, captured_at, tags, degree, pending_degree, component, component_size, territory, url, published_at`. Degree counts accepted links (output links included even when outputs are hidden, so orphan counts don't depend on the view); components are computed over accepted **idea↔idea** edges and ranked by size — an output takes the component of an idea that links to it, so one popular episode never glues unrelated clusters together; territory comes from accepted output links.
 - **Edges** — `id, source, target, type, directed, status, rationale`.
-- **Ego network** — `focus_idea_id` + `depth` (BFS; pending edges traversed only with `include_pending`).
+- **Ego network** — `focus_idea_id` + `depth` (BFS; pending edges traversed only with `include_pending`; output nodes are leaves, never expanded).
 - **Truncation** — focus/BFS order, else degree then recency; outputs kept only if linked to a kept idea.
-- **GraphML** — typed `<key>`s, `edgedefault="directed"`, symmetric edges `directed="false"`, XML-escaped. **Mermaid** — `flowchart LR`, labels ≤ 60 chars with `"` → `#quot;`, `-->` directed, `---` symmetric, dashed for proposed, class per territory.
+- **GraphML** — typed `<key>`s, `edgedefault="directed"`; symmetric edges are marked by the `e_directed=false` data key (not a per-edge XML attribute — mixed graphs break common readers such as networkx); characters XML forbids are stripped. **Mermaid** — `flowchart LR`, labels ≤ 60 code points with markup characters (`# " & < > \` %`) entity-encoded, `-->` directed, `---` symmetric, dashed for proposed, class per territory; ≤ 150 nodes and ≤ 500 edges (Mermaid's default limit; proposals dropped first).
 
 **Using the map to choose directions** (the user's open question): large frontier components show where curiosity has gathered without output; `same_mechanism` / `combines_with` bridges between components are candidate cross-domain episodes; orphans are gardening targets; components touching territory extend published work. Agents offer these as observations; the user decides.
 
 ## 12. Import design
 
-Run by an AI agent through `import_ideas` / `list_subjects_for_import` / `propose_idea_links(origin: 'import')` — see protocol §4 for the column mapping. Key points: Notion rows are keyed `"<Added>|<Idea>"` (the CSV export has no page ids); `Added` is parsed server-side at a user-confirmed UTC offset; dated Notes become dated notes; the whole row is kept in `import_payload`. Subjects items whose title matches a Notion row (many Notion rows originally came from Google Tasks) are **merged** into it — earliest `captured_at` wins, tags union, the task's notes appended verbatim as the user's note. Cross-references in Notion (series parts, "related to …") become **proposed** links for the first gardening session, never accepted ones. Google Tasks exposes no creation date, so Subjects `captured_at` is the first-sync time (approximate).
+Run by an AI agent through `import_ideas` / `list_subjects_for_import` / `propose_idea_links(origin: 'import')` — see protocol §4 for the column mapping. Key points: Notion rows are keyed `"<Added>|<Idea>"` (the CSV export has no page ids); `Added` is parsed server-side in the user-confirmed IANA timezone (DST-aware); `[YYYY-MM-DD]` markers that start a line become dated notes; the whole row is kept in `import_payload`; items are validated individually so one bad row never sinks a batch. Subjects items whose normalized title **exactly** matches a Notion row (many Notion rows originally came from Google Tasks) are **merged** into it — earliest `captured_at` wins, tags union case-insensitively in order, the task's notes appended verbatim as the user's note; partial ("contains") title matches and close semantic matches go to the user for confirmation. Tasks Google no longer returns (`stale`) are confirmed with the user first. Cross-references in Notion (series parts, "related to …") become **proposed** links for the first gardening session, never accepted ones. Google Tasks exposes no creation date, so Subjects `captured_at` is the first-sync time (approximate).
 
 ## 13. Hyperdrive caching
 
@@ -151,7 +160,7 @@ The repository is public. No idea content, titles or exports are committed; test
 
 ## 15. Testing
 
-- `mcp-worker`: dispatcher tests (tool surface, ONLY-rules, resources), pure unit tests (date parsing, note splitting, title dedup, link canonicalisation, graph build, GraphML/Mermaid escaping), and DB suites in `test/db/` against a real Postgres (`TEST_DATABASE_URL`, local `*_test` only; reset + all migrations in `test/setup/test-db.ts`). CI has no database, so the DB suites skip there.
+- `mcp-worker`: dispatcher tests (tool surface, ONLY-rules, resources), pure unit tests (date parsing, note splitting, title dedup, link canonicalisation, graph build, GraphML/Mermaid escaping), and DB suites in `test/db/` against a real Postgres (`TEST_DATABASE_URL`, local `*_test` only; reset + all migrations in `test/setup/test-db.ts`). CI (`.github/workflows/ci.yml`, plus the deploy workflow's test step) provides a `pgvector/pgvector:pg16` service, so the DB suites run there too; without `TEST_DATABASE_URL` they skip. A static test fails if any idea-tool read lacks `now()`.
 - Root: `npm test` — embedding text recipe, and the sweeper against Postgres (embed, mid-flight edit guard, failure isolation, attempt cap, trigger re-queue).
 
 ## 16. Rollout

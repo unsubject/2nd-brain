@@ -11,10 +11,12 @@ import {
   ideaStatusSchema,
   isoDateTimeSchema,
   jsonParam,
+  LIMITS,
   ok,
   parseJsonb,
   tagsSchema,
   textArray,
+  uuidSchema,
   type Note,
 } from './idea_shared';
 
@@ -23,15 +25,19 @@ const optText = (max: number) => z.string().max(max).nullable().optional();
 
 const inputSchema = z
   .object({
-    id: z.string().uuid(),
-    title: z.string().min(1).max(500).optional(),
-    encountered_where: optText(1000),
-    source_url: z.string().url().max(2048).nullable().optional(),
-    source_title: optText(1000),
-    source_excerpt: optText(8000),
-    why_interesting: optText(4000),
-    framing: optText(6000),
-    thoughts: optText(20000),
+    id: uuidSchema,
+    title: z
+      .string()
+      .max(LIMITS.title)
+      .refine((t) => t.trim().length > 0, 'title cannot be blank')
+      .optional(),
+    encountered_where: optText(LIMITS.encountered_where),
+    source_url: z.string().url().max(LIMITS.source_url).nullable().optional(),
+    source_title: optText(LIMITS.source_title),
+    source_excerpt: optText(LIMITS.source_excerpt),
+    why_interesting: optText(LIMITS.why_interesting),
+    framing: optText(LIMITS.framing),
+    thoughts: optText(LIMITS.thoughts),
     tags: tagsSchema.optional(),
     add_tags: tagsSchema.optional(),
     remove_tags: tagsSchema.optional(),
@@ -39,7 +45,7 @@ const inputSchema = z
     intent: ideaIntentSchema.optional(),
     append_note: z
       .object({
-        text: z.string().min(1).max(8000),
+        text: z.string().min(1).max(LIMITS.note),
         by: z.enum(['simon', 'agent']),
         at: isoDateTimeSchema.optional(),
       })
@@ -89,7 +95,8 @@ export async function updateIdeaHandler(
       const cur = await tx<
         Array<{ kind: string; status: string; tags: unknown; title: string; embedded: boolean }>
       >`
-        SELECT kind, status, to_jsonb(tags) AS tags, title, (embedding IS NOT NULL) AS embedded
+        SELECT kind, status, to_jsonb(tags) AS tags, title, (embedding IS NOT NULL) AS embedded,
+               now() AS as_of
           FROM idea
          WHERE id = ${args.id} AND user_id = ${env.BRAIN_USER_ID}
          FOR UPDATE
