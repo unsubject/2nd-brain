@@ -10,6 +10,7 @@ on:
       # auditable from this workflow — if you import a doc in
       # mcp-worker/src/resources.ts, add it here too.
       - 'docs/goal-amendment-interview.md'
+      - 'docs/idea-parking-lot-protocol.md'
       - '.github/workflows/deploy-mcp-worker.yml'
   workflow_dispatch:
 

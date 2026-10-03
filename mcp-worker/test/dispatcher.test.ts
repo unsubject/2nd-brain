@@ -4,6 +4,25 @@ import type { Env } from '../src/env';
 
 const TOKEN = 'test-token';
 
+const IDEA_WRITE_TOOLS = [
+  'park_idea',
+  'import_ideas',
+  'update_idea',
+  'propose_idea_links',
+  'decide_idea_links',
+  'create_synthesis',
+];
+const IDEA_TOOLS = [
+  ...IDEA_WRITE_TOOLS,
+  'list_subjects_for_import',
+  'get_idea',
+  'list_ideas',
+  'search_ideas',
+  'garden_ideas',
+  'list_idea_links',
+  'export_idea_map',
+];
+
 // Minimal Env stub. The dispatcher cases below never touch Hyperdrive
 // (resources/* + tools/list don't hit DB), so the connectionString is
 // just a placeholder.
@@ -56,12 +75,43 @@ describe('mcp dispatcher', () => {
     expect(names).toContain('list_goals');
   });
 
-  it('resources/list returns the goal-amendment protocol resource', async () => {
+  it('tools/list includes the Idea Parking Lot surface with guarded write tools', async () => {
+    const r = await rpc('tools/list');
+    const tools = r.result.tools as Array<{ name: string; description: string; inputSchema: any }>;
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    for (const name of IDEA_TOOLS) {
+      expect(byName.has(name), name).toBe(true);
+      expect(byName.get(name)!.inputSchema.type).toBe('object');
+    }
+    for (const name of IDEA_WRITE_TOOLS) {
+      expect(byName.get(name)!.description, name).toContain('ONLY');
+    }
+    // Tool names stay unique across the whole registry.
+    expect(new Set(tools.map((t) => t.name)).size).toBe(tools.length);
+  });
+
+  it('initialize instructions mention the idea protocol resource', async () => {
+    const r = await rpc('initialize');
+    expect(r.result.instructions).toContain('2nd-brain://protocol/idea-parking-lot');
+  });
+
+  it('resources/list returns the protocol resources', async () => {
     const r = await rpc('resources/list');
     const resources = r.result.resources as Array<{ uri: string; mimeType: string }>;
-    expect(resources).toHaveLength(1);
-    expect(resources[0].uri).toBe('2nd-brain://protocol/goal-amendment');
-    expect(resources[0].mimeType).toBe('text/markdown');
+    expect(resources).toHaveLength(2);
+    expect(resources.map((x) => x.uri)).toEqual([
+      '2nd-brain://protocol/goal-amendment',
+      '2nd-brain://protocol/idea-parking-lot',
+    ]);
+    for (const res of resources) expect(res.mimeType).toBe('text/markdown');
+  });
+
+  it('resources/read returns the idea protocol with its executable sections', async () => {
+    const r = await rpc('resources/read', { uri: '2nd-brain://protocol/idea-parking-lot' });
+    const text = (r.result.contents as Array<{ text: string }>)[0].text;
+    for (const heading of ['## §0', '## §1', '## §2', '## §3', '## §4', '## §5', '## §6']) {
+      expect(text).toContain(heading);
+    }
   });
 
   it('resources/read returns the doc text for a known uri', async () => {

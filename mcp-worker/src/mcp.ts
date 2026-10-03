@@ -16,6 +16,8 @@ Use get_entry to follow up on a search hit. Use list_recent for "what have I bee
 
 The journal is private — treat with discretion. Entries can include emotional venting and rough takes. Search is fuzzy: similarity below ~0.3 is probably noise, above ~0.5 is worth attention.
 
+Idea Parking Lot (separate from the journal): ideas are curated raw material, not tasks — no due dates or priorities. Use park_idea ONLY when the user explicitly asks to park/file an idea: confirm the title first, copy their own thoughts verbatim, and reply with the filing receipt only — never suggest related ideas, links, tags or hubs at capture. "Save this session" still means save_session; ask if unclear. Associations are created only in gardening sessions the user starts (garden_ideas → propose_idea_links → the user accepts/rejects → decide_idea_links with exactly their verdicts); create_synthesis only on their explicit decision. Idea tools are pull-only: don't search or surface ideas unless asked. For a map, call export_idea_map and render it with your own visualisation tool. Read \`2nd-brain://protocol/idea-parking-lot\` before capturing, gardening, mapping or importing; the idea tools' descriptions cite its § numbers.
+
 Reference material is exposed as MCP resources (call resources/list to discover). If the user asks about goals, the constitution, or amendments and your client supports resources, read \`2nd-brain://protocol/goal-amendment\` before calling any propose/commit_*_amendment tool — it contains the executable interview protocol. If resources aren't available, the registry descriptions of those tools point at the same protocol by section number.`;
 
 class RpcError extends Error {

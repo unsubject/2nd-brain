@@ -12,12 +12,13 @@
     // them verbatim without duplicating the content in TS source.
     //
     // Explicit per-file allowlist (defense in depth). Mirror this list
-    // with the imports in src/resources.ts AND with the paths trigger
-    // in .github/workflows/deploy-mcp-worker.yml. Adding a new doc to
-    // the MCP surface is a three-touch change by design.
+    // with the imports in src/resources.ts, the paths trigger in
+    // .github/workflows/deploy-mcp-worker.yml AND the resources/list
+    // assertion in test/dispatcher.test.ts. Adding a new doc to the MCP
+    // surface is a four-touch change by design.
     {
       "type": "Text",
-      "globs": ["**/goal-amendment-interview.md"],
+      "globs": ["**/goal-amendment-interview.md", "**/idea-parking-lot-protocol.md"],
       "fallthrough": false
     }
   ],
