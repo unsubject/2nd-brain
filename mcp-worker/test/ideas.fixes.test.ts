@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseCapturedAt, splitDatedNotes } from '../src/ideas/parse';
 import { titleMatch, truncateChars, snippet } from '../src/ideas/text';
 import { buildIdeaMap, mermaidLabel, toGraphML, toMermaid, MERMAID_MAX_EDGES, type MapLink } from '../src/ideas/graph';
-import { assertSafeTestUrl } from './setup/test-db';
+import { assertSafeTestUrl, isLocalAddress } from './setup/test-db';
 
 describe('Hyperdrive cache-busting convention', () => {
   // Every read in an idea tool must carry a STABLE function so Hyperdrive
@@ -212,5 +212,14 @@ describe('test DB guard', () => {
     expect(() => assertSafeTestUrl('postgres://u:p@prod.example.com:5432/x_test')).toThrow();
     expect(() => assertSafeTestUrl('postgres://u:p@localhost:5432/prod')).toThrow();
     expect(() => assertSafeTestUrl('postgres://u:p@localhost:5432/x_test')).not.toThrow();
+  });
+
+  it('treats loopback, sockets and private networks (CI containers) as local', () => {
+    for (const a of [null, '127.0.0.1', '::1', '172.18.0.2', '10.1.2.3', '192.168.1.5', '::ffff:172.17.0.2', 'fd00::5']) {
+      expect(isLocalAddress(a), String(a)).toBe(true);
+    }
+    for (const a of ['34.120.1.9', '172.32.0.1', '8.8.8.8', '2600:1f18::1']) {
+      expect(isLocalAddress(a), a).toBe(false);
+    }
   });
 });

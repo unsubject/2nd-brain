@@ -34,12 +34,26 @@ export function assertSafeTestUrl(raw: string): void {
   }
 }
 
+// Loopback or private-network address (a CI service container is reached
+// over a Docker bridge, e.g. 172.18.0.2). NULL means a Unix socket.
+export function isLocalAddress(addr: string | null): boolean {
+  if (addr === null) return true;
+  const a = addr.toLowerCase().replace(/^::ffff:/, '');
+  return (
+    /^127\./.test(a) ||
+    /^10\./.test(a) ||
+    /^192\.168\./.test(a) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(a) ||
+    a === '::1' ||
+    /^f[cd][0-9a-f]{2}:/.test(a)
+  );
+}
+
 export async function assertSafeConnection(sql: postgres.Sql): Promise<void> {
   const [row] = await sql<Array<{ db: string; addr: string | null }>>`
-    SELECT current_database() AS db, inet_server_addr()::text AS addr
+    SELECT current_database() AS db, host(inet_server_addr()) AS addr
   `;
-  const loopback = row.addr === null || /^(127\.|::1)/.test(row.addr);
-  if (!row.db.endsWith('_test') || !loopback) {
+  if (!row.db.endsWith('_test') || !isLocalAddress(row.addr)) {
     throw new Error(`Refusing to reset ${row.db} on ${row.addr}: not a local *_test database`);
   }
 }

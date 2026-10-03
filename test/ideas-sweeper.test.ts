@@ -34,9 +34,15 @@ before(async () => {
   worker = await import("../src/ideas/worker");
   db = new Pool({ connectionString: url, max: 2 });
   // Check where we actually connected, not just what the URL says.
-  const { rows } = await db.query("SELECT current_database() AS db, inet_server_addr()::text AS addr");
+  const { rows } = await db.query("SELECT current_database() AS db, host(inet_server_addr()) AS addr");
   const addr: string | null = rows[0].addr;
-  if (!String(rows[0].db).endsWith("_test") || (addr !== null && !/^(127\.|::1)/.test(addr))) {
+  // Loopback, Unix socket (NULL) or a private network (CI service container).
+  const local =
+    addr === null ||
+    /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(addr) ||
+    addr === "::1" ||
+    /^f[cd][0-9a-f]{2}:/i.test(addr);
+  if (!String(rows[0].db).endsWith("_test") || !local) {
     await db.end();
     throw new Error(`Refusing to run against ${rows[0].db}@${addr}: needs a local *_test database`);
   }
