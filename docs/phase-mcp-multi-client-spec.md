@@ -58,7 +58,12 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     - scopes `mcp` and `offline_access`
     - `authorization_response_iss_parameter_supported`
     - the revocation endpoint
-  - It does **not** advertise client metadata documents (CIMD). When CIMD is advertised, Gemini Spark tries it first and never falls back to dynamic registration.
+  - It does **not** advertise client metadata documents (CIMD). The server can't resolve URL client ids, and every target client registers itself (DCR) when CIMD isn't advertised. Field reports on Gemini Spark (July–September 2026; no Spark session has been run against this server yet):
+    - It used a URL client_id under `https://accountlinking.google.com/clientidmetadata/…` with a server that offered CIMD and no registration endpoint.
+    - Servers that advertised both saw it register via DCR.
+    - A few servers that advertised CIMD saw it stop at a manual client ID/secret prompt, for disputed reasons.
+
+    Leaving CIMD out avoids that ambiguity.
   - Protected-resource metadata (RFC 9728) is served at `/.well-known/oauth-protected-resource/mcp` (resource `<base>/mcp`) and at the root (resource `<base>`).
 - **Registration** (`/register`)
   - Public clients only.
@@ -69,7 +74,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     | Claude | `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback` (exact) |
     | ChatGPT | `https://chatgpt.com/connector_platform_oauth_redirect` (exact) or the `https://chatgpt.com/connector/oauth/` prefix |
     | Cursor | `cursor://anysphere.cursor-mcp/oauth/callback`, `https://www.cursor.com/agents/mcp/oauth/callback` (Cloud Agents) |
-    | Google | the `https://oauth-redirect.googleusercontent.com/r/` prefix |
+    | Google | the `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-` prefix (Gemini Spark's per-user, per-connector callback). Other `/r/<project-id>` paths on that relay deliver to arbitrary Google Cloud projects, whose ids can't contain `_`, so they are refused. |
     | Native apps | RFC 8252 loopback (`http://localhost`, `127.0.0.1`, `[::1]`); the port may differ from the registered one |
     | Custom | any `https://` prefix listed in `OAUTH_EXTRA_REDIRECT_PREFIXES`, matched at a `/` boundary |
 
@@ -91,7 +96,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     - The code row is locked first. The client id, redirect URI (if sent) and PKCE verifier are checked *before* the code is consumed. Someone who merely saw a code can neither burn it nor trigger revocation.
     - A code redeemed again with the right verifier revokes the credential it minted (`code_reuse`).
     - The label is made unique under an advisory lock. Each candidate is checked with the index's own `lower(btrim())`, because JavaScript and Postgres case folding differ.
-    - A refresh token is **always** issued: Claude does not ask for `offline_access`, and Spark needs a refresh token.
+    - A refresh token is **always** issued. Claude does not ask for `offline_access`. Spark does ask for it, and a third-party server that issued none saw Spark get stuck once the 1-hour access token expired. Spark actually using a refresh token has not been observed yet.
   - **Refresh grant:**
     - The row is locked and rotated.
     - Within 5 minutes of its first rotation, the same token may be redeemed again, up to 10 times. Each time it gets its own new pair.
@@ -119,13 +124,15 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 
 - **Transport**
   - Streamable HTTP with plain JSON responses.
-  - `OPTIONS` is answered with 204 for CORS; `GET` and `DELETE` get 405.
+  - `OPTIONS` is answered with 204 for CORS.
+  - A tokenless `HEAD` gets the same 401 discovery challenge as a tokenless `POST`, because Gemini Spark probes with it.
+  - `GET`, `DELETE`, and a `HEAD` that carries a token get 405. The spec allows this when there is no SSE stream or session.
   - Notifications and client responses get 202.
   - JSON-RPC batches of up to 20 messages are accepted leniently.
   - Protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05 are negotiated.
   - Empty `prompts/list` and `resources/templates/list` are served, and `logging/setLevel` is accepted.
 - **Tool descriptions**
-  - All 38 tools have a `title` and full `annotations`. ChatGPT and Gemini use these to decide when to ask for confirmation.
+  - All 38 tools have a `title` and full `annotations`. ChatGPT asks for confirmation before any tool not marked read-only, and Gemini CLI reads `readOnlyHint`. Gemini Spark confirms write actions; July 2026 field notes saw it confirm every call on a server without annotations, so it is unverified whether it honours `readOnlyHint`.
   - Every write tool's "ONLY call when…" / "NEVER call autonomously" sentence appears in its first 300 characters, so clients that truncate still see it.
   - Nullable fields use `anyOf`, never JSON-Schema type arrays (Gemini).
   - `INSTRUCTIONS` is ≤ 2,000 characters (Claude Code truncates at 2,048).
@@ -156,12 +163,19 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
    1. Commit `ALLOW_MASTER_BEARER: "false"`.
    2. Rotate `BRAIN_MCP_TOKEN`.
    3. Review `/tokens` and revoke anything you don't recognise.
-- **Residual risk:** an attacker can add their own vendor connector pointing at this server and send the owner its consent link. The page truthfully names the vendor. The only defences are the warning text and approving only connections you just started yourself.
+- **Residual risk:** an attacker can add their own vendor connector pointing at this server and send the owner its consent link. The page truthfully names the vendor. The only defences are the warning text and approving only connections you just started yourself. For Google, the pinned prefix makes the label truthful, but an attacker's own Spark connector still matches it, so the same defence applies.
 
 ## 9. Follow-ups (not in this phase)
 
 - Prune `mcp_call_log` on a retention schedule, from the monolith scheduler.
 - Per-tool scopes, such as read-only credentials for experimental agents.
 - Rate-limit wrong owner-secret attempts. The secret is 256-bit random, so brute force is not practical today.
-- Pin Gemini Spark's exact `/r/<project>` redirect once it is known. Today any `oauth-redirect.googleusercontent.com/r/` path is allowed.
+- Spark callbacks are per user and per connector (`/r/user_bound_custom-mcp-<id>-<host>`), so the built-in rule pins that prefix rather than one exact URI. An owner-specific exact pin would belong in a private setting, never in the public repo.
+- On the first real Gemini Spark connection, confirm:
+  1. A tool call more than an hour after connecting succeeds. That is, a refresh is observed: Workers Logs show a second `POST /token`.
+  2. `GET` returning 405, and the lack of a session id, don't stall Spark.
+  3. Whether a read-only tool runs without a confirmation prompt.
+  4. A tool whose schema has `additionalProperties` (e.g. `read_protocol`) loads and runs.
+
+  If check 1 fails, consider a longer reuse grace for Google-family refresh tokens. Keep rotation itself: the MCP spec requires it for public clients.
 - Stamp the credential on the remaining idea writes too: `update_idea` notes and `decide_idea_links`. These are covered by the call log today.

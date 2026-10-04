@@ -1,6 +1,6 @@
-// Display titles and MCP tool annotations for every tool. Clients use the
-// annotations to decide when to ask the user before calling (ChatGPT,
-// Gemini) and to group tools. Hints only — the server enforces nothing
+// Display titles and MCP tool annotations for every tool. Clients may use
+// the annotations to decide when to ask the user before calling (e.g.
+// ChatGPT; Gemini CLI reads readOnlyHint; Gemini Spark unverified). Hints only — the server enforces nothing
 // from them. test/schema-portability.test.ts checks every tool has an entry.
 
 export type ToolAnnotations = {

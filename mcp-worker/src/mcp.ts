@@ -1,7 +1,8 @@
 import type { Env } from './env';
 import { tools } from './tools/registry';
 import { listResources, readResource, ResourceNotFoundError } from './resources';
-import { authDb, authenticate } from './auth/middleware';
+import { authDb, authenticate, unauthorized } from './auth/middleware';
+import { bearerFrom } from './auth/tokens';
 import { scopeAllows, type Principal } from './auth/principal';
 import { extractResultIds, recordActivity, type CallEntry } from './calllog';
 import { CORS_HEADERS, corsPreflight, withCors } from './http';
@@ -45,6 +46,9 @@ export function negotiateVersion(requested: unknown): string {
 
 export async function handleMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method === 'OPTIONS') return corsPreflight('GET, POST, DELETE, OPTIONS');
+  // Gemini Spark probes the MCP URL with a tokenless HEAD and reads the
+  // Bearer challenge from the 401. Presence check only: no DB call.
+  if (request.method === 'HEAD' && !bearerFrom(request)) return unauthorized(request, false);
   if (request.method !== 'POST') {
     // No server-initiated SSE stream and no sessions to delete.
     return new Response('Use POST with a JSON-RPC body', {

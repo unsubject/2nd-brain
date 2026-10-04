@@ -1,8 +1,10 @@
 // OAuth discovery documents.
 //
 // Deliberately NOT advertised: client_id_metadata_document_supported (CIMD).
-// Gemini Spark tries CIMD first when it's advertised and never falls back
-// to dynamic registration; Claude/ChatGPT fall back to DCR without it.
+// This server can't resolve URL client_ids. Without CIMD every supported
+// client (Claude, ChatGPT, Gemini Spark) registers itself via DCR; with it,
+// Claude/ChatGPT switch to CIMD and some servers saw Spark stop at a manual
+// client-id prompt (reports conflict; see docs/phase-mcp-multi-client-spec.md §4).
 
 import { baseUrl, CORS_HEADERS } from '../http';
 
@@ -47,10 +49,21 @@ export function protectedResourceMetadata(request: Request, resourcePath: '' | '
   );
 }
 
-// Resource indicators (RFC 8707) we accept for this server.
+// Resource indicators (RFC 8707) we accept for this server: our origin
+// (scheme and host compared case-insensitively, default port implied, as
+// the MCP authorization spec asks) with path "", "/", "/mcp" or "/mcp/".
 export function isOurResource(resource: string, request: Request): boolean {
-  const base = baseUrl(request);
-  return [base, `${base}/`, `${base}/mcp`, `${base}/mcp/`].includes(resource);
+  if (/[?#]/.test(resource)) return false;
+  let u: URL;
+  try {
+    u = new URL(resource);
+  } catch {
+    return false;
+  }
+  if (u.username || u.password) return false;
+  if (u.origin !== new URL(request.url).origin) return false;
+  const path = u.pathname.endsWith('/') ? u.pathname.slice(0, -1) : u.pathname;
+  return path === '' || path === '/mcp';
 }
 
 export function normalizeScope(requested: string | null | undefined): string {

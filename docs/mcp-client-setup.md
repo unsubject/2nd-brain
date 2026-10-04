@@ -22,6 +22,7 @@ There are two ways a client gets a credential:
   - You name the connection, type the owner secret, and press **Approve**.
   - When reconnecting a client you already had, tick **Replace** (ticked by default for Claude, ChatGPT and Gemini Spark). The old connection with that exact name is revoked and the new one keeps the name. Otherwise it becomes e.g. `Claude (2)`.
   - The client then receives an access token that lasts 1 hour, plus a refresh token that rotates on every use.
+  - Removing or disconnecting a connector inside a client may not tell 2nd-brain. Revoke it in `/tokens` too; otherwise its refresh token stays valid until 90 days after it was last used.
 - **Personal access token (PAT).** You create it in `/tokens` → **New personal access token**. Used by Meta Muse, scripts, and clients set up from a config file.
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
   - Only a hash of it is stored.
@@ -84,19 +85,43 @@ Gemini CLI finds OAuth from the server's 401 response. If it doesn't open a brow
 
 ## Gemini Spark (Google's agent)
 
-Spark connects custom apps only through OAuth. Before you start, check you are eligible:
+Spark connects custom apps only through OAuth. Google's rules for **custom apps** are narrower than for Spark itself. As of October 2026 you need **all** of these:
 
-- You live **outside the EEA, UK and Switzerland**.
-- You use a **personal** Google account (not Workspace).
+- You are **18 or older and in the US**.
+- You use Gemini **in English**; custom apps are available only in English.
+- You use a **personal** Google account, not a Workspace or school account.
 - **Keep Activity** is on.
+- You have **Spark** itself, through a Google AI Pro or Ultra plan. Spark isn't offered at all in the EEA, the UK, Switzerland or Nigeria.
 
-If any of these fails, Spark won't offer custom apps; use Gemini CLI instead.
+You add the app once in the Gemini **web app** (gemini.google.com); after that it also works in the Gemini mobile app. If any rule above isn't met, Gemini won't offer custom apps; use Gemini CLI instead. Google changes these rules, so check [its help page](https://support.google.com/gemini/answer/17209137).
 
-1. In Spark, add a **custom app / MCP server** with the server URL. The 2nd-brain server deliberately doesn't advertise client metadata documents (CIMD), so Spark falls back to registering itself.
-2. Approve the consent page. It shows **Google (Gemini Spark)**, with a redirect to `oauth-redirect.googleusercontent.com`. Label it `Gemini Spark`.
-3. Spark keeps the connection alive with refresh tokens (`offline_access`).
+These notes come from third-party field reports (July–September 2026), not from Google's documentation. No Spark session has been run against this server yet.
 
-If Spark reports that the redirect isn't allowed, it is using a redirect URI the built-in list doesn't know. Add its prefix to `OAUTH_EXTRA_REDIRECT_PREFIXES` (see Troubleshooting).
+1. On a computer, open gemini.google.com and go to **Settings & help → Connected Apps**. Google's help calls it **Settings → Connected Apps**, and the labels vary.
+   1. Under **Custom apps**, click **Add a custom app**.
+   2. Paste exactly `https://2nd-brain-mcp.simon-lee.workers.dev/mcp`, with `/mcp` and no trailing slash. The bare domain and `/mcp/` both return 404.
+   3. Leave **Advanced features** (client ID and secret) empty, and click **Next**. 2nd-brain doesn't advertise client metadata documents (CIMD), so Spark registers itself through dynamic client registration.
+2. Approve the consent page. It shows **Google (Gemini Spark)** with a redirect to `oauth-redirect.googleusercontent.com`. Keep the label `Gemini Spark`.
+3. Check that the connection survives the first hour.
+   - Spark asks for `offline_access`, and the server always issues a refresh token, so Spark should renew its 1-hour access token by itself. Nobody has published a trace of Spark doing that yet.
+   - So use Spark again more than an hour after connecting. The `Gemini Spark` row in `/tokens` should then show **last used just now**, and Workers Logs should show a second `POST /token`.
+   - If that call fails, see Troubleshooting.
+
+**What to expect:**
+
+- **Confirmations.** Spark asks you to confirm write actions such as `park_idea` and `decide_idea_links`, and it may ask before every call, reads included.
+  - Field notes from July 2026 saw a prompt before every call on a server whose tools had no read-only marks.
+  - Ours are marked, but it is unverified whether Spark honours that. This is Spark's own setting; the server can't turn it off.
+- **Workers Logs.** Spark runs a fresh `initialize` and `tools/list` on every turn and after each tool call. A tokenless `HEAD /mcp` answered with 401 and a `GET /mcp` answered with 405 are both normal.
+- **Disconnecting.**
+  1. Open Connected Apps → the app → **More details** → **Disconnect** or **Remove app**.
+  2. Revoke `Gemini Spark` in `/tokens`. No source shows Spark telling the server when you remove it.
+
+  Reconnecting with **Replace** ticked revokes the old connection automatically.
+
+**If Spark reports that the redirect isn't allowed,** Google has changed its callback form. The built-in rule accepts only `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-…`, Spark's per-user callback.
+- **Stopgap:** add `https://oauth-redirect.googleusercontent.com/r/` to `OAUTH_EXTRA_REDIRECT_PREFIXES` (see Troubleshooting).
+- **On the consent page:** it then shows **Custom**, the label defaults to the client's own name, and **Replace** isn't ticked. Name the connection `Gemini Spark` and tick **Replace** yourself.
 
 ## Meta Muse (Meta's agent)
 
@@ -142,9 +167,14 @@ Gardening leaves composted ideas out by default, so smoke ideas don't get in the
 
 | Symptom | Cause and fix |
 |---|---|
-| Registration fails with `invalid_redirect_uri`, or the consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Google, `http://localhost` / `127.0.0.1` / `[::1]`). Unknown URIs are dropped at registration, and registration fails only if none is allowed. Add the client's `https://` prefix, ending in `/`, to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
+| Registration fails with `invalid_redirect_uri`, or the consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Gemini Spark's `oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-…` callback, `http://localhost` / `127.0.0.1` / `[::1]`). Unknown URIs are dropped at registration, and registration fails only if none is allowed. Add the client's `https://` prefix, ending in `/`, to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
 | Consent page says **Unknown client** | The client's registration was swept: unapproved registrations are deleted after 7 days. Remove the connector and add it again. |
 | Client suddenly says it must re-authenticate | Either its credential was revoked, or it presented a refresh token that had already been used more than 5 minutes earlier. Credentials are revoked when you revoke or replace them in `/tokens`, when the client calls `/revoke`, or when an authorization code is redeemed twice (`code_reuse`). A stale refresh token is refused but revokes nothing; this happens with stale copies held by idle processes. Reconnect if it persists. `/tokens` → **Recently revoked** shows the reason. |
+| Gemini Spark says **Automatic registration with this server failed. Please enter the OAuth client ID and client secret…** (reported by third parties) | Spark stopped during discovery or `/register`. Don't fill in the fields: 2nd-brain has no static client. In Workers Logs (Cloudflare dashboard → Workers → 2nd-brain-mcp → Logs, or `npx wrangler tail`), check that `GET /.well-known/oauth-protected-resource/mcp` and `GET /.well-known/oauth-authorization-server` returned 200 and `POST /register` returned 201. A `400 invalid_redirect_uri` means Google changed its callback (first row); a `429` is the registration cap (last row). Then add the app again. |
+| Gemini Spark shows Google's **500. That's an error.** page after the consent page (reported by third parties) | You pressed **Deny**; Spark shows any `access_denied` this way. Nothing was created, so add the app again. A wrong owner secret doesn't cause this, because the consent page just asks again. If it appears without the consent page ever showing, the server probably refused Spark's request (`invalid_target` or `invalid_request`); check Workers Logs. |
+| Gemini Spark says **Account linking is required to use this custom app. Try again.** (reported by third parties) | Google didn't finish the server-to-server code exchange. Reports say a retry often works. Keep **Replace** ticked so you don't end up with `Gemini Spark (2)`. If it repeats, check Workers Logs for `POST /token` and its status, and `/tokens` → **Recently revoked** for `code_reuse`. If the logs show `/authorize` but no `POST /token`, Google never redeemed the code; retry. That case has also been reported as **Cannot Complete Request** on `oauth-redirect.googleusercontent.com`. |
+| Gemini Spark's tools disappear, or its calls fail, about an hour after connecting | Spark probably isn't renewing its token. In `/tokens`, the `Gemini Spark` row's **last used** stops about an hour after you connected, and nothing appears under **Recently revoked**. Remove the custom app in Spark and add it again (**Replace** is ticked by default). |
+| A client can't connect, and Workers Logs show `404` for `POST /` or `POST /mcp/` | The URL was entered without `/mcp`, or with a trailing slash. Only exactly `…/mcp` is served. Remove the app, revoke anything it got in `/tokens`, and add it again with the exact URL. |
 | `401` with `error="invalid_token"` | The token is expired, revoked or unknown. OAuth clients refresh automatically. A PAT that fails was revoked. |
 | `503` from `/mcp` | The credential store (Postgres via Hyperdrive) is unreachable. Clients should retry, so don't revoke anything. |
 | Client lists no tools or rejects the schema | Run `npm run smoke` to confirm the server works, then check the client's tool limit (Cursor allows about 40). The schemas avoid type arrays and `$ref` on purpose (`test/schema-portability.test.ts`). |

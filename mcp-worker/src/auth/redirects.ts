@@ -27,7 +27,12 @@ const RULES: Rule[] = [
   { family: 'cursor', exact: 'cursor://anysphere.cursor-mcp/oauth/callback' },
   // Cursor Cloud Agents; Cursor registers it alongside the cursor:// one.
   { family: 'cursor', exact: 'https://www.cursor.com/agents/mcp/oauth/callback' },
-  { family: 'google', origin: 'https://oauth-redirect.googleusercontent.com', pathPrefix: '/r/' },
+  // Gemini Spark's per-user, per-connector callback:
+  // /r/user_bound_custom-mcp-<numeric id>-<server host, dots as underscores>.
+  // The relay forwards any other /r/<id> to the Google Cloud project with
+  // that id (project ids can't contain "_"), so a bare /r/ prefix would let
+  // any project pose as "Google (Gemini Spark)".
+  { family: 'google', origin: 'https://oauth-redirect.googleusercontent.com', pathPrefix: '/r/user_bound_custom-mcp-' },
 ];
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);

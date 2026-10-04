@@ -48,7 +48,7 @@ describe('redirect allow-list', () => {
     ['https://chatgpt.com/connector/oauth/abc123', 'chatgpt'],
     ['cursor://anysphere.cursor-mcp/oauth/callback', 'cursor'],
     ['https://www.cursor.com/agents/mcp/oauth/callback', 'cursor'],
-    ['https://oauth-redirect.googleusercontent.com/r/my-project', 'google'],
+    ['https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1234567890-2nd-brain-mcp_example_workers_dev', 'google'],
     ['http://localhost:33418/callback', 'loopback'],
     ['http://127.0.0.1/cb', 'loopback'],
     ['http://[::1]:8080/cb', 'loopback'],
@@ -65,6 +65,9 @@ describe('redirect allow-list', () => {
     'https://chatgpt.com/connector/oauth/../../steal',
     'https://chatgpt.com/other',
     'https://oauth-redirect.googleusercontent.com/other',
+    'https://oauth-redirect.googleusercontent.com/r/my-project',
+    'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-',
+    'https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-1-x',
     'https://localhost/cb',
     'http://localhost.evil.com/cb',
     'http://evil.com/cb',
@@ -240,9 +243,23 @@ describe('OAuth discovery', () => {
   });
 
   it('recognises our resource indicators and scopes', () => {
-    expect(isOurResource(`${BASE}/mcp`, request)).toBe(true);
-    expect(isOurResource(BASE, request)).toBe(true);
-    expect(isOurResource('https://evil.example/mcp', request)).toBe(false);
+    for (const ok of [`${BASE}/mcp`, `${BASE}/mcp/`, BASE, `${BASE}/`, 'https://BRAIN.EXAMPLE/mcp', 'HTTPS://brain.example:443/mcp/']) {
+      expect(isOurResource(ok, request), ok).toBe(true);
+    }
+    for (const bad of [
+      'https://evil.example/mcp',
+      'http://brain.example/mcp',
+      'https://brain.example:8443/mcp',
+      'https://user@brain.example/mcp',
+      'https://brain.example/mcp#x',
+      'https://brain.example/mcp?a=1',
+      'https://brain.example/MCP',
+      'https://brain.example/mcp//',
+      'https://brain.example/other',
+      'not a url',
+    ]) {
+      expect(isOurResource(bad, request), bad).toBe(false);
+    }
     expect(normalizeScope(undefined)).toBe('mcp');
     expect(normalizeScope('offline_access openid mcp')).toBe('mcp offline_access');
     expect(normalizeScope('profile')).toBe('mcp');

@@ -158,6 +158,21 @@ describe('mcp transport compatibility', () => {
     expect(get.headers.get('Allow')).toContain('POST');
   });
 
+  it('answers a tokenless HEAD with the discovery challenge (Gemini Spark probe)', async () => {
+    const head = await handleMcpRequest(new Request('https://test.example/mcp', { method: 'HEAD' }), env, ctx);
+    expect(head.status).toBe(401);
+    const challenge = head.headers.get('WWW-Authenticate')!;
+    expect(challenge).toContain('resource_metadata="https://test.example/.well-known/oauth-protected-resource/mcp"');
+    expect(challenge).not.toContain('error=');
+    const withToken = await handleMcpRequest(
+      new Request('https://test.example/mcp', { method: 'HEAD', headers: { Authorization: `Bearer ${TOKEN}` } }),
+      env,
+      ctx,
+    );
+    expect(withToken.status).toBe(405);
+    expect(withToken.headers.get('Allow')).toContain('POST');
+  });
+
   it('401s carry the protected-resource metadata pointer and CORS headers', async () => {
     const res = await handleMcpRequest(
       new Request('https://test.example/mcp', { method: 'POST', body: '{}' }),
