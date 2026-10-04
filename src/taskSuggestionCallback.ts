@@ -5,6 +5,7 @@ import {
   markSuggestionSkipped,
 } from "./db/taskSuggestions";
 import { insertTask } from "./google/tasks";
+import { describeGoogleError } from "./google/errors";
 
 export async function handleSuggestionCallback(
   ctx: Context,
@@ -44,7 +45,7 @@ export async function handleSuggestionCallback(
       title: suggestion.suggested_title,
     });
   } catch (err) {
-    console.error(`[taskSuggest] insertTask failed for ${id}:`, err);
+    console.error(`[taskSuggest] insertTask failed for ${id}:`, describeGoogleError(err));
     const msg = err instanceof Error ? err.message : String(err);
     await ctx.answerCallbackQuery({
       text: `Failed: ${msg.slice(0, 180)}`,

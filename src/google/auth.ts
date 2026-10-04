@@ -16,12 +16,13 @@ function createOAuth2Client() {
   );
 }
 
-export function getAuthUrl(): string {
+export function getAuthUrl(state: string): string {
   const oauth2Client = createOAuth2Client();
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: SCOPES,
+    state,
   });
 }
 
@@ -59,7 +60,7 @@ export async function getAuthenticatedClient() {
   );
 
   if (rows.length === 0) {
-    throw new Error("Not authenticated — visit /auth/google to connect");
+    throw new Error("Not authenticated — visit /auth/google (owner secret required) to connect");
   }
 
   const oauth2Client = createOAuth2Client();

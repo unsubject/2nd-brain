@@ -244,6 +244,16 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 - **Cross-row validation and invalidation via trigger** (new in 019). `idea_link_validate` checks that both idea endpoints belong to the link's user and that `part_of` targets a synthesis; `idea_before_update` keeps `idea.kind` immutable and clears the embedding when an embedded field changes.
 - Array foreign keys are enforced app-side. Postgres can't FK individual elements of a `uuid[]`, so any handler accepting an array of foreign UUIDs (e.g. `create_undertaking.secondary_goal_ids`, `update_undertaking.secondary_goal_ids`, `propose_constitution_amendment.source_constitution_domain_ids`, `propose_goal_amendment.source_goal_ids`) must `SELECT ... WHERE id = ANY(...)` and refuse the write if any ID fails to resolve to an active row owned by the current user.
 
+### Google connection (Node monolith)
+
+All four Google syncs use one refresh token stored for user `default` in `google_tokens`. Connecting therefore replaces the synced account, so only the owner may start it:
+
+- Set `OWNER_SECRET` on the Railway service, with the same value as the Worker's. Without it, `/auth/google` answers 503.
+- Open `https://<railway app>/auth/google`, enter the owner secret in the form (it is POSTed, never put in a URL), and approve in Google.
+- The callback accepts only the signed state that the form issued: it is HMAC'd with `OWNER_SECRET` and expires after 10 minutes.
+- Errors from Google calls are logged through `describeGoogleError` (`src/google/errors.ts`): the message, HTTP status and Google's error code only. Logging the raw error object would print the token request, refresh token included.
+- `deleted_client` in the sync logs means the Google Cloud OAuth client was deleted. Create a new one (Web application, redirect URI = `GOOGLE_REDIRECT_URI`), update `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on Railway, and connect again.
+
 ### What lives where
 
 | Concern | Lives in |
@@ -251,7 +261,7 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 | Telegram ingest, scheduler, morning review, family bot | `src/` (Node monolith) |
 | Entry processing (gpt-5.4-nano classification) | `src/processor.ts` (Node monolith) |
 | Pending-entry polling + embedding | `src/worker.ts` (Node monolith) |
-| Google sync (Tasks, Contacts, Calendar, Gmail) | `src/google/` (Node monolith) |
+| Google sync (Tasks, Contacts, Calendar, Gmail) | `src/google/` (Node monolith); owner-only connect at `/auth/google` (`src/google/routes.ts`) |
 | Cross-record link generation | `src/google/linker.ts` (Node monolith) |
 | AI-tool MCP surface | `mcp-worker/` (CF Worker) |
 | Per-client credentials, OAuth, owner console | `mcp-worker/src/auth/`, `src/oauth/`, `src/console.ts`; tables in migration 020 |
