@@ -11,6 +11,7 @@ import {
 } from "./db/familyQueries";
 import { askFamilyArchive, AskScope } from "./familyAsk";
 import { insertTask } from "./google/tasks";
+import { describeGoogleError } from "./google/errors";
 import { handleSuggestionCallback } from "./taskSuggestionCallback";
 
 export interface FamilyBotConfig {
@@ -169,7 +170,7 @@ export function createFamilyBot(token: string, config: FamilyBotConfig): Bot {
       await ctx.reply(`✅ Added to "${result.listTitle}" tasklist.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[familyBot] /task error:", err);
+      console.error("[familyBot] /task error:", describeGoogleError(err));
       await ctx.reply(`Couldn't add task: ${msg}`);
     }
   });

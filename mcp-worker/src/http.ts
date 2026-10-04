@@ -113,7 +113,10 @@ export function htmlPage(body: string, status = 200, opts: { formActionSelf?: bo
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': csp,
       'X-Frame-Options': 'DENY',
-      'Referrer-Policy': 'no-referrer',
+      // Not no-referrer: under that policy browsers send `Origin: null` on
+      // same-origin form POSTs, which the console's origin check refuses.
+      // same-origin still sends nothing to other sites.
+      'Referrer-Policy': 'same-origin',
       'X-Content-Type-Options': 'nosniff',
       ...NO_STORE,
       ...extra,
