@@ -43,7 +43,7 @@ Revoking a credential leaves its token rows in place; every lookup joins on `rev
 1. Read the bearer token; the scheme name is matched case-insensitively.
 2. Compare it in constant time with the master `BRAIN_MCP_TOKEN`, unless `ALLOW_MASTER_BEARER` is `"false"`.
 3. If the token has the `brain_at_` or `brain_pat_` prefix, look it up by hash in one indexed query that includes `now()`, so Hyperdrive never serves it from cache. That makes revocation immediate.
-4. Anything else gets a 401 with no database call. The 401 carries `WWW-Authenticate` with `resource_metadata=<base>/.well-known/oauth-protected-resource/mcp`, plus `error="invalid_token"` when a token was presented.
+4. Anything else gets a 401 with no database call. The 401 carries `WWW-Authenticate` with `scope="mcp"` and `resource_metadata=<base>/.well-known/oauth-protected-resource/mcp`, plus `error="invalid_token"` when a token was presented.
 5. If the database is unreachable, answer **503 with Retry-After**, never 401, so clients keep their tokens.
 
 Handlers receive the resulting `Principal {credentialId, label, scope, via}` as a fourth argument.
@@ -64,7 +64,8 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     - A few servers that advertised CIMD saw it stop at a manual client ID/secret prompt, for disputed reasons.
 
     Leaving CIMD out avoids that ambiguity.
-  - Protected-resource metadata (RFC 9728) is served at `/.well-known/oauth-protected-resource/mcp` (resource `<base>/mcp`) and at the root (resource `<base>`).
+  - Protected-resource metadata (RFC 9728) is served at `/.well-known/oauth-protected-resource/mcp` (resource `<base>/mcp`) and at the root (resource `<base>`). It lists only the `mcp` scope: `offline_access` is advertised by the authorization server, as MCP 2026-07-28 asks, and a refresh token is issued either way.
+  - Registration echoes `application_type` when the client sends `web` or `native`.
 - **Registration** (`/register`)
   - Public clients only.
   - Each redirect URI must match the allow-list:

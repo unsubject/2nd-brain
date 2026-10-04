@@ -9,6 +9,10 @@
 import { baseUrl, CORS_HEADERS } from '../http';
 
 export const SUPPORTED_SCOPES = ['mcp', 'offline_access'] as const;
+// What the protected resource itself needs. offline_access is an
+// authorization-server concern (MCP 2026-07-28 / SEP-2207: resource metadata
+// SHOULD NOT list it); refresh tokens are issued regardless.
+export const RESOURCE_SCOPES = ['mcp'] as const;
 
 export function authServerMetadata(request: Request): Response {
   const base = baseUrl(request);
@@ -42,7 +46,7 @@ export function protectedResourceMetadata(request: Request, resourcePath: '' | '
       resource: `${base}${resourcePath}`,
       authorization_servers: [base],
       bearer_methods_supported: ['header'],
-      scopes_supported: [...SUPPORTED_SCOPES],
+      scopes_supported: [...RESOURCE_SCOPES],
       resource_name: "Simon's 2nd-brain",
     },
     { headers: CORS_HEADERS },
