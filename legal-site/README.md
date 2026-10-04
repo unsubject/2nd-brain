@@ -4,9 +4,10 @@ The Terms of Service and Privacy Statement for every unsubject.com project, publ
 
 | URL | File |
 |---|---|
-| `https://legal.unsubject.com/` | `public/index.html` (links to both documents) |
+| `https://legal.unsubject.com/` | `public/index.html` (links to the pages below) |
 | `https://legal.unsubject.com/terms` | `public/terms.html` |
 | `https://legal.unsubject.com/privacy` | `public/privacy.html` |
+| `https://legal.unsubject.com/workflow` | `public/workflow.html` (home page of "workflow", the Google OAuth app behind 2nd-brain's Google sync) |
 
 `/terms-of-service`, `/terms-of-use`, `/privacy-policy` and `/privacy-statement` redirect (301) to these URLs (`public/_redirects`). Any other path gets `public/404.html`. Security headers are set in `public/_headers`. All pages share `public/legal.css`.
 
@@ -43,4 +44,4 @@ npm run check      # wrangler dry run, same as CI
 
 These URLs are the ones to enter in Google Cloud Console → **Google Auth Platform → Branding**: **Privacy policy link** `https://legal.unsubject.com/privacy`, **Terms of service link** `https://legal.unsubject.com/terms`. Add `unsubject.com` under **Authorized domains**; it covers its subdomains. Privacy §3 holds the Google API Limited Use disclosure that verification asks for.
 
-Google also asks for an **application home page** on an authorized domain that describes the app. `legal.unsubject.com/` only links to the legal documents, so it won't do as that page.
+Google also asks for an **application home page** on an authorized domain that describes the app. Use `https://legal.unsubject.com/workflow`. Its app name must match the name on the consent screen ("workflow"). Its list of Google data must match the scopes in `src/google/auth.ts`, so update the page whenever the scopes change.

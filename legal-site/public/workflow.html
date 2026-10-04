@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>workflow · Unsubject</title>
+<meta name="description" content="workflow is a private, single-user application that connects Simon Lee’s own Google account to his personal journal and planning assistant. It is not available to the public.">
+<link rel="canonical" href="https://legal.unsubject.com/workflow">
+<link rel="stylesheet" href="/legal.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">Unsubject</a>
+    <nav aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>workflow</h1>
+  <p class="meta">A personal application operated by Unsubject LLC · Last updated October 4, 2026</p>
+
+  <p class="lede">workflow connects Simon Lee’s own Google account to his private journal and planning assistant. It is built for one person’s personal use. It is not offered to the public, and nobody else can sign up or connect an account.</p>
+
+  <div class="note">
+    <p><strong>Personal use only.</strong> Only one Google account, the owner’s, can be connected. The sign-in page is protected by a secret that only the owner holds, and there is no registration, sharing or public access.</p>
+  </div>
+
+  <h2 id="what">What workflow does</h2>
+  <p>Simon records thoughts, ideas and tasks by sending messages to a private Telegram bot. workflow brings in context from his Google account so that this journal can:</p>
+  <ul>
+    <li><strong>Prepare a morning briefing</strong> with the day’s calendar events, open tasks and starred emails awaiting follow-up.</li>
+    <li><strong>Link journal entries</strong> to the people, events, tasks and emails they mention.</li>
+    <li><strong>Turn notes into tasks.</strong> Simon can add tasks to Google Tasks from the chat. When a journal entry contains an action item, workflow suggests a task and adds it only if he confirms.</li>
+    <li><strong>Help the family plan.</strong> In a private family group chat, approved family members can ask the bot about family-related emails, events and tasks, and add tasks to the family task lists. Only items classified as family-related are used there.</li>
+  </ul>
+
+  <h2 id="google-data">Google data it uses, and why</h2>
+  <ul>
+    <li><strong>Google Tasks</strong> (read and write): shows open tasks in the briefing, and creates the tasks added from the chat.</li>
+    <li><strong>Google Calendar</strong> (read-only): reads events from 30 days back to 30 days ahead, with their titles, times, locations and attendees, for the briefing and to link journal entries to events.</li>
+    <li><strong>Google Contacts</strong> (read-only): reads names, email addresses, phone numbers and notes, to recognize the people a journal entry mentions.</li>
+    <li><strong>Gmail</strong> (read-only): reads emails Simon sent in the last 30 days, starred emails, and family-related emails from the last 30 days. It uses the subject, sender, recipients, labels and plain-text body for follow-up reminders, for linking to journal entries, and for answering family questions. It never sends, deletes or changes email.</li>
+  </ul>
+
+  <h2 id="handling">How the data is handled</h2>
+  <ul>
+    <li>Google data is stored in a private database that only the owner can reach.</li>
+    <li>To write the briefing and answer questions, relevant excerpts are sent to AI model providers (Anthropic and OpenAI) through their APIs. Their terms don’t let them train their models on this data.</li>
+    <li>The data is never sold, never used for advertising, and never used to train AI models.</li>
+    <li>workflow’s use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Details are in <a href="/privacy#google">Section 3 of the Privacy Statement</a>.</li>
+  </ul>
+
+  <h2 id="revoke">Disconnecting</h2>
+  <p>Access can be removed at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. workflow then stops reading the account. Stored Google data is deleted on request.</p>
+
+  <h2 id="contact">Policies and contact</h2>
+  <p>workflow is covered by the Unsubject <a href="/privacy">Privacy Statement</a> and <a href="/terms">Terms of Service</a>. For questions, write to <a href="mailto:webmaster@unsubject.com">webmaster@unsubject.com</a>.</p>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>© 2026 Unsubject LLC</span>
+    <a href="/terms">Terms of Service</a>
+    <a href="/privacy">Privacy Statement</a>
+    <a href="mailto:webmaster@unsubject.com">webmaster@unsubject.com</a>
+  </div>
+</footer>
+</body>
+</html>
