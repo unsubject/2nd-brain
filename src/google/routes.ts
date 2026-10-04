@@ -6,7 +6,8 @@
 // in place of the owner's. The owner proves who they are with OWNER_SECRET
 // (the same value as the MCP Worker's) in a POSTed form — never in the URL,
 // which would end up in proxy logs — and the round trip through Google
-// carries a signed, short-lived `state` that the callback verifies.
+// carries a signed, short-lived `state` that the callback verifies and that
+// can be used once: only states this process issued, and not yet redeemed.
 
 import express, { type Request, type Response, type Router } from "express";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -48,7 +49,11 @@ export function verifyState(state: unknown, secret: string | undefined, now = Da
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-function page(res: Response, status: number, title: string, body: string): void {
+// Chromium applies form-action to every redirect after a form submit, so the
+// owner form must also allow Google's origin or the 303 to Google is blocked.
+export const GOOGLE_AUTH_ORIGIN = "https://accounts.google.com";
+
+function page(res: Response, status: number, title: string, body: string, formAction = "'self'"): void {
   res
     .status(status)
     .set({
@@ -56,7 +61,7 @@ function page(res: Response, status: number, title: string, body: string): void 
       "Cache-Control": "no-store",
       "X-Frame-Options": "DENY",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'`,
     })
     .send(
       `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
@@ -78,25 +83,41 @@ export type GoogleAuthRouteOptions = {
   getAuthUrl: (state: string) => string;
   handleCallback: (code: string) => Promise<void>;
   now?: () => number;
+  /** Origin of the URLs getAuthUrl returns (tests point it elsewhere). */
+  authOrigin?: string;
 };
 
 export function googleAuthRoutes(opts: GoogleAuthRouteOptions): Router {
   const router = express.Router();
   const now = opts.now ?? Date.now;
+  const formAction = `'self' ${new URL(opts.authOrigin ?? GOOGLE_AUTH_ORIGIN).origin}`;
+  // nonce → expiry of states this process issued and that are still unused.
+  // One Node process serves these routes; a restart mid-flow just means
+  // starting again.
+  const issued = new Map<string, number>();
+  const prune = (t: number) => {
+    for (const [nonce, expires] of issued) if (expires < t) issued.delete(nonce);
+  };
+  const ownerForm = (res: Response, status: number, notice?: string) =>
+    page(res, status, "Connect Google", form(notice), formAction);
   const notConfigured = (res: Response) =>
     page(res, 503, "Google connection disabled", "<p>Set <code>OWNER_SECRET</code> on this service to connect a Google account.</p>");
 
   router.get("/auth/google", (_req: Request, res: Response) => {
     if (!opts.secret) return notConfigured(res);
-    page(res, 200, "Connect Google", form());
+    ownerForm(res, 200);
   });
 
   router.post("/auth/google", express.urlencoded({ extended: false, limit: "2kb" }), (req: Request, res: Response) => {
     if (!opts.secret) return notConfigured(res);
     if (!secretMatches(req.body?.secret, opts.secret)) {
-      return page(res, 403, "Connect Google", form("That secret is not right."));
+      return ownerForm(res, 403, "That secret is not right.");
     }
-    res.set("Cache-Control", "no-store").redirect(303, opts.getAuthUrl(signState(opts.secret, now())));
+    const t = now();
+    prune(t);
+    const state = signState(opts.secret, t);
+    issued.set(state.split(".")[1], t + STATE_TTL_MS);
+    res.set("Cache-Control", "no-store").redirect(303, opts.getAuthUrl(state));
   });
 
   router.get("/auth/google/callback", async (req: Request, res: Response) => {
@@ -104,7 +125,8 @@ export function googleAuthRoutes(opts: GoogleAuthRouteOptions): Router {
     if (typeof req.query.error === "string") {
       return page(res, 400, "Google connection cancelled", "<p>Google did not grant access. Nothing was changed.</p>");
     }
-    if (!verifyState(req.query.state, opts.secret, now())) {
+    // Single use: a state is redeemed (deleted) on its first valid callback.
+    if (!verifyState(req.query.state, opts.secret, now()) || !issued.delete(String(req.query.state).split(".")[1])) {
       return page(res, 400, "Link expired or invalid", '<p>Start again from <a href="/auth/google">/auth/google</a>.</p>');
     }
     const code = req.query.code;
@@ -118,6 +140,16 @@ export function googleAuthRoutes(opts: GoogleAuthRouteOptions): Router {
       console.error("Google OAuth callback error:", describeGoogleError(err));
       page(res, 500, "Google connection failed", "<p>Check the service logs, then start again.</p>");
     }
+  });
+
+  // Malformed or oversized form bodies: a plain page, not Express's default
+  // error page (which includes a stack trace outside production mode).
+  router.use((err: unknown, _req: Request, res: Response, next: express.NextFunction) => {
+    const e = err as { type?: unknown; status?: unknown };
+    if (typeof e?.type === "string" && typeof e.status === "number" && e.status >= 400 && e.status < 500) {
+      return ownerForm(res, e.status, "Request rejected.");
+    }
+    next(err);
   });
 
   return router;

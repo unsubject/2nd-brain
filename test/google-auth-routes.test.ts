@@ -50,6 +50,7 @@ async function start(secret: string | undefined, handleCallback?: (code: string)
       getAuthUrl: (state) => `https://accounts.example.test/o/oauth2/auth?state=${encodeURIComponent(state)}`,
       handleCallback: handleCallback ?? (async (code) => void codes.push(code)),
       now: () => clock.now,
+      authOrigin: "https://accounts.example.test",
     }),
   );
   const server = await new Promise<Server>((resolve) => {
@@ -66,6 +67,12 @@ const post = (url: string, secret: string) =>
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ secret }).toString(),
   });
+
+async function issuedState(s: Started): Promise<string> {
+  const res = await post(`${s.base}/auth/google`, SECRET);
+  assert.equal(res.status, 303);
+  return new URL(res.headers.get("location")!).searchParams.get("state")!;
+}
 
 let configured: Started;
 let unconfigured: Started;
@@ -100,7 +107,10 @@ test("GET shows the owner form, never cached or framed", async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("cache-control"), "no-store");
   assert.equal(res.headers.get("x-frame-options"), "DENY");
-  assert.match(res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  const csp = res.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /frame-ancestors 'none'/);
+  // Chromium checks form-action against the redirect to Google too.
+  assert.match(csp, /form-action 'self' https:\/\/accounts\.example\.test;/);
   const html = await res.text();
   assert.match(html, /<form method="post" action="\/auth\/google">/);
   assert.match(html, /type="password" name="secret"/);
@@ -110,6 +120,7 @@ test("a wrong secret is refused and does not redirect", async () => {
   const res = await post(`${configured.base}/auth/google`, "wrong");
   assert.equal(res.status, 403);
   assert.equal(res.headers.get("location"), null);
+  assert.match(res.headers.get("content-security-policy") ?? "", /form-action 'self' https:\/\/accounts\.example\.test;/);
   assert.match(await res.text(), /not right/);
 });
 
@@ -125,6 +136,36 @@ test("the right secret redirects to Google with a state the callback accepts", a
   assert.equal(cb.status, 200);
   assert.match(await cb.text(), /connected/);
   assert.deepEqual(configured.codes, ["the-code"]);
+
+  // Single use: the same state cannot link a second (e.g. an attacker's) code.
+  const again = await fetch(`${configured.base}/auth/google/callback?code=other-code&state=${encodeURIComponent(state)}`);
+  assert.equal(again.status, 400);
+  assert.deepEqual(configured.codes, ["the-code"]);
+});
+
+test("a correctly signed state the router never issued is refused", async () => {
+  const minted = signState(SECRET, configured.clock.now);
+  const res = await fetch(`${configured.base}/auth/google/callback?code=c&state=${encodeURIComponent(minted)}`);
+  assert.equal(res.status, 400);
+});
+
+test("an issued state expires after the TTL", async () => {
+  const state = await issuedState(configured);
+  configured.clock.now += STATE_TTL_MS + 1;
+  try {
+    const res = await fetch(`${configured.base}/auth/google/callback?code=c&state=${encodeURIComponent(state)}`);
+    assert.equal(res.status, 400);
+  } finally {
+    configured.clock.now -= STATE_TTL_MS + 1;
+  }
+});
+
+test("an oversized form body gets the plain page, not a stack trace", async () => {
+  const res = await post(`${configured.base}/auth/google`, "x".repeat(5000));
+  assert.equal(res.status, 413);
+  const html = await res.text();
+  assert.match(html, /Request rejected/);
+  assert.ok(!/at .*node_modules/.test(html), "no stack trace");
 });
 
 test("the callback rejects missing, forged and expired state, and Google errors", async () => {
@@ -149,7 +190,7 @@ test("the callback rejects missing, forged and expired state, and Google errors"
 test("a failing token exchange answers 500 and logs no request data", async (t) => {
   const logged: string[] = [];
   t.mock.method(console, "error", (...args: unknown[]) => void logged.push(args.map(String).join(" ")));
-  const state = signState(SECRET, failing.clock.now);
+  const state = await issuedState(failing);
   const res = await fetch(`${failing.base}/auth/google/callback?code=c&state=${encodeURIComponent(state)}`);
   assert.equal(res.status, 500);
   assert.equal(logged.length, 1);

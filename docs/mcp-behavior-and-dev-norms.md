@@ -250,7 +250,8 @@ All four Google syncs use one refresh token stored for user `default` in `google
 
 - Set `OWNER_SECRET` on the Railway service, with the same value as the Worker's. Without it, `/auth/google` answers 503.
 - Open `https://<railway app>/auth/google`, enter the owner secret in the form (it is POSTed, never put in a URL), and approve in Google.
-- The callback accepts only the signed state that the form issued: it is HMAC'd with `OWNER_SECRET` and expires after 10 minutes.
+- The callback accepts only a state that the form issued: it is HMAC'd with `OWNER_SECRET`, expires after 10 minutes, and works once (the process remembers the states it issued until they are redeemed).
+- The form's CSP allows `form-action` to `https://accounts.google.com` as well as itself, because Chromium applies `form-action` to the redirect that follows a form submit.
 - Errors from Google calls are logged through `describeGoogleError` (`src/google/errors.ts`): the message, HTTP status and Google's error code only. Logging the raw error object would print the token request, refresh token included.
 - `deleted_client` in the sync logs means the Google Cloud OAuth client was deleted. Create a new one (Web application, redirect URI = `GOOGLE_REDIRECT_URI`), update `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on Railway, and connect again.
 
