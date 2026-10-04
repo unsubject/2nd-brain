@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
+import { unwrapJsonb } from './idea_shared';
 
 const inputSchema = z.object({
   id: z.string().uuid(),
@@ -25,7 +26,8 @@ export async function getUndertakingHandler(
              primary_goal_id,
              COALESCE(to_jsonb(secondary_goal_ids), '[]'::jsonb) AS secondary_goal_ids,
              kind, gtasks_parent_id, status,
-             started_at, target_date, created_at, updated_at
+             started_at, target_date, created_at, updated_at,
+             now() AS as_of
         FROM undertakings
        WHERE id = ${id} AND user_id = ${env.BRAIN_USER_ID}
     `;
@@ -35,7 +37,8 @@ export async function getUndertakingHandler(
 
     const currentCycle = await sql`
       SELECT id, cycle_number, start_date, end_date, status,
-             streak_summary, reformulation_notes, created_at
+             streak_summary, reformulation_notes, created_at,
+             now() AS as_of
         FROM undertaking_cycles
        WHERE undertaking_id = ${id} AND status = 'active'
        LIMIT 1
@@ -43,16 +46,21 @@ export async function getUndertakingHandler(
 
     const pastCycles = await sql`
       SELECT id, cycle_number, start_date, end_date, status,
-             streak_summary, reformulation_notes, created_at, closed_at
+             streak_summary, reformulation_notes, created_at, closed_at,
+             now() AS as_of
         FROM undertaking_cycles
        WHERE undertaking_id = ${id} AND status = 'closed'
        ORDER BY cycle_number DESC
     `;
 
+    // as_of only defeats Hyperdrive's cache; don't return it. Older
+    // close_cycle calls stored streak_summary as a JSON string.
+    const cycle = ({ as_of: _asOf, ...c }: Record<string, unknown>) => ({ ...c, streak_summary: unwrapJsonb(c.streak_summary) });
+    const { as_of: _asOf, ...undertaking } = rows[0] as Record<string, unknown>;
     return ok({
-      undertaking: rows[0],
-      current_cycle: currentCycle.length > 0 ? currentCycle[0] : null,
-      past_cycles: pastCycles,
+      undertaking,
+      current_cycle: currentCycle.length > 0 ? cycle(currentCycle[0]) : null,
+      past_cycles: pastCycles.map((c) => cycle(c)),
     });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);

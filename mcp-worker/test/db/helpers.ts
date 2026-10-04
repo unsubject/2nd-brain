@@ -114,6 +114,34 @@ export async function seedJournalEntry(o: {
   return rows[0].id;
 }
 
+export async function resetGoalData(): Promise<void> {
+  await admin`
+    TRUNCATE editorial_pick, undertaking_cycles, undertakings, goal_amendments, goals,
+             constitution_amendments, constitution_domains CASCADE
+  `;
+}
+
+// Synthetic constitution domain → goal → undertaking → active cycle.
+export async function seedUndertaking(): Promise<{ domainId: string; goalId: string; undertakingId: string; cycleId: string }> {
+  const [d] = await admin<Array<{ id: string }>>`
+    INSERT INTO constitution_domains (user_id, label, statement, crisis_origin)
+    VALUES (${USER}, 'Domain', 'Synthetic statement', 'Synthetic origin') RETURNING id
+  `;
+  const [g] = await admin<Array<{ id: string }>>`
+    INSERT INTO goals (user_id, constitution_domain_id, statement, specific, measurable, achievable, relevant, time_bound, outcome_metric)
+    VALUES (${USER}, ${d.id}, 'Goal', 's', 'm', 'a', 'r', 't', 'metric') RETURNING id
+  `;
+  const [u] = await admin<Array<{ id: string }>>`
+    INSERT INTO undertakings (user_id, name, purpose, output_target, test_criteria, primary_goal_id, kind)
+    VALUES (${USER}, 'Undertaking', 'p', 'o', 'c', ${g.id}, 'habit_forming') RETURNING id
+  `;
+  const [c] = await admin<Array<{ id: string }>>`
+    INSERT INTO undertaking_cycles (undertaking_id, cycle_number, start_date, end_date)
+    VALUES (${u.id}, 1, '2026-01-01', '2026-01-31') RETURNING id
+  `;
+  return { domainId: d.id, goalId: g.id, undertakingId: u.id, cycleId: c.id };
+}
+
 export async function resetIdeaData(): Promise<void> {
   await admin`TRUNCATE idea, idea_source, idea_link, public_artifact, task_ref, project_ref CASCADE`;
 }

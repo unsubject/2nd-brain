@@ -113,6 +113,21 @@ export function parseJsonb<T>(v: unknown, fallback: T): T {
   return (cur ?? fallback) as T;
 }
 
+// Unwrap a jsonb value that an older writer stored as a JSON *string*
+// (`${JSON.stringify(x)}::jsonb`, fixed in close_cycle/record_pick and
+// repaired by migration 021). Returns anything else unchanged; never throws.
+export function unwrapJsonb(v: unknown): unknown {
+  let cur: unknown = v;
+  for (let i = 0; i < 3 && typeof cur === 'string'; i++) {
+    try {
+      cur = JSON.parse(cur);
+    } catch {
+      return cur;
+    }
+  }
+  return cur;
+}
+
 export function sortNotes(notes: Note[]): Note[] {
   return [...notes].sort((a, b) => a.at.localeCompare(b.at));
 }
