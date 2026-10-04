@@ -12,14 +12,11 @@
     "not_found_handling": "404-page"
   },
   "workers_dev": false,
-  // Only these paths are taken over; the rest of unsubject.com is left to
-  // whatever already serves it. Each pattern also catches its longer
-  // aliases (/terms-of-service, /privacy-policy), which public/_redirects
-  // sends to the canonical URL. The pages inline their CSS so they need no
-  // other paths. Requires the unsubject.com zone in this Cloudflare account
-  // with a proxied (orange-cloud) DNS record for the apex.
+  // Custom Domain: the Worker is the origin for the whole hostname, and
+  // Cloudflare creates the DNS record and certificate on deploy. The
+  // hostname must not already have a CNAME record, and the deploy token
+  // needs Zone → Workers Routes → Edit on unsubject.com.
   "routes": [
-    { "pattern": "unsubject.com/terms*", "zone_name": "unsubject.com" },
-    { "pattern": "unsubject.com/privacy*", "zone_name": "unsubject.com" }
+    { "pattern": "legal.unsubject.com", "custom_domain": true }
   ]
 }
