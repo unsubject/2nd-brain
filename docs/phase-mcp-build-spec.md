@@ -159,31 +159,19 @@ effect:
 
 ## Auth
 
+> **Superseded (2026-10).** Since migration 020, every client gets its own revocable credential: an OAuth grant or a personal access token. `BRAIN_MCP_TOKEN` is now the owner password. It stays accepted as an `/mcp` bearer only while `ALLOW_MASTER_BEARER` is `"true"`. For the design, see [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md); for per-client setup, see [`mcp-client-setup.md`](mcp-client-setup.md). The original v1 design is kept below as history.
+
+<details><summary>v1 auth (historical)</summary>
+
 Two paths, same underlying `BRAIN_MCP_TOKEN`:
 
-### Path A — Bearer (Claude Desktop, curl, Cursor with direct bearer support)
+- **Path A — Bearer** (Claude Desktop, curl, Cursor): `Authorization: Bearer <BRAIN_MCP_TOKEN>`, compared in constant time. A failure returns 401 with `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata=…`.
+- **Path B — OAuth 2.1 + PKCE** (claude.ai's custom-connector UI):
+  - Stateless codes, HMAC-signed with `BRAIN_MCP_TOKEN`.
+  - `/token` handed every client `BRAIN_MCP_TOKEN` itself as its `access_token`.
+  - Any redirect URI was accepted.
 
-- Header: `Authorization: Bearer <BRAIN_MCP_TOKEN>`
-- Token lives in CF Worker secret: `BRAIN_MCP_TOKEN` (generated via `openssl rand -hex 32`)
-- Constant-time compared inside the Worker
-- On failure: HTTP 401 with `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource"` so OAuth clients can self-discover
-
-### Path B — OAuth 2.1 + PKCE (claude.ai's custom-connector UI)
-
-claude.ai's connector UI does not accept a raw bearer; it requires OAuth discovery. The Worker exposes:
-
-- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata
-- `GET /.well-known/oauth-protected-resource` — RFC 9728 metadata
-- `POST /register` — RFC 7591 dynamic client registration (accepts any client; single-user)
-- `GET /authorize` — HTML consent form asking for `BRAIN_MCP_TOKEN`
-- `POST /authorize` — validates the token, redirects with a code (HMAC-signed, 10-min TTL)
-- `POST /token` — verifies PKCE S256, returns `BRAIN_MCP_TOKEN` as the `access_token`
-
-No KV / DO needed — codes are stateless, HMAC-signed using `BRAIN_MCP_TOKEN` as the key. The OAuth dance ends up handing claude.ai the same bearer token, so `/mcp` auth is unchanged regardless of path.
-
-### Token rotation
-
-Generate a new `BRAIN_MCP_TOKEN`, set it via the CF Secrets API (`workers/scripts/2nd-brain-mcp/secrets` PUT), and re-authorize each connected client. claude.ai needs to re-do the OAuth dance; Desktop needs the new value in its `mcp-remote` `--header` flag.
+</details>
 
 ## Hyperdrive setup
 
@@ -209,7 +197,7 @@ Generate a new `BRAIN_MCP_TOKEN`, set it via the CF Secrets API (`workers/script
 
 | Name | Purpose | Source |
 |---|---|---|
-| `BRAIN_MCP_TOKEN` | Bearer / OAuth access_token | `openssl rand -hex 32` |
+| `BRAIN_MCP_TOKEN` | Owner secret: approves OAuth connections, signs in to `/tokens`, and (while `ALLOW_MASTER_BEARER` is `"true"`) a legacy `/mcp` bearer | `openssl rand -hex 32` |
 | `OPENAI_API_KEY` | Query embeddings in `search_brain` | Same key the monolith uses |
 | `BRAIN_USER_ID` | Text identifier stamped on `ai_chat` entries | Telegram numeric id (matches existing personal entries; current value `236871164`) |
 
@@ -265,32 +253,34 @@ First-time setup (already done; documented for posterity):
 ```
 mcp-worker/
 ├── src/
-│   ├── index.ts             # fetch handler: /health, /db-health, /mcp, OAuth routes
+│   ├── index.ts             # fetch handler: /health, /db-health, /mcp, OAuth routes, /tokens
 │   ├── env.ts               # shared Env interface
-│   ├── mcp.ts               # JSON-RPC: initialize, tools/list, tools/call
-│   ├── auth.ts              # bearer check + constant-time compare
-│   ├── oauth.ts             # OAuth metadata + DCR + authorize + token + HMAC codes
+│   ├── mcp.ts               # JSON-RPC: initialize, tools/*, resources/*, batches, CORS
+│   ├── http.ts              # CORS, no-store JSON, hardened HTML pages
+│   ├── calllog.ts           # per-credential call log + last-used bookkeeping
+│   ├── console.ts           # owner console at /tokens
+│   ├── auth/                # bearer auth, tokens, redirect allow-list, labels, console sessions
+│   ├── oauth/               # metadata, register, authorize (consent), token, revoke
 │   ├── db.ts                # postgres-js client factory via HYPERDRIVE binding
 │   ├── embeddings.ts        # OpenAI text-embedding-3-small (fetch-based)
-│   └── tools/
-│       ├── registry.ts      # Tool / ToolResult types + tools[] export
-│       ├── save_session.ts
-│       ├── search_brain.ts
-│       ├── get_entry.ts
-│       └── list_recent.ts
+│   ├── ideas/               # Idea Parking Lot helpers (graph export, parsing, link types)
+│   └── tools/               # one file per tool; registry.ts + tool_meta.ts (titles, annotations)
+├── scripts/smoke.mjs        # `npm run smoke`: end-to-end check as any client sees it
+├── test/                    # vitest; test/db/* run against a real local *_test Postgres
 ├── wrangler.jsonc
 ├── package.json
 └── tsconfig.json
 
 .github/workflows/
-└── deploy-mcp-worker.yml    # auto-deploy on push to mcp-worker/**
+├── ci.yml                   # tests on pull requests (pgvector service)
+└── deploy-mcp-worker.yml    # test + deploy on push to main
 
 docs/
 ├── phase-mcp-build-spec.md             # this file
+├── phase-mcp-multi-client-spec.md      # per-client credentials, OAuth, console
+├── mcp-client-setup.md                 # per-client setup guide + smoke test
 └── mcp-behavior-and-dev-norms.md       # AI client behavior + dev norms
 ```
-
-No tests yet — vitest setup is planned but not landed in v1.
 
 ## Implementation order (historical)
 

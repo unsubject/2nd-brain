@@ -181,19 +181,33 @@ A few hard rules:
 
 ### Auth
 
-Two paths, same `BRAIN_MCP_TOKEN`:
+Every client has **its own revocable credential**. The design is in [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md); setup for each client is in [`mcp-client-setup.md`](mcp-client-setup.md).
 
-- **Bearer** (Desktop / curl / Cursor): `Authorization: Bearer <BRAIN_MCP_TOKEN>` — checked in `src/auth.ts` via constant-time compare.
-- **OAuth 2.1 + PKCE** (claude.ai): wrapped around the bearer check. Endpoints in `src/oauth.ts`. Authorization codes are HMAC-signed using `BRAIN_MCP_TOKEN` (stateless — no KV/DO). `/token` returns `BRAIN_MCP_TOKEN` as the `access_token`, so `/mcp` auth is unchanged regardless of path.
+- **`/mcp` bearer.** `src/auth/middleware.ts` checks two things, in this order:
+  1. The master `BRAIN_MCP_TOKEN`, accepted only while `ALLOW_MASTER_BEARER` is not `"false"` (set in `wrangler.jsonc` `vars`).
+  2. An opaque `brain_at_…` (OAuth access, 1 hour) or `brain_pat_…` (personal access token) token, looked up by SHA-256 hash on every request.
 
-On `/mcp` 401, the Worker emits `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource"` so spec-compliant OAuth clients can self-discover the auth server.
+  Revoking a credential therefore takes effect on the next call. Anything else returns 401 without a database round-trip.
+- **OAuth 2.1** lives in `src/oauth/*`:
+  - Registrations are stored, and their redirect URIs must pass the allow-list in `src/auth/redirects.ts`.
+  - The owner approves each connection by typing `BRAIN_MCP_TOKEN` and naming it.
+  - Codes are single-use, bound to the client, redirect and PKCE S256, and expire in 5 minutes.
+  - Every redirect carries `state` and `iss`.
+  - Refresh tokens rotate. Replaying one more than 60 seconds after rotation revokes the credential.
+  - `/revoke` follows RFC 7009.
+- **Owner console** `/tokens` (`src/console.ts`): sign in with the owner secret to see agents and activity, mint PATs, and revoke anything.
+- **Attribution.** The tool handlers receive the caller's `Principal` as a fourth argument.
+  - Idea writes stamp `credential: <label>` into `captured_via` or `proposed_via`. Clients can't set it themselves: the schemas are strict.
+  - `src/calllog.ts` logs every tool call per credential: the tool, whether it was a write, whether it succeeded, its duration, and the result ids. It never logs arguments. This runs in `ctx.waitUntil`, and any failure in it is swallowed.
 
-Never leak whether a 401 came from a missing/malformed/wrong bearer — same response either way.
+Every 401 carries `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource/mcp"`, plus `error="invalid_token"` when a token was presented. The response is the same whatever was wrong with the token. A database outage returns 503, never 401, so clients don't throw away good tokens.
+
+Every auth read carries `now()` like the idea tools (Hyperdrive caching, above). The static test covers `src/auth/*`, `src/oauth/*`, `console.ts` and `calllog.ts`.
 
 ### Adding a new tool
 
 1. Create `mcp-worker/src/tools/<tool_name>.ts` exporting a handler. zod-validate inputs and convert errors to `{ content: [...], isError: true }`.
-2. Register the tool in `src/tools/registry.ts` (the `tools` array drives both tools/list and tools/call).
+2. Register the tool in `src/tools/registry.ts` (the `tools` array drives both tools/list and tools/call), and give it a title and annotations in `src/tools/tool_meta.ts`. For a write tool, its "ONLY call when…" / "NEVER call autonomously" sentence must sit in the first 300 characters of the description. Nullable fields use `anyOf`, never type arrays. `test/schema-portability.test.ts` enforces all of this for every client in `docs/mcp-client-setup.md`.
 3. If the new tool changes how AI clients should behave (e.g. a new write tool, or one that exposes a new table), update Part 1 of this doc. Add a section under "when to use it" and update the Domain model table if a new record type is exposed.
 4. If the new tool writes to a table this Worker hasn't written to before, update the Worker boundaries note in Part 2 to add the table.
 
@@ -240,6 +254,7 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 | Google sync (Tasks, Contacts, Calendar, Gmail) | `src/google/` (Node monolith) |
 | Cross-record link generation | `src/google/linker.ts` (Node monolith) |
 | AI-tool MCP surface | `mcp-worker/` (CF Worker) |
+| Per-client credentials, OAuth, owner console | `mcp-worker/src/auth/`, `src/oauth/`, `src/console.ts`; tables in migration 020 |
 | MCP resources (protocol docs) | `mcp-worker/src/resources.ts` + bundled `docs/*.md` via wrangler Text rule |
 | Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `2nd-brain://protocol/goal-amendment`) |
 | Idea Parking Lot protocol (capture, gardening, map, import, retrieval) | `docs/idea-parking-lot-protocol.md` (also served as MCP resource `2nd-brain://protocol/idea-parking-lot`) |
@@ -253,7 +268,8 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 The following are **deliberately deferred**. If you find yourself wanting to add one, propose a new phase instead of in-place expansion:
 
 - `get_morning_review` tool exposing Claude-synthesized digests to AI clients
-- Per-user API keys / family-scope auth
+- Family-scope auth / multiple users (credentials are per client, but the Worker still serves one `BRAIN_USER_ID`)
+- Per-tool scopes (`mcp_credential.scope` exists; only `all` is honoured)
 - Writes to `public_artifact` for long-form sessions
 - Raw transcript storage
 - `link_edge` traversal as an MCP tool (the idea graph lives in `idea_link` and is exported by `export_idea_map`; the machine-made `link_edge` graph stays unexposed)

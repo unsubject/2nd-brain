@@ -1,6 +1,6 @@
 # Idea Parking Lot Protocol
 
-Executable protocol for any AI agent using the 2nd-brain Idea Parking Lot tools over MCP. Read this before capturing, gardening, mapping or importing. Tool descriptions cite these section numbers.
+Executable protocol for any AI agent using the 2nd-brain Idea Parking Lot tools over MCP. Read this before capturing, gardening, mapping or importing. Tool descriptions cite these section numbers. If your client can't read MCP resources, fetch any section with the `read_protocol` tool (`{"name": "idea-parking-lot", "section": "§2"}`).
 
 - **§0** — The model in one page
 - **§1** — Librarian capture (`park_idea`)
@@ -84,7 +84,7 @@ Show the proposed title and ask for a yes or a better title. If they gave no rea
 
 ### Step 3 — File
 
-Call `park_idea` once per idea, with an `idempotency_key` (any unique string you generate) and `captured_via: {client, model}`. Several ideas → one call each, each with its own confirmed title.
+Call `park_idea` once per idea, with an `idempotency_key` (any unique string you generate) and `captured_via: {client, model}`. Several ideas → one call each, each with its own confirmed title. The server adds which connection filed it (`captured_via.credential`); don't send that field yourself.
 
 ### Step 4 — Receipt only
 
