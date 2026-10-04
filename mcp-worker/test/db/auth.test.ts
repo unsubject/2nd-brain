@@ -81,6 +81,39 @@ describe.skipIf(!TEST_DB)('/mcp per-client credentials', () => {
     expect(await admin`SELECT tool FROM mcp_call_log`).toEqual([{ tool: 'list_ideas' }]);
   });
 
+  it('records a 2026-07-28 client from _meta, writing the row only when it changes', async () => {
+    const pat = await seedPat('Modern client');
+    const meta = (name: string) => ({
+      _meta: {
+        'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+        'io.modelcontextprotocol/clientCapabilities': {},
+        'io.modelcontextprotocol/clientInfo': { name, version: '2.0.0' },
+      },
+    });
+    const headers = (method: string, name?: string) => ({
+      'MCP-Protocol-Version': '2026-07-28',
+      'Mcp-Method': method,
+      ...(name ? { 'Mcp-Name': name } : {}),
+    });
+    expect((await rpcRaw('server/discover', meta('sdk'), { token: pat.token, headers: headers('server/discover') })).status).toBe(200);
+    const [first] = await admin`SELECT last_client_info FROM mcp_credential WHERE id = ${pat.id}`;
+    expect(first.last_client_info).toMatchObject({ clientInfo: { name: 'sdk', version: '2.0.0' }, protocolVersion: '2026-07-28' });
+
+    const call = await rpcRaw(
+      'tools/call',
+      { name: 'list_ideas', arguments: {}, ...meta('sdk') },
+      { token: pat.token, headers: headers('tools/call', 'list_ideas') },
+    );
+    expect(call.status).toBe(200);
+    const [second] = await admin`SELECT last_client_info FROM mcp_credential WHERE id = ${pat.id}`;
+    expect(second.last_client_info.at).toBe(first.last_client_info.at); // unchanged → not rewritten
+    expect(await admin`SELECT tool FROM mcp_call_log`).toEqual([{ tool: 'list_ideas' }]);
+
+    await rpcRaw('tools/list', meta('sdk-renamed'), { token: pat.token, headers: headers('tools/list') });
+    const [third] = await admin`SELECT last_client_info FROM mcp_credential WHERE id = ${pat.id}`;
+    expect(third.last_client_info.clientInfo.name).toBe('sdk-renamed');
+  });
+
   it('serves MCP only at exactly /mcp', async () => {
     const { workerFetch } = await import('./helpers');
     const pat = await seedPat('Path');

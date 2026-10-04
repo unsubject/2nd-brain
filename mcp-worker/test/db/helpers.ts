@@ -42,7 +42,7 @@ export function testCtx(): { ctx: ExecutionContext; settle: () => Promise<void> 
   };
 }
 
-export type RpcOptions = { token?: string | null; env?: Env };
+export type RpcOptions = { token?: string | null; env?: Env; headers?: Record<string, string> };
 
 // Raw JSON-RPC POST to /mcp; returns the HTTP response (body unread).
 export async function rpcRaw(method: string, params: unknown, opts: RpcOptions = {}): Promise<Response> {
@@ -53,6 +53,7 @@ export async function rpcRaw(method: string, params: unknown, opts: RpcOptions =
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       'Content-Type': 'application/json',
+      ...(opts.headers ?? {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
   });
