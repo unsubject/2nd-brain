@@ -10,6 +10,7 @@ on:
       # auditable from this workflow — if you import a doc in
       # mcp-worker/src/resources.ts, add it here too.
       - 'docs/goal-amendment-interview.md'
+      - 'docs/idea-parking-lot-protocol.md'
       - '.github/workflows/deploy-mcp-worker.yml'
   workflow_dispatch:
 
@@ -20,10 +21,25 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: mcp-worker
+    # Real Postgres + pgvector so the DB-backed handler tests (test/db)
+    # gate the deploy instead of being skipped.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
 
@@ -39,6 +55,8 @@ jobs:
 
       - name: Test
         run: npm test -- --run
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ci_test
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

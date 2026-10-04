@@ -9,7 +9,7 @@ This doc has two audiences:
 
 ## Part 1 — How AI clients should behave with this MCP
 
-You are connected to the user's personal 2nd-brain: a journal of their random thoughts, brainstorms, tasks, and ideas, ingested from Telegram and from AI chat sessions like ours, plus the user's personal **4-layer goal system** — constitution domains (north-star principles), SMART goals (outcome-measured commitments), undertakings (focused efforts in flight), and the Google Tasks layer (daily/weekly action items, not modeled in this MCP).
+You are connected to the user's personal 2nd-brain: a journal of their random thoughts, brainstorms, tasks, and ideas, ingested from Telegram and from AI chat sessions like ours, plus the user's personal **4-layer goal system** — constitution domains (north-star principles), SMART goals (outcome-measured commitments), undertakings (focused efforts in flight), and the Google Tasks layer (daily/weekly action items, not modeled in this MCP). It also holds the user's **Idea Parking Lot** — curated raw material one stage before work (not tasks), with associations made only in gardening sessions the user starts.
 
 The journal is the user's external memory. Treat it as authoritative for **what the user has thought about** — but never authoritative for **what is true**. They write down half-baked ideas, frustrations, and questions, not vetted conclusions. The goal system is different — those entries ARE the user's deliberately-chosen commitments. The four layers descend by cadence and abstraction:
 
@@ -40,6 +40,9 @@ Treat the constitution layer with the most care — amendments require a 14-day 
 | `goal_amendments` | `propose_goal_amendment` / `commit_goal_amendment` (this MCP) | Audit log + 72h cooldown staging for goal changes. Multiple proposals can be in flight at once. |
 | `undertakings` | `create_undertaking` (this MCP) | Focused efforts in flight that serve a SMART goal (`primary_goal_id` references `goals`, not `constitution_domains`). `outcome` (standard, evaluated by test_criteria) or `habit_forming` (4-week cycles, evaluated as much for design quality as execution) |
 | `undertaking_cycles` | `start_cycle` / `close_cycle` (this MCP) | The 4-week cycle log for habit-forming undertakings; warm-restart-on-misses semantics live in the reformulation notes |
+| `idea` | `park_idea` / `import_ideas` / `create_synthesis` (this MCP) | The **Idea Parking Lot** — parked ideas (when/where captured, the raw source, why it's interesting, the user's verbatim thoughts) and syntheses (ideas combined into an episode/essay/series seed). Not tasks. |
+| `idea_source` | `park_idea` / `import_ideas` / `create_synthesis` (this MCP) | Provenance per idea (librarian / notion / gtasks_subjects / gardening), idempotency keys, and a lossless copy of imported rows |
+| `idea_link` | `propose_idea_links` / `decide_idea_links` / `create_synthesis` (this MCP) | Typed associations between ideas, and from ideas to the user's published outputs. Gardening-only lifecycle: proposed → accepted / rejected / withdrawn, accepted → retracted. Separate from the machine-made `link_edge`. |
 
 When you surface a `search_brain` hit, you can use `get_entry` to follow links into other types of records via `link_edge`. The user often thinks across these boundaries (e.g. "the meeting on the day I wrote that thought"), and the link graph is how the brain stitches that together.
 
@@ -99,7 +102,7 @@ Follow-up after a `search_brain` hit looks promising and the user wants the full
 
 ### Personal goal system — when to use these tools
 
-The goal system is the user's **constitution** plus measurable commitments beneath it. The 4-layer hierarchy is described above. Treat amendments at every layer as deliberate, never autonomous — see `docs/goal-amendment-interview.md` for the full protocols (Section 1A for constitution, Section 1B for goals), which the amendment tools assume you are running. The MCP server also exposes the protocol doc as a resource at `2nd-brain://protocol/goal-amendment` — fetch it via `resources/read` if your client supports MCP resources.
+The goal system is the user's **constitution** plus measurable commitments beneath it. The 4-layer hierarchy is described above. Treat amendments at every layer as deliberate, never autonomous — see `docs/goal-amendment-interview.md` for the full protocols (Section 1A for constitution, Section 1B for goals), which the amendment tools assume you are running. The MCP server also exposes the protocol doc as a resource at `second-brain://protocol/goal-amendment` — fetch it via `resources/read` if your client supports MCP resources.
 
 #### Constitution layer (5 north-star domains)
 
@@ -114,6 +117,18 @@ The goal system is the user's **constitution** plus measurable commitments benea
 - **`get_goal`** — follow-up when the user wants depth on one goal: its SMART breakdown, `outcome_metric`, what undertakings serve it, what amendment history it has.
 - **`propose_goal_amendment` / `commit_goal_amendment`** — **NEVER call autonomously.** Only when the user explicitly requests an amendment (triggers in Section 1B). 72h cooldown, no founding bypass (proposals can overlap so total bootstrap latency is ~3 days regardless of count). Re-parenting a goal between domains is NOT supported via `amend` — `abandon` + `new` under the new domain. Status transitions: `achieve` (outcome reached) and `abandon` (no longer pursuing).
 - **`list_pending_goal_amendments`** — when the user asks "do I have any pending goal changes".
+
+#### Idea Parking Lot — when to use these tools
+
+The executable protocol is `docs/idea-parking-lot-protocol.md`, also served as the MCP resource `second-brain://protocol/idea-parking-lot` — read it before capturing, gardening, mapping or importing. In short:
+
+- **`park_idea`** — ONLY when the user explicitly asks to park/file an idea. Confirm the title; copy their own thoughts **verbatim**; reply with the receipt only. Capture is one-way: never suggest related ideas, links, tags or hubs at capture time. "Save this session" still means `save_session`; ask if unclear.
+- **`list_ideas` / `search_ideas` / `get_idea`** — pull-only: when the user asks about their ideas. Never surface parked ideas unprompted or in unrelated conversations.
+- **`garden_ideas` → `propose_idea_links` → the user decides → `decide_idea_links`** — ONLY inside a gardening session the user started. Proposals are not links; record exactly the user's verdicts, never on their behalf. Rejections are remembered — don't re-propose a rejected pair unless the user asks (`reconsider_rejected`). `list_idea_links` first to clear leftover proposals.
+- **`create_synthesis`** — ONLY when the user decides to combine ideas into something bigger (episode / essay / series / learning seed). Confirm title, intent and parts first.
+- **`update_idea`** — on the user's request, or to record a decision they just made (status changes, notes). Composting replaces deletion.
+- **`export_idea_map`** — when the user asks to see their map; render it with your own visualisation tool (JSON canonical, GraphML for Gephi/yEd/Cytoscape, Mermaid for chat). Read-only.
+- **`import_ideas` / `list_subjects_for_import`** — ONLY during the one-time import protocol (§4) the user starts.
 
 #### Undertakings & cycles (existing layer, unchanged)
 
@@ -142,8 +157,8 @@ A few hard rules:
 
 ### Worker boundaries
 
-- The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), `goals` / `undertakings` / `undertaking_cycles` / `goal_amendments` (PR #49), and the constitution split (PR #54) which added `constitution_domains` and `constitution_amendments` and repointed `goals` to the SMART layer. Any further new write target needs a deliberate decision and a doc update here.
-- **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (tags, classification, embedding) in a single place.
+- The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), `goals` / `undertakings` / `undertaking_cycles` / `goal_amendments` (PR #49), the constitution split (PR #54) which added `constitution_domains` and `constitution_amendments` and repointed `goals` to the SMART layer, and the Idea Parking Lot (`idea`, `idea_source`, `idea_link`; spec in `docs/phase-idea-parking-lot-spec.md`). Any further new write target needs a deliberate decision and a doc update here.
+- **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (tags, classification, embedding) in a single place. The same rule holds for ideas: the Worker inserts `idea` rows with `embedding NULL` and the Node sweeper `src/ideas/worker.ts` embeds them (and re-embeds after the `idea_before_update` trigger clears a stale embedding).
 - The Worker should not own its own scheduled jobs in v1. If something needs to run periodically, it lives in the Node monolith's scheduler.
 
 ### DB access
@@ -154,28 +169,45 @@ A few hard rules:
 - All Worker queries must be parameterized — never string-concat user input. Especially in `search_brain` filters.
 - `fetch_types: false` skips OID resolution, which means `text[]`/`uuid[]` columns come back as raw PG array literal strings. Coerce with `to_jsonb(col) AS col` in the SELECT so postgres-js parses to a JS array. The undertaking tools use this pattern for `secondary_goal_ids`.
 - For binding a JS array of UUIDs into PG (e.g. inserting `uuid[]`), build the array literal client-side as `'{uuid1,uuid2,...}'` and cast in SQL with `::uuid[]`. zod-validated UUIDs are safe to interpolate via parameter into the literal (postgres-js still parameterizes the literal string, PG parses it).
+- For binding arbitrary **text** arrays (tags, statuses), route them through jsonb — `ARRAY(SELECT jsonb_array_elements_text(${sql.json(arr)}))::text[]` (`textArray()` in `mcp-worker/src/tools/idea_shared.ts`). A hand-built `{...}` literal breaks on commas, quotes and backslashes.
+- Write jsonb with `sql.json(value)`, never `${JSON.stringify(value)}::jsonb` — the latter double-encodes into a jsonb *string* on this stack (PR #63).
+- **Hyperdrive query caching is ON** for this Worker (default `max_age` 60s; cached reads are not invalidated by writes). Any read that must reflect a write made moments earlier — e.g. the gardening loop propose → list → decide → list — includes `now() AS as_of` in its SELECT, which makes Hyperdrive treat the query as uncacheable. Never put such function names in SQL comments: Hyperdrive pattern-matches the query text. All idea tools follow this convention.
 
 ### Embeddings
 
-- Pinned model: **`text-embedding-3-small`**, 1536 dimensions. Must match `journal_entry.embedding` (`vector(1536)`) and `public_artifact_chunk.embedding`.
+- Pinned model: **`text-embedding-3-small`**, 1536 dimensions. Must match `journal_entry.embedding` (`vector(1536)`), `public_artifact_chunk.embedding` and `idea.embedding`. The idea embedding text recipe lives in `src/ideas/embeddingText.ts`; any field it reads must also clear the embedding in the `idea_before_update` trigger (migration 019).
 - Changing the model is a schema migration, not a code change. If you change it, you need a backfill plan for existing embeddings.
 - The Worker's embedding code (`mcp-worker/src/embeddings.ts`) is a fetch-based REST call, not the OpenAI SDK (the SDK is heavier than necessary in a Worker). Keep behavior compatible with `src/embeddings.ts` in the monolith.
 
 ### Auth
 
-Two paths, same `BRAIN_MCP_TOKEN`:
+Every client has **its own revocable credential**. The design is in [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md); setup for each client is in [`mcp-client-setup.md`](mcp-client-setup.md).
 
-- **Bearer** (Desktop / curl / Cursor): `Authorization: Bearer <BRAIN_MCP_TOKEN>` — checked in `src/auth.ts` via constant-time compare.
-- **OAuth 2.1 + PKCE** (claude.ai): wrapped around the bearer check. Endpoints in `src/oauth.ts`. Authorization codes are HMAC-signed using `BRAIN_MCP_TOKEN` (stateless — no KV/DO). `/token` returns `BRAIN_MCP_TOKEN` as the `access_token`, so `/mcp` auth is unchanged regardless of path.
+- **`/mcp` bearer.** `src/auth/middleware.ts` checks two things, in this order:
+  1. The master `BRAIN_MCP_TOKEN`, accepted only while `ALLOW_MASTER_BEARER` is not `"false"` (set in `wrangler.jsonc` `vars`).
+  2. An opaque `brain_at_…` (OAuth access, 1 hour) or `brain_pat_…` (personal access token) token, looked up by SHA-256 hash on every request.
 
-On `/mcp` 401, the Worker emits `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource"` so spec-compliant OAuth clients can self-discover the auth server.
+  Revoking a credential therefore takes effect on the next call. Anything else returns 401 without a database round-trip.
+- **OAuth 2.1** lives in `src/oauth/*`:
+  - Registrations are stored, and their redirect URIs must pass the allow-list in `src/auth/redirects.ts`.
+  - The owner approves each connection by typing the owner secret (`OWNER_SECRET`, falling back to `BRAIN_MCP_TOKEN`) and naming it. An optional **Replace** revokes the existing OAuth connection with that name.
+  - Codes are single-use, bound to the client, redirect and PKCE S256, and expire in 5 minutes.
+  - Every redirect carries `state` and `iss`.
+  - Refresh tokens rotate. Reuse within 5 minutes of a rotation is tolerated, up to 10 times (parallel or shared-store clients). Later reuse is refused, and nothing is revoked.
+  - `/revoke` follows RFC 7009.
+- **Owner console** `/tokens` (`src/console.ts`): sign in with the owner secret to see agents and activity, mint PATs, and revoke anything.
+- **Attribution.** The tool handlers receive the caller's `Principal` as a fourth argument.
+  - `park_idea`, `import_ideas`, `create_synthesis` and `propose_idea_links` stamp `credential: <label>` into `captured_via` or `proposed_via`. Clients can't set it themselves: the schemas are strict, and `master` and `unknown` are reserved labels.
+  - `src/calllog.ts` logs every tool call per credential: the tool, whether it was a write, whether it succeeded, its duration, and the result ids. It never logs arguments. This runs in `ctx.waitUntil`, and any failure in it is swallowed.
 
-Never leak whether a 401 came from a missing/malformed/wrong bearer — same response either way.
+Every 401 carries `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource/mcp"`, plus `error="invalid_token"` when a token was presented. The response is the same whatever was wrong with the token. A database outage returns 503, never 401, so clients don't throw away good tokens.
+
+Every auth read carries `now()` like the idea tools (Hyperdrive caching, above). The static test covers `src/auth/*`, `src/oauth/*`, `console.ts` and `calllog.ts`.
 
 ### Adding a new tool
 
 1. Create `mcp-worker/src/tools/<tool_name>.ts` exporting a handler. zod-validate inputs and convert errors to `{ content: [...], isError: true }`.
-2. Register the tool in `src/tools/registry.ts` (the `tools` array drives both tools/list and tools/call).
+2. Register the tool in `src/tools/registry.ts` (the `tools` array drives both tools/list and tools/call), and give it a title and annotations in `src/tools/tool_meta.ts`. For a write tool, its "ONLY call when…" / "NEVER call autonomously" sentence must sit in the first 300 characters of the description. Nullable fields use `anyOf`, never type arrays. `test/schema-portability.test.ts` enforces all of this for every client in `docs/mcp-client-setup.md`.
 3. If the new tool changes how AI clients should behave (e.g. a new write tool, or one that exposes a new table), update Part 1 of this doc. Add a section under "when to use it" and update the Domain model table if a new record type is exposed.
 4. If the new tool writes to a table this Worker hasn't written to before, update the Worker boundaries note in Part 2 to add the table.
 
@@ -183,18 +215,18 @@ Never leak whether a 401 came from a missing/malformed/wrong bearer — same res
 
 - **Vitest** + a tiny vite plugin (`vitest.config.ts`) that transforms `.md` imports into string-default exports at test time, mirroring wrangler's Text rule. This lets the dispatcher tests exercise the real `resources.ts` (which imports the bundled `goal-amendment-interview.md`) without spinning up `@cloudflare/vitest-pool-workers`.
 - Tests live in `mcp-worker/test/`. The dispatcher test pattern (drive `handleMcpRequest` with mock requests + Bearer header; assert JSON-RPC response shape) is the right one for any future `tools/*` or `resources/*` coverage.
-- CI gate: `deploy-mcp-worker.yml` runs `npm test` between Typecheck and Deploy. Tests must pass to ship.
-- Tool-handler tests that need DB hit a **real test Postgres**, not mocks. This codebase has a feedback memory that mock/prod divergence has burned past work — don't reintroduce DB mocks. Tool-handler coverage isn't landed yet; if/when it does, seed a small fixture of journal entries with real embeddings so vector-search tests are meaningful.
+- CI gate: `deploy-mcp-worker.yml` runs `npm test` (with a Postgres service, so the DB suites run) between Typecheck and Deploy. Tests must pass to ship.
+- Tool-handler tests that need DB hit a **real test Postgres**, not mocks. This codebase has a feedback memory that mock/prod divergence has burned past work — don't reintroduce DB mocks. Handler tests for the idea tools live in `mcp-worker/test/db/` and run when `TEST_DATABASE_URL` points at a local `*_test` database: `test/setup/test-db.ts` checks both the URL and the server it actually reached, resets that database and applies (and records) every migration, so the suites also prove the newest migration applies on top of the others. Without the variable they skip. Only external HTTP (the OpenAI embeddings call) may be stubbed, never the database. Root-level Node tests (`npm test` in the repo root, `tsx --test test/*.test.ts`) cover the idea embedding sweeper the same way. CI (`.github/workflows/ci.yml` on pull requests and `main`, and the deploy workflow's test step) runs all of it against a `pgvector/pgvector:pg16` service. A static test (`mcp-worker/test/ideas.fixes.test.ts`) fails if any read query in an idea tool lacks `now()` (the Hyperdrive convention above).
 
 ### Deploy
 
 CI auto-deploys on push to `main` when `mcp-worker/**` changes — see `.github/workflows/deploy-mcp-worker.yml`. The workflow installs deps, typechecks, runs tests, then `wrangler deploy` via `cloudflare/wrangler-action@v3`.
 
-Docs bundled into the Worker via `src/resources.ts` are an additional deploy trigger — the `paths:` filter has an explicit per-file allowlist (NOT `docs/**/*.md`) so the bundled surface stays auditable from the workflow file. If you import a new doc in `resources.ts`, add it to three places: (1) the import in `resources.ts`, (2) the `globs` in `wrangler.jsonc`'s Text rule, (3) the `paths:` trigger in the deploy workflow.
+Docs bundled into the Worker via `src/resources.ts` are an additional deploy trigger — the `paths:` filter has an explicit per-file allowlist (NOT `docs/**/*.md`) so the bundled surface stays auditable from the workflow file. If you import a new doc in `resources.ts`, add it to four places: (1) the import in `resources.ts`, (2) the `globs` in `wrangler.jsonc`'s Text rule, (3) the `paths:` trigger in the deploy workflow, (4) the `resources/list` assertion in `test/dispatcher.test.ts`.
 
 Worker secrets and the Hyperdrive config are managed outside this repo:
 
-- **Worker secrets** (`BRAIN_MCP_TOKEN`, `OPENAI_API_KEY`, `BRAIN_USER_ID`): set via CF dashboard or the CF API (`PUT /accounts/{id}/workers/scripts/2nd-brain-mcp/secrets`).
+- **Worker secrets** (`OWNER_SECRET`, `BRAIN_MCP_TOKEN`, `OPENAI_API_KEY`, `BRAIN_USER_ID`): set via CF dashboard or the CF API (`PUT /accounts/{id}/workers/scripts/2nd-brain-mcp/secrets`).
 - **Hyperdrive config**: created once via `POST /accounts/{id}/hyperdrive/configs`; its ID is baked into `wrangler.jsonc`. The Railway PG connection string lives **only** inside Hyperdrive — never as a Worker secret.
 - **GitHub repo secrets** (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`): set via `gh secret set`.
 
@@ -208,6 +240,8 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 - **Cooldown immutability via trigger.** `constitution_amendments.cooldown_until` (14d) and `goal_amendments.cooldown_until` (72h) are both managed by `BEFORE INSERT OR UPDATE` triggers (`set_constitution_amendment_cooldown`, `set_goal_amendment_cooldown`). The original plan called for a `GENERATED ALWAYS … STORED` column, but PG requires generation expressions to be IMMUTABLE and `timestamptz + interval` is STABLE. The trigger restores the ironclad invariant: INSERT computes cooldown_until from proposed_at; UPDATE pins both `proposed_at` and `cooldown_until` back to their OLD values, so no client code path can move the cooldown forward or backward.
 - **Cardinality caps via trigger** (new in 017). `goals` has a 3-active-per-`(user_id, constitution_domain_id)` cap enforced by the `enforce_goals_cap` trigger. Partial unique indexes can't express "count ≤ N", and an app-side check has a race-window problem (two concurrent INSERTs each see count=2 and both succeed). The trigger sees the row in its final state and raises `check_violation` if the cap would be exceeded — same atomic guarantee as a constraint, without the constraint-language limitation. Use this pattern for any future bounded-cardinality rule.
 - **Founding-bypass counter via lifetime-committed query** (new in 017). `commit_constitution_amendment` allows the first 5 lifetime `kind='new'` commits to skip the 14d cooldown, sized for the typical Mind/Body/Family/Wealth/Social bootstrap. The counter is computed server-side from the audit log (`SELECT count(*) FROM constitution_amendments WHERE status='committed' AND kind='new'`); retire/merge don't refund the counter. Irreversible by design.
+- **Symmetric links in canonical order** (new in 019). `idea_link` stores symmetric types (`tension_with`, `same_mechanism`, `combines_with`, `related`) with `source_idea_id < target_idea_id` (CHECK), and a unique expression index on `(LEAST, GREATEST, link_type)` forbids both `A→B` and `B→A` of any type. Handlers canonicalise before writing (`mcp-worker/src/ideas/linkTypes.ts`).
+- **Cross-row validation and invalidation via trigger** (new in 019). `idea_link_validate` checks that both idea endpoints belong to the link's user and that `part_of` targets a synthesis; `idea_before_update` keeps `idea.kind` immutable and clears the embedding when an embedded field changes.
 - Array foreign keys are enforced app-side. Postgres can't FK individual elements of a `uuid[]`, so any handler accepting an array of foreign UUIDs (e.g. `create_undertaking.secondary_goal_ids`, `update_undertaking.secondary_goal_ids`, `propose_constitution_amendment.source_constitution_domain_ids`, `propose_goal_amendment.source_goal_ids`) must `SELECT ... WHERE id = ANY(...)` and refuse the write if any ID fails to resolve to an active row owned by the current user.
 
 ### What lives where
@@ -220,8 +254,11 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 | Google sync (Tasks, Contacts, Calendar, Gmail) | `src/google/` (Node monolith) |
 | Cross-record link generation | `src/google/linker.ts` (Node monolith) |
 | AI-tool MCP surface | `mcp-worker/` (CF Worker) |
+| Per-client credentials, OAuth, owner console | `mcp-worker/src/auth/`, `src/oauth/`, `src/console.ts`; tables in migration 020 |
 | MCP resources (protocol docs) | `mcp-worker/src/resources.ts` + bundled `docs/*.md` via wrangler Text rule |
-| Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `2nd-brain://protocol/goal-amendment`) |
+| Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `second-brain://protocol/goal-amendment`) |
+| Idea Parking Lot protocol (capture, gardening, map, import, retrieval) | `docs/idea-parking-lot-protocol.md` (also served as MCP resource `second-brain://protocol/idea-parking-lot`) |
+| Idea embedding sweeper | `src/ideas/` (Node monolith) |
 | DB schema source of truth | `migrations/` |
 | Phase build specs | `docs/phase-*-build-spec.md` |
 | Cross-session conventions | `docs/*.md` (this file is one) |
@@ -231,12 +268,14 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 The following are **deliberately deferred**. If you find yourself wanting to add one, propose a new phase instead of in-place expansion:
 
 - `get_morning_review` tool exposing Claude-synthesized digests to AI clients
-- Per-user API keys / family-scope auth
+- Family-scope auth / multiple users (credentials are per client, but the Worker still serves one `BRAIN_USER_ID`)
+- Per-tool scopes (`mcp_credential.scope` exists; only `all` is honoured)
 - Writes to `public_artifact` for long-form sessions
 - Raw transcript storage
-- `link_edge` traversal as an MCP tool
-- Searching the other 5-W tables (`calendar_event_ref`, `task_ref`, `email_ref`, `person_ref`, `public_artifact`)
-- Pushing data the other direction (AI tool tells brain about itself outside of `save_session`)
+- `link_edge` traversal as an MCP tool (the idea graph lives in `idea_link` and is exported by `export_idea_map`; the machine-made `link_edge` graph stays unexposed)
+- Searching the other 5-W tables (`calendar_event_ref`, `task_ref`, `email_ref`, `person_ref`, `public_artifact`) — `list_subjects_for_import` reads the Google Tasks "Subjects" list for the one-time idea import only
+- Pushing data the other direction (AI tool tells brain about itself outside of `save_session` and the gated idea tools)
+- Idea Parking Lot follow-ups: automatic linking at capture time; proactive surfacing or reminders of parked ideas; idea merge/delete tools (compost instead); chunk-level idea↔output matching; LISTEN/NOTIFY for instant idea embedding; a hosted map front-end; family-scope ideas; mirroring accepted idea links into `link_edge`
 - Automated alignment checks ("today's plan is N% on goal X") — that belongs in the future CoS, not in the constitution/goal tools themselves; those tools stay neutral read/write primitives.
 - Vector-embedding constitution domains or goals for similarity search — interesting later if the CoS wants "the goal most relevant to this decision", but the constitution is small and re-reading it linearly is the right pattern for v1.
 - An MCP tool to withdraw a pending amendment (constitution or goal) — for now, a manual DB UPDATE suffices.

@@ -1,0 +1,197 @@
+// Helpers for DB-backed handler tests. Real Postgres (TEST_DATABASE_URL),
+// no DB mocks — per docs/mcp-behavior-and-dev-norms.md. Calls go through
+// handleMcpRequest so the JSON-RPC layer is exercised end to end.
+
+import postgres from 'postgres';
+import { handleMcpRequest } from '../../src/mcp';
+import type { Env } from '../../src/env';
+
+export const TEST_DB = process.env.TEST_DATABASE_URL;
+export const USER = 'test-user';
+export const TOKEN = 'test-token';
+
+export const env = {
+  HYPERDRIVE: { connectionString: TEST_DB ?? 'postgres://unused' },
+  BRAIN_MCP_TOKEN: TOKEN,
+  BRAIN_USER_ID: USER,
+  OPENAI_API_KEY: 'sk-test',
+} as unknown as Env;
+
+// Direct connection for seeding and assertions.
+export const admin = postgres(TEST_DB ?? 'postgres://unused', { max: 2, onnotice: () => {} });
+
+export type CallResult = { isError: boolean; texts: string[]; json: any };
+
+let rpcId = 0;
+
+// An ExecutionContext whose waitUntil work can be awaited (background
+// writes such as the call log must land before assertions).
+export function testCtx(): { ctx: ExecutionContext; settle: () => Promise<void> } {
+  const pending: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil(p: Promise<unknown>) {
+      pending.push(p);
+    },
+    passThroughOnException() {},
+  } as unknown as ExecutionContext;
+  return {
+    ctx,
+    settle: async () => {
+      while (pending.length > 0) await Promise.all(pending.splice(0));
+    },
+  };
+}
+
+export type RpcOptions = { token?: string | null; env?: Env };
+
+// Raw JSON-RPC POST to /mcp; returns the HTTP response (body unread).
+export async function rpcRaw(method: string, params: unknown, opts: RpcOptions = {}): Promise<Response> {
+  const { ctx, settle } = testCtx();
+  const token = opts.token === undefined ? TOKEN : opts.token;
+  const req = new Request('https://test.example/mcp', {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
+  });
+  const res = await handleMcpRequest(req, opts.env ?? env, ctx);
+  await settle();
+  return res;
+}
+
+export async function callTool(name: string, args: unknown, opts: RpcOptions = {}): Promise<CallResult> {
+  const res = await rpcRaw('tools/call', { name, arguments: args }, opts);
+  if (res.status !== 200) throw new Error(`HTTP ${res.status} from /mcp`);
+  const body = (await res.json()) as any;
+  if (body.error) throw new Error(`RPC error ${body.error.code}: ${body.error.message}`);
+  const texts = (body.result.content as Array<{ text: string }>).map((c) => c.text);
+  let json: any = null;
+  try {
+    json = JSON.parse(texts[0]);
+  } catch {
+    json = null;
+  }
+  return { isError: !!body.result.isError, texts, json };
+}
+
+// Call and assert success; returns parsed JSON of the first text block.
+export async function ok(name: string, args: unknown): Promise<any> {
+  const r = await callTool(name, args);
+  if (r.isError) throw new Error(`${name} failed: ${r.texts.join('\n')}`);
+  return r.json;
+}
+
+export async function resetAuthData(): Promise<void> {
+  await admin`TRUNCATE mcp_call_log, mcp_token, mcp_auth_code, mcp_credential, mcp_client CASCADE`;
+}
+
+export async function resetIdeaData(): Promise<void> {
+  await admin`TRUNCATE idea, idea_source, idea_link, public_artifact, task_ref, project_ref CASCADE`;
+}
+
+// ── vectors with a controlled cosine ─────────────────────────────────
+
+const DIM = 1536;
+
+export function axis(i: number): number[] {
+  const v = new Array(DIM).fill(0);
+  v[i] = 1;
+  return v;
+}
+
+// Unit vector whose cosine with axis(i) is `cos` (and with axis(j) is sqrt(1-cos²)).
+export function mix(i: number, j: number, cos: number): number[] {
+  const v = new Array(DIM).fill(0);
+  v[i] = cos;
+  v[j] = Math.sqrt(1 - cos * cos);
+  return v;
+}
+
+export const vecLiteral = (v: number[]) => `[${v.join(',')}]`;
+
+export async function setEmbedding(ideaId: string, v: number[]): Promise<void> {
+  await admin`
+    UPDATE idea SET embedding = ${vecLiteral(v)}::vector,
+                    embedding_model = 'test', embedded_at = now()
+     WHERE id = ${ideaId}
+  `;
+}
+
+export async function seedIdea(title: string, extra: Record<string, unknown> = {}): Promise<string> {
+  const r = await ok('park_idea', { title, ...extra });
+  return r.idea_id as string;
+}
+
+export async function seedArtifact(title: string, v: number[] | null, publishedAt = '2026-06-01T00:00:00Z'): Promise<string> {
+  const rows = await admin<Array<{ id: string }>>`
+    INSERT INTO public_artifact (
+      user_id, type, title, status, raw_source, source_system, source_external_id,
+      processing_status, published_at, canonical_url, embedding
+    ) VALUES (
+      'default', 'transcript', ${title}, 'published', 'raw', 'youtube', ${title},
+      'processed', ${publishedAt}, ${`https://example.com/${encodeURIComponent(title)}`},
+      ${v ? vecLiteral(v) : null}::vector
+    )
+    RETURNING id
+  `;
+  return rows[0].id;
+}
+
+export async function seedSubjects(
+  tasks: Array<{ id: string; title: string; notes?: string; status?: string; parent?: string; scope?: string }>,
+): Promise<void> {
+  const list = await admin<Array<{ id: string }>>`
+    INSERT INTO project_ref (user_id, external_list_id, name, list_type)
+    VALUES ('default', 'list-subjects', 'Subjects', 'subjects')
+    ON CONFLICT (external_system, external_list_id) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id
+  `;
+  const other = await admin<Array<{ id: string }>>`
+    INSERT INTO project_ref (user_id, external_list_id, name, list_type)
+    VALUES ('default', 'list-do', 'Do', 'do')
+    ON CONFLICT (external_system, external_list_id) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id
+  `;
+  for (const t of tasks) {
+    await admin`
+      INSERT INTO task_ref (
+        user_id, external_task_id, external_list_id, project_ref_id, title, notes, status,
+        parent_external_task_id, scope
+      ) VALUES (
+        'default', ${t.id}, 'list-subjects', ${list[0].id}, ${t.title}, ${t.notes ?? null},
+        ${t.status ?? 'needsAction'}, ${t.parent ?? null}, ${t.scope ?? 'personal'}
+      )
+    `;
+  }
+  // A task on another list must never show up.
+  await admin`
+    INSERT INTO task_ref (user_id, external_task_id, external_list_id, project_ref_id, title)
+    VALUES ('default', ${`do-${tasks.length}-${Date.now()}`}, 'list-do', ${other[0].id}, 'Buy milk')
+  `;
+}
+
+// ── whole-Worker requests (OAuth, console) ────────────────────────────
+
+export const BASE = 'https://test.example';
+
+export async function workerFetch(
+  path: string,
+  init: RequestInit = {},
+  opts: { env?: Env } = {},
+): Promise<Response> {
+  const { default: worker } = await import('../../src/index');
+  const { ctx, settle } = testCtx();
+  const res = await worker.fetch(new Request(`${BASE}${path}`, init), opts.env ?? env, ctx);
+  await settle();
+  return res;
+}
+
+export function form(fields: Record<string, string>): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: BASE },
+    body: new URLSearchParams(fields).toString(),
+  };
+}

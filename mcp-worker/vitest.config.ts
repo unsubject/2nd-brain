@@ -22,5 +22,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // DB-backed suites (test/db) share one database; setup resets it and
+    // applies every migration when TEST_DATABASE_URL is set (else no-op).
+    globalSetup: ['test/setup/test-db.ts'],
+    fileParallelism: false,
   },
 });
