@@ -50,6 +50,12 @@ export async function registerClient(request: Request, env: Env, ctx: ExecutionC
     }
   }
   if (allowed.length === 0) {
+    // Redirect URIs aren't secrets; logging them is how an unknown client's
+    // callback gets found (Workers Logs) and added to the allow-list.
+    console.warn(
+      '[register] refused: no allowed redirect_uri',
+      JSON.stringify({ redirect_uris: (uris as string[]).map((u) => u.slice(0, 300)), client_name: typeof body.client_name === 'string' ? body.client_name.slice(0, 100) : null }),
+    );
     return oauthError(
       'invalid_redirect_uri',
       `no redirect_uri is allowed by this server (first: ${String(uris[0]).slice(0, 300)}). See docs/mcp-client-setup.md (OAUTH_EXTRA_REDIRECT_PREFIXES).`,

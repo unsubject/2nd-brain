@@ -1,7 +1,7 @@
 // OAuth 2.1 end to end against a real database: registration → consent →
 // code → tokens → /mcp → refresh rotation → reuse detection → revocation.
 
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { admin, BASE, env, form, resetAuthData, rpcRaw, TEST_DB, TOKEN, workerFetch } from './helpers';
 import { pkceS256 } from '../../src/auth/crypto';
 import { hashToken } from '../../src/auth/tokens';
@@ -379,6 +379,33 @@ describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
     expect((await refreshWith(first.refresh_token)).body.error).toBe('invalid_grant');
     expect((await credentialOf(pairs[0].access_token)).revoked_reason).toBeNull();
     expect(await mcpStatus(pairs[0].access_token)).toBe(200);
+  });
+
+  it('registers Meta Muse by its callback and names it on the consent page', async () => {
+    const muse = 'https://agent.meta.ai/api/hatch/oauth/callback';
+    const res = await register([muse, 'https://unknown.example/cb'], 'Muse');
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { client_id: string; redirect_uris: string[] };
+    expect(body.redirect_uris).toEqual([muse]);
+    const page = await workerFetch(`/authorize?${new URLSearchParams(await authParams({ clientId: body.client_id, redirectUri: muse }))}`);
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain('Meta (Muse)');
+    expect(html).toMatch(/name="label"[^>]*value="Meta Muse"/);
+    expect(html).toMatch(/name="replace" value="on" checked/);
+  });
+
+  it('logs the redirect URIs of a refused registration', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await register(['https://unknown-agent.example/oauth/cb'], 'Unknown Agent');
+      expect(res.status).toBe(400);
+      const line = warn.mock.calls.map((c) => c.join(' ')).find((l) => l.includes('[register] refused'));
+      expect(line).toContain('https://unknown-agent.example/oauth/cb');
+      expect(line).toContain('Unknown Agent');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('keeps a reconnect under its name when the owner chooses replace', async () => {
