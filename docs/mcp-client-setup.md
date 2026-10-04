@@ -11,9 +11,9 @@ How to connect each AI client Simon uses to the 2nd-brain MCP server, and how to
 | **Server URL** | `https://2nd-brain-mcp.simon-lee.workers.dev/mcp` |
 | **Owner console** | `https://2nd-brain-mcp.simon-lee.workers.dev/tokens` (sign in with the owner secret) |
 
-**Owner secret.** Set a Worker secret `OWNER_SECRET` (`openssl rand -hex 32`) before you connect anything. It approves connections, signs you in to `/tokens`, and nothing else ever sees it. Until it is set, the owner secret falls back to `BRAIN_MCP_TOKEN`, and the console shows a warning. That fallback is unsafe because OAuth clients connected before October 2026 received `BRAIN_MCP_TOKEN` itself as their access token.
+**Owner secret.** Set a Worker secret `OWNER_SECRET` (`openssl rand -hex 32`) before you connect anything. It approves connections and signs you in to `/tokens`. The only other place that holds it is the Railway service, which uses the same value to let you connect a Google account (`/auth/google`). Until it is set, the owner secret falls back to `BRAIN_MCP_TOKEN`, and the console shows a warning. That fallback is unsafe because OAuth clients connected before October 2026 received `BRAIN_MCP_TOKEN` itself as their access token.
 
-Every client gets **its own credential**. Each one has a name ("label") that appears in the console and on the call log, and each one can be revoked on its own. Captured ideas, imports, syntheses and link proposals also record the name. Never give a vendor `OWNER_SECRET` or `BRAIN_MCP_TOKEN`. Type the owner secret only on the 2nd-brain consent page and the console login, both served from the `workers.dev` address above.
+Every client gets **its own credential**. Each one has a name ("label") that appears in the console and on the call log, and each one can be revoked on its own. Captured ideas, imports, syntheses and link proposals also record the name. Never give a vendor `OWNER_SECRET` or `BRAIN_MCP_TOKEN`. Type the owner secret only on the 2nd-brain consent page and the console login, both served from the `workers.dev` address above, and on the 2nd-brain service's own `/auth/google` page on Railway.
 
 There are two ways a client gets a credential:
 

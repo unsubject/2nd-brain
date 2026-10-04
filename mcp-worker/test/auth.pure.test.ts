@@ -280,6 +280,11 @@ describe('console origin check', () => {
     expect(sameOrigin(post({ Origin: BASE }))).toBe(true);
     expect(sameOrigin(post({ Origin: 'https://evil.example' }))).toBe(false);
     expect(sameOrigin(post({ Origin: 'null' }))).toBe(false);
+    // Our own pages under a no-referrer policy: the browser vouches for it.
+    expect(sameOrigin(post({ Origin: 'null', 'Sec-Fetch-Site': 'same-origin' }))).toBe(true);
+    expect(sameOrigin(post({ Origin: 'null', 'Sec-Fetch-Site': 'cross-site' }))).toBe(false);
+    expect(sameOrigin(post({ Origin: 'null', 'Sec-Fetch-Site': 'none' }))).toBe(false);
+    expect(sameOrigin(post({ Origin: 'https://evil.example', 'Sec-Fetch-Site': 'same-origin' }))).toBe(false);
     expect(sameOrigin(post({ 'Sec-Fetch-Site': 'cross-site' }))).toBe(false);
     expect(sameOrigin(post({ 'Sec-Fetch-Site': 'same-origin' }))).toBe(true);
     expect(sameOrigin(post({}))).toBe(true);

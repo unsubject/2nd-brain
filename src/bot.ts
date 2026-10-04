@@ -4,6 +4,8 @@ import { handleMessage } from "./capture";
 import { generateRssFeed } from "./feed";
 import * as queries from "./db/queries";
 import { getAuthUrl, handleCallback } from "./google/auth";
+import { googleAuthRoutes } from "./google/routes";
+import { describeGoogleError } from "./google/errors";
 import { archiveRoutes } from "./archive/routes";
 import { ask, formatForTelegram } from "./archive/ask";
 import { insertTask } from "./google/tasks";
@@ -43,7 +45,7 @@ export function createBot(token: string): Bot {
       await ctx.reply(`✅ Added to "${result.listTitle}" tasklist.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[bot] /task error:", err);
+      console.error("[bot] /task error:", describeGoogleError(err));
       await ctx.reply(`Couldn't add task: ${msg}`);
     }
   });
@@ -106,26 +108,13 @@ export function startWebhook(
     console.log("Family bot webhook registered");
   }
 
-  app.get("/auth/google", (_req, res) => {
-    const url = getAuthUrl();
-    res.redirect(url);
-  });
-
-  app.get("/auth/google/callback", async (req, res) => {
-    const code = req.query.code as string;
-    if (!code) {
-      res.status(400).send("Missing authorization code");
-      return;
-    }
-
-    try {
-      await handleCallback(code);
-      res.send("Google account connected successfully! You can close this tab.");
-    } catch (err) {
-      console.error("Google OAuth callback error:", err);
-      res.status(500).send("Failed to connect Google account");
-    }
-  });
+  app.use(
+    googleAuthRoutes({
+      secret: process.env.OWNER_SECRET?.trim() || undefined,
+      getAuthUrl,
+      handleCallback,
+    })
+  );
 
   // Archive routes (bearer auth checked per-route by middleware)
   const apiKey = process.env.ARCHIVE_API_KEY;
