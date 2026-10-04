@@ -56,6 +56,11 @@ export const isoDateTimeSchema = z.string().datetime({ offset: true });
 export type NoteBy = 'simon' | 'agent' | 'import' | 'system';
 export type Note = { at: string; by: NoteBy; text: string };
 
+// Which credential (connected agent) made a write — stamped server-side.
+export function credentialLabel(principal: { label: string } | undefined): string {
+  return principal?.label ?? 'unknown';
+}
+
 export function ok(obj: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] };
 }

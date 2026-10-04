@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import { isValidTimeZone, parseCapturedAt, parseUtcOffset, splitDatedNotes, type LocalZone } from '../ideas/parse';
 import { normalizeTags } from '../ideas/text';
 import {
   capturedViaSchema,
   cleanTags,
+  credentialLabel,
   errorResult,
   HandlerError,
   ideaStatusSchema,
@@ -73,6 +75,7 @@ export async function importIdeasHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal?: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -92,7 +95,7 @@ export async function importIdeasHandler(
     }
     zone = { offset };
   }
-  const capturedVia = { ...(args.captured_via ?? {}), role: 'importer' };
+  const capturedVia = { ...(args.captured_via ?? {}), role: 'importer', credential: credentialLabel(principal) };
   // gtasks notes are the user's own words; Notion notes were mostly AI-written.
   const noteBy: Note['by'] = args.source_system === 'gtasks_subjects' ? 'simon' : 'import';
 

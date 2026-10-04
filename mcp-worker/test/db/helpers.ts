@@ -8,7 +8,7 @@ import type { Env } from '../../src/env';
 
 export const TEST_DB = process.env.TEST_DATABASE_URL;
 export const USER = 'test-user';
-const TOKEN = 'test-token';
+export const TOKEN = 'test-token';
 
 export const env = {
   HYPERDRIVE: { connectionString: TEST_DB ?? 'postgres://unused' },
@@ -24,7 +24,9 @@ export type CallResult = { isError: boolean; texts: string[]; json: any };
 
 let rpcId = 0;
 
-export async function callTool(name: string, args: unknown): Promise<CallResult> {
+// An ExecutionContext whose waitUntil work can be awaited (background
+// writes such as the call log must land before assertions).
+export function testCtx(): { ctx: ExecutionContext; settle: () => Promise<void> } {
   const pending: Promise<unknown>[] = [];
   const ctx = {
     waitUntil(p: Promise<unknown>) {
@@ -32,13 +34,36 @@ export async function callTool(name: string, args: unknown): Promise<CallResult>
     },
     passThroughOnException() {},
   } as unknown as ExecutionContext;
+  return {
+    ctx,
+    settle: async () => {
+      while (pending.length > 0) await Promise.all(pending.splice(0));
+    },
+  };
+}
+
+export type RpcOptions = { token?: string | null; env?: Env };
+
+// Raw JSON-RPC POST to /mcp; returns the HTTP response (body unread).
+export async function rpcRaw(method: string, params: unknown, opts: RpcOptions = {}): Promise<Response> {
+  const { ctx, settle } = testCtx();
+  const token = opts.token === undefined ? TOKEN : opts.token;
   const req = new Request('https://test.example/mcp', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/call', params: { name, arguments: args } }),
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
   });
-  const res = await handleMcpRequest(req, env, ctx);
-  await Promise.all(pending);
+  const res = await handleMcpRequest(req, opts.env ?? env, ctx);
+  await settle();
+  return res;
+}
+
+export async function callTool(name: string, args: unknown, opts: RpcOptions = {}): Promise<CallResult> {
+  const res = await rpcRaw('tools/call', { name, arguments: args }, opts);
+  if (res.status !== 200) throw new Error(`HTTP ${res.status} from /mcp`);
   const body = (await res.json()) as any;
   if (body.error) throw new Error(`RPC error ${body.error.code}: ${body.error.message}`);
   const texts = (body.result.content as Array<{ text: string }>).map((c) => c.text);
@@ -56,6 +81,10 @@ export async function ok(name: string, args: unknown): Promise<any> {
   const r = await callTool(name, args);
   if (r.isError) throw new Error(`${name} failed: ${r.texts.join('\n')}`);
   return r.json;
+}
+
+export async function resetAuthData(): Promise<void> {
+  await admin`TRUNCATE mcp_call_log, mcp_token, mcp_auth_code, mcp_credential, mcp_client CASCADE`;
 }
 
 export async function resetIdeaData(): Promise<void> {
@@ -141,4 +170,28 @@ export async function seedSubjects(
     INSERT INTO task_ref (user_id, external_task_id, external_list_id, project_ref_id, title)
     VALUES ('default', ${`do-${tasks.length}-${Date.now()}`}, 'list-do', ${other[0].id}, 'Buy milk')
   `;
+}
+
+// ── whole-Worker requests (OAuth, console) ────────────────────────────
+
+export const BASE = 'https://test.example';
+
+export async function workerFetch(
+  path: string,
+  init: RequestInit = {},
+  opts: { env?: Env } = {},
+): Promise<Response> {
+  const { default: worker } = await import('../../src/index');
+  const { ctx, settle } = testCtx();
+  const res = await worker.fetch(new Request(`${BASE}${path}`, init), opts.env ?? env, ctx);
+  await settle();
+  return res;
+}
+
+export function form(fields: Record<string, string>): RequestInit {
+  return {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: BASE },
+    body: new URLSearchParams(fields).toString(),
+  };
 }

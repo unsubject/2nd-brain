@@ -31,7 +31,7 @@ describe.skipIf(!TEST_DB)('capture: park_idea / get_idea / update_idea', () => {
     expect(row[0].thoughts).toBe('raw  thought,\n\n第二段 — keep me exactly 🙂  ');
     expect(row[0].tags).toEqual(['physics', 'oceans']);
     expect(row[0].user_id).toBe(USER);
-    expect(row[0].captured_via).toEqual({ client: 'test', model: 'm', role: 'librarian' });
+    expect(row[0].captured_via).toEqual({ client: 'test', model: 'm', role: 'librarian', credential: 'master' });
 
     const src = await admin`SELECT source_system, source_external_id FROM idea_source WHERE idea_id = ${r.idea_id}`;
     expect(src).toEqual([{ source_system: 'librarian', source_external_id: 'k-1' }]);

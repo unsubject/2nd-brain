@@ -20,6 +20,26 @@ describe('Hyperdrive cache-busting convention', () => {
     expect(ideaTools).toHaveLength(13);
   });
 
+  // Auth reads must never be cached either: a revoked token has to stop
+  // working on the next request, and a used code must stay used.
+  const srcDir = fileURLToPath(new URL('../src/', import.meta.url).href);
+  const authFiles = [
+    'auth/middleware.ts',
+    'auth/labels.ts',
+    'oauth/common.ts',
+    'oauth/register.ts',
+    'oauth/authorize.ts',
+    'oauth/token.ts',
+    'oauth/revoke.ts',
+    'console.ts',
+    'calllog.ts',
+    'index.ts',
+  ];
+  const scanned = [
+    ...ideaTools.map((f) => ({ path: `${dir}/${f}`, name: f, mustQuery: true })),
+    ...authFiles.map((f) => ({ path: `${srcDir}/${f}`, name: f, mustQuery: false })),
+  ];
+
   // Read a template literal starting just after its opening backtick,
   // including nested `${ ... `...` ... }` fragments; returns [text, end].
   function readTemplate(src: string, i: number): [string, number] {
@@ -56,13 +76,13 @@ describe('Hyperdrive cache-busting convention', () => {
     throw new Error('unterminated template');
   }
 
-  for (const file of ideaTools) {
-    it(`${file}: every top-level SELECT/WITH query includes now()`, () => {
-      const src = readFileSync(`${dir}/${file}`, 'utf8');
+  for (const { path, name, mustQuery } of scanned) {
+    it(`${name}: every top-level SELECT/WITH query includes now()`, () => {
+      const src = readFileSync(path, 'utf8');
       // Tagged templates whose text starts with SELECT or WITH are queries;
       // fragments (column lists, conditions) start with anything else.
       const queries: string[] = [];
-      for (const m of src.matchAll(/\b(?:sql|tx)(?=[<`])/g)) {
+      for (const m of src.matchAll(/\b(?:sql|tx|db)(?=[<`])/g)) {
         let i = (m.index ?? 0) + m[0].length;
         if (src[i] === '<') {
           // Skip a (possibly nested, multi-line) generic argument list.
@@ -77,7 +97,7 @@ describe('Hyperdrive cache-busting convention', () => {
         const [text] = readTemplate(src, i + 1);
         if (/^\s*(SELECT|WITH)\b/.test(text)) queries.push(text);
       }
-      expect(queries.length).toBeGreaterThan(0);
+      if (mustQuery) expect(queries.length).toBeGreaterThan(0);
       for (const q of queries) {
         expect(q, q.slice(0, 120)).toMatch(/now\(\)/);
       }

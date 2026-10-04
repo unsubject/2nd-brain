@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import { truncateChars } from '../ideas/text';
 import {
   capturedViaSchema,
   cleanTags,
+  credentialLabel,
   dbError,
   errorResult,
   HandlerError,
@@ -52,6 +54,7 @@ export async function createSynthesisHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal?: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -88,7 +91,7 @@ export async function createSynthesisHandler(
           ${env.BRAIN_USER_ID}, 'synthesis', ${args.intent}, ${title}, ${args.status ?? 'exploring'},
           ${blankToNull(args.thoughts)}, ${blankToNull(args.framing)}, ${blankToNull(args.why_interesting)},
           ${textArray(tx, cleanTags(args.tags))},
-          ${jsonParam(tx, { ...(args.captured_via ?? {}), role: 'gardener' })}
+          ${jsonParam(tx, { ...(args.captured_via ?? {}), role: 'gardener', credential: credentialLabel(principal) })}
         )
         RETURNING id
       `;

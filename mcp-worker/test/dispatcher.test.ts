@@ -137,3 +137,113 @@ describe('mcp dispatcher', () => {
     expect(r.error?.code).toBe(-32601);
   });
 });
+
+async function post(body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  const req = new Request('https://test.example/mcp', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  return handleMcpRequest(req, env, ctx);
+}
+
+describe('mcp transport compatibility', () => {
+  it('answers CORS preflight without auth and refuses GET with 405', async () => {
+    const pre = await handleMcpRequest(new Request('https://test.example/mcp', { method: 'OPTIONS' }), env, ctx);
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(pre.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+    const get = await handleMcpRequest(new Request('https://test.example/mcp', { method: 'GET' }), env, ctx);
+    expect(get.status).toBe(405);
+    expect(get.headers.get('Allow')).toContain('POST');
+  });
+
+  it('401s carry the protected-resource metadata pointer and CORS headers', async () => {
+    const res = await handleMcpRequest(
+      new Request('https://test.example/mcp', { method: 'POST', body: '{}' }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toContain(
+      'resource_metadata="https://test.example/.well-known/oauth-protected-resource/mcp"',
+    );
+    expect(res.headers.get('Access-Control-Expose-Headers')).toContain('WWW-Authenticate');
+  });
+
+  it('negotiates the protocol version', async () => {
+    for (const v of ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']) {
+      const r = await rpc('initialize', { protocolVersion: v, capabilities: {}, clientInfo: { name: 't', version: '1' } });
+      expect(r.result.protocolVersion).toBe(v);
+    }
+    const r = await rpc('initialize', { protocolVersion: '1999-01-01' });
+    expect(r.result.protocolVersion).toBe('2025-11-25');
+    expect(r.result.serverInfo.name).toBe('2nd-brain');
+    expect(r.result.instructions).toContain("read_protocol('idea-parking-lot')");
+  });
+
+  it('accepts notifications with 202 and no body', async () => {
+    const res = await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    expect(res.status).toBe(202);
+    expect(await res.text()).toBe('');
+  });
+
+  it('ignores JSON-RPC responses sent by the client', async () => {
+    const res = await post({ jsonrpc: '2.0', id: 9, result: {} });
+    expect(res.status).toBe(202);
+  });
+
+  it('handles bounded batches, dropping notification replies', async () => {
+    const res = await post([
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { jsonrpc: '2.0', id: 2, method: 'nope' },
+    ]);
+    const body = (await res.json()) as Array<{ id: number; result?: unknown; error?: { code: number } }>;
+    expect(body.map((b) => b.id)).toEqual([1, 2]);
+    expect(body[0].result).toEqual({});
+    expect(body[1].error?.code).toBe(-32601);
+    const empty = (await (await post([])).json()) as { error: { code: number } };
+    expect(empty.error.code).toBe(-32600);
+    const tooMany = (await (await post(Array.from({ length: 21 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'ping' })))).json()) as {
+      error: { code: number };
+    };
+    expect(tooMany.error.code).toBe(-32600);
+  });
+
+  it('returns a parse error for malformed JSON', async () => {
+    const body = (await (await post('{not json')).json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32700);
+  });
+
+  it('serves tools/list without a prior initialize, with titles and annotations', async () => {
+    const r = await rpc('tools/list');
+    const t = (r.result.tools as Array<any>).find((x) => x.name === 'park_idea');
+    expect(t.title).toBe(t.annotations.title);
+    expect(t.annotations.readOnlyHint).toBe(false);
+    const read = (r.result.tools as Array<any>).find((x) => x.name === 'get_idea');
+    expect(read.annotations.readOnlyHint).toBe(true);
+  });
+
+  it('answers the optional list methods some clients probe', async () => {
+    expect((await rpc('prompts/list')).result).toEqual({ prompts: [] });
+    expect((await rpc('resources/templates/list')).result).toEqual({ resourceTemplates: [] });
+    expect((await rpc('logging/setLevel', { level: 'info' })).result).toEqual({});
+  });
+
+  it('read_protocol serves whole docs and single sections', async () => {
+    const whole = await rpc('tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot' } });
+    expect(whole.result.content[0].text).toContain('## §1');
+    const one = await rpc('tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot', section: '§2' } });
+    const text = one.result.content[0].text as string;
+    expect(text.startsWith('## §2')).toBe(true);
+    expect(text).not.toContain('## §3');
+    const loose = await rpc('tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot', section: '2' } });
+    expect(loose.result.content[0].text).toBe(text);
+    const missing = await rpc('tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot', section: '§99' } });
+    expect(missing.result.isError).toBe(true);
+    expect(missing.result.content[0].text).toContain('§1');
+    const goal = await rpc('tools/call', { name: 'read_protocol', arguments: { name: 'goal-amendment', section: '1A' } });
+    expect(goal.result.isError).toBeFalsy();
+  });
+});

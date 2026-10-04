@@ -27,9 +27,21 @@
       "binding": "HYPERDRIVE",
       "id": "f38c11ac89704b7396d469cb0a0db889"
     }
-  ]
+  ],
+  // Plain (non-secret) settings, versioned here so a deploy is reproducible.
+  // See docs/mcp-client-setup.md.
+  "vars": {
+    // While "true", BRAIN_MCP_TOKEN is still accepted as an /mcp bearer
+    // (legacy clients). Set "false" once /tokens shows no master-token
+    // calls, then rotate BRAIN_MCP_TOKEN: it stays the owner password.
+    "ALLOW_MASTER_BEARER": "true"
+    // Optional: comma-separated https:// prefixes of extra OAuth redirect
+    // URIs for clients not on the built-in allow-list, e.g.
+    // "OAUTH_EXTRA_REDIRECT_PREFIXES": "https://agent.example/oauth/"
+  }
   // Secrets set via CF dashboard (Workers & Pages → 2nd-brain-mcp → Settings → Variables):
-  //   BRAIN_MCP_TOKEN   — bearer token for MCP clients
+  //   BRAIN_MCP_TOKEN   — owner secret: approves OAuth connections, signs in to /tokens,
+  //                       and (while ALLOW_MASTER_BEARER is "true") a legacy /mcp bearer
   //   OPENAI_API_KEY    — for query embeddings in search_brain
   //   BRAIN_USER_ID     — text id used by existing entries (e.g. Telegram numeric id "236871164")
 }

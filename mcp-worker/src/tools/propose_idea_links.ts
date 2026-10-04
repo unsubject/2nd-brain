@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import { canonicalPair, endpointError } from '../ideas/linkTypes';
 import {
   capturedViaSchema,
+  credentialLabel,
   errorResult,
   HandlerError,
   jsonParam,
@@ -54,6 +56,7 @@ export async function proposeIdeaLinksHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal?: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -61,7 +64,7 @@ export async function proposeIdeaLinksHandler(
   }
   const args = parsed.data;
   const reconsider = args.reconsider_rejected ?? false;
-  const via = args.proposed_via ?? null;
+  const via = { ...(args.proposed_via ?? {}), credential: credentialLabel(principal) };
 
   const sql = getDb(env);
   const results: Result[] = [];
@@ -123,7 +126,7 @@ export async function proposeIdeaLinksHandler(
             ) VALUES (
               ${env.BRAIN_USER_ID}, ${source}, ${targetIdea}, ${targetArtifact},
               ${link.link_type}, ${link.rationale}, ${link.similarity ?? null},
-              ${args.origin}, ${via ? jsonParam(tx, via) : null}
+              ${args.origin}, ${jsonParam(tx, via)}
             )
             ON CONFLICT DO NOTHING
             RETURNING id
@@ -155,7 +158,7 @@ export async function proposeIdeaLinksHandler(
               rationale = ${link.rationale},
               similarity = ${link.similarity ?? null},
               proposed_by = ${args.origin},
-              proposed_via = ${via ? jsonParam(tx, via) : null},
+              proposed_via = ${jsonParam(tx, via)},
               proposed_at = now(),
               decided_at = NULL,
               decision_note = NULL

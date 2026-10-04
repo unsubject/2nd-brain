@@ -1,0 +1,76 @@
+// Attribution: which credential called which tool, and whether it worked.
+// Never stores arguments. Written in ctx.waitUntil after the response; any
+// failure is logged and swallowed (it must never break a tool call).
+
+import type { AuthDb } from './auth/middleware';
+import type { Principal } from './auth/principal';
+
+export type CallEntry = {
+  method: string;
+  tool: string | null;
+  isWrite: boolean;
+  ok: boolean;
+  errorCode: string | null;
+  durationMs: number;
+  resultIds: string[];
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Top-level `*_id` uuids plus `results[*].*_id` from a tool's JSON result.
+export function extractResultIds(resultText: string | undefined): string[] {
+  if (!resultText) return [];
+  let obj: unknown;
+  try {
+    obj = JSON.parse(resultText);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const take = (o: unknown) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (k.endsWith('_id') && typeof v === 'string' && UUID.test(v)) out.push(v.toLowerCase());
+    }
+  };
+  take(obj);
+  const results = (obj as { results?: unknown })?.results;
+  if (Array.isArray(results)) results.forEach(take);
+  return [...new Set(out)].slice(0, 50);
+}
+
+export async function recordActivity(
+  db: AuthDb,
+  principal: Principal,
+  entries: CallEntry[],
+  clientInfo: Record<string, unknown> | null,
+): Promise<void> {
+  try {
+    if (principal.credentialId) {
+      await db`
+        UPDATE mcp_credential SET last_used_at = now()
+         WHERE id = ${principal.credentialId}
+           AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
+      `;
+      if (clientInfo) {
+        await db`
+          UPDATE mcp_credential SET last_client_info = ${db.json(clientInfo as never)}
+           WHERE id = ${principal.credentialId}
+        `;
+      }
+    }
+    for (const e of entries) {
+      await db`
+        INSERT INTO mcp_call_log (credential_id, label, method, tool, is_write, ok, error_code, duration_ms, result_ids)
+        VALUES (
+          ${principal.credentialId}, ${principal.label}, ${e.method}, ${e.tool}, ${e.isWrite},
+          ${e.ok}, ${e.errorCode}, ${e.durationMs}, ${db.json(e.resultIds)}
+        )
+      `;
+    }
+  } catch (err) {
+    console.error('[calllog] write failed:', err instanceof Error ? err.message : err);
+  } finally {
+    await db.end({ timeout: 5 }).catch(() => {});
+  }
+}

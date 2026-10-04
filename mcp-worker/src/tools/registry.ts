@@ -37,6 +37,9 @@ import { decideIdeaLinksHandler } from './decide_idea_links';
 import { createSynthesisHandler } from './create_synthesis';
 import { exportIdeaMapHandler } from './export_idea_map';
 import { LINK_TYPES, LINK_STATUSES } from '../ideas/linkTypes';
+import { readProtocolHandler } from './read_protocol';
+import { TOOL_META, type ToolAnnotations } from './tool_meta';
+import type { Principal } from '../auth/principal';
 import { EMBEDDING_DIMENSIONS } from '../embeddings';
 
 export type ToolResult = {
@@ -44,14 +47,20 @@ export type ToolResult = {
   isError?: boolean;
 };
 
-export type Tool = {
+type ToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: any, env: Env, ctx: ExecutionContext) => Promise<ToolResult>;
+  handler: (args: any, env: Env, ctx: ExecutionContext, principal: Principal) => Promise<ToolResult>;
 };
 
-export const tools: Tool[] = [
+export type Tool = ToolDefinition & { title: string; annotations: ToolAnnotations };
+
+// Unknown tools default to the most cautious hints; the schema-portability
+// test fails if any tool is missing from TOOL_META.
+const CAUTIOUS: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+
+const definitions: ToolDefinition[] = [
   {
     name: 'search_brain',
     description:
@@ -168,7 +177,7 @@ export const tools: Tool[] = [
   {
     name: 'record_pick',
     description:
-      "Record Simon's pick/pass/defer decision on an editorial candidate as training signal. Writes one row to editorial_pick with a denormalized snapshot of the candidate (so the signal survives after the upstream candidate is garbage-collected). Returns {ok, pick_id} — store pick_id if the candidate may later ship as an episode (see record_episode_link).",
+      "ONLY call when the user states a pick/pass/defer decision on an editorial candidate (or their editorial pipeline records one for them). Record Simon's pick/pass/defer decision on an editorial candidate as training signal. Writes one row to editorial_pick with a denormalized snapshot of the candidate (so the signal survives after the upstream candidate is garbage-collected). Returns {ok, pick_id} — store pick_id if the candidate may later ship as an episode (see record_episode_link).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -194,7 +203,7 @@ export const tools: Tool[] = [
   {
     name: 'record_episode_link',
     description:
-      'Attach a published episode URL to a previously-recorded editorial_pick row, closing the loop from candidate decision to shipped episode. Sets episode_url + episode_linked_at on the row. candidate_id is the pick_id returned by record_pick.',
+      'ONLY call when the user says a picked candidate shipped as an episode and gives or confirms its URL. Attach a published episode URL to a previously-recorded editorial_pick row, closing the loop from candidate decision to shipped episode. Sets episode_url + episode_linked_at on the row. candidate_id is the pick_id returned by record_pick.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -242,7 +251,7 @@ export const tools: Tool[] = [
   {
     name: 'propose_constitution_amendment',
     description:
-      "Stage a constitutional change: a brand-new domain, an amendment to an existing one, a synthesis of two reinforcing domains, or a retirement. Enters a 14-day cooldown. crisis_justification is REQUIRED for every kind — if the user cannot name the crisis, the change is not constitutional yet. ONLY call from a deliberate user-driven session, never autonomously. Follow the protocol in docs/goal-amendment-interview.md Section 1A. Returns {amendment_id, kind, cooldown_until}.",
+      "Stage a constitutional change: a brand-new domain, an amendment to an existing one, a synthesis of two reinforcing domains, or a retirement. Enters a 14-day cooldown. crisis_justification is REQUIRED for every kind — if the user cannot name the crisis, the change is not constitutional yet. ONLY call from a deliberate user-driven session, never autonomously. Follow read_protocol('goal-amendment') Section 1A. Returns {amendment_id, kind, cooldown_until}.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -295,7 +304,7 @@ export const tools: Tool[] = [
   {
     name: 'commit_constitution_amendment',
     description:
-      "Apply a previously-proposed constitution amendment. Refuses unless cooldown_until has elapsed. Founding-period bypass: the first 5 lifetime kind='new' commits skip cooldown — sized for the typical 5-domain bootstrap, irreversible, counted from the audit log so retire/merge don't refund. Applies atomically: 'new' inserts a domain; 'amend' COALESCE-updates; 'synthesize' inserts the unified domain AND marks sources merged; 'retire' marks status='retired'. Returns {ok, constitution_domain_id, kind, bypassed_cooldown}.",
+      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending constitution amendment, after reading it back to them (read_protocol('goal-amendment') Section 1A). Apply a previously-proposed constitution amendment. Refuses unless cooldown_until has elapsed. Founding-period bypass: the first 5 lifetime kind='new' commits skip cooldown — sized for the typical 5-domain bootstrap, irreversible, counted from the audit log so retire/merge don't refund. Applies atomically: 'new' inserts a domain; 'amend' COALESCE-updates; 'synthesize' inserts the unified domain AND marks sources merged; 'retire' marks status='retired'. Returns {ok, constitution_domain_id, kind, bypassed_cooldown}.",
     inputSchema: {
       type: 'object',
       properties: { amendment_id: { type: 'string', format: 'uuid' } },
@@ -348,7 +357,7 @@ export const tools: Tool[] = [
   {
     name: 'propose_goal_amendment',
     description:
-      "Stage a SMART-goal change: new goal under a constitution_domain, amendment to an existing one, synthesis of reinforcing goals (must share the same domain), or status transitions 'achieve' (outcome reached) and 'abandon' (gave up). 72h cooldown. Re-parenting a goal between domains is NOT supported via amend — abandon + new under the new domain. ONLY call from a deliberate user-driven session.",
+      "ONLY call from a deliberate user-driven session, never autonomously (read_protocol('goal-amendment') Section 1B). Stage a SMART-goal change: new goal under a constitution_domain, amendment to an existing one, synthesis of reinforcing goals (must share the same domain), or status transitions 'achieve' (outcome reached) and 'abandon' (gave up). 72h cooldown. Re-parenting a goal between domains is NOT supported via amend — abandon + new under the new domain.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -398,7 +407,7 @@ export const tools: Tool[] = [
   {
     name: 'commit_goal_amendment',
     description:
-      "Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
+      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending goal amendment, after reading it back to them (read_protocol('goal-amendment') Section 1B). Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
     inputSchema: {
       type: 'object',
       properties: { amendment_id: { type: 'string', format: 'uuid' } },
@@ -446,7 +455,7 @@ export const tools: Tool[] = [
   {
     name: 'create_undertaking',
     description:
-      "Create a new undertaking. Must reference an active primary_goal_id (a SMART goal, not a constitution domain). secondary_goal_ids is a rare exception for undertakings serving multiple goals genuinely. kind defaults to 'outcome'. gtasks_parent_id can be set later via update_undertaking once the Google Tasks parent has been created.",
+      "ONLY call when the user explicitly commits to a new undertaking under an existing goal; confirm purpose, output target and test criteria with them first. Create a new undertaking. Must reference an active primary_goal_id (a SMART goal, not a constitution domain). secondary_goal_ids is a rare exception for undertakings serving multiple goals genuinely. kind defaults to 'outcome'. gtasks_parent_id can be set later via update_undertaking once the Google Tasks parent has been created.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -490,7 +499,7 @@ export const tools: Tool[] = [
   {
     name: 'update_undertaking',
     description:
-      "Partial update of an undertaking on whitelisted fields. Pass only the fields you want to change. Use to attach gtasks_parent_id once the Google Tasks parent is created, to mark status='completed'/'archived'/'sleeping', or to refine purpose/output_target/test_criteria. gtasks_parent_id and target_date support tri-state: omit = leave; null = clear; value = set.",
+      "ONLY call on the user's explicit request. Partial update of an undertaking on whitelisted fields. Pass only the fields you want to change. Use to attach gtasks_parent_id once the Google Tasks parent is created, to mark status='completed'/'archived'/'sleeping', or to refine purpose/output_target/test_criteria. gtasks_parent_id and target_date support tri-state: omit = leave; null = clear; value = set.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -507,10 +516,9 @@ export const tools: Tool[] = [
           type: 'string',
           enum: ['active', 'completed', 'archived', 'sleeping'],
         },
-        gtasks_parent_id: { type: ['string', 'null'] },
+        gtasks_parent_id: { anyOf: [{ type: 'string', maxLength: 255 }, { type: 'null' }] },
         target_date: {
-          type: ['string', 'null'],
-          pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+          anyOf: [{ type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, { type: 'null' }],
         },
       },
       required: ['id'],
@@ -520,7 +528,7 @@ export const tools: Tool[] = [
   {
     name: 'start_cycle',
     description:
-      "Start a new 4-week cycle on a habit_forming undertaking. Refuses if the undertaking isn't kind='habit_forming' or if an active cycle already exists. Returns the new {cycle_id, cycle_number, end_date} (start_date is today; end_date is today + 28 days). Warm-restart-on-misses semantics live in the close_cycle reformulation, not here.",
+      "ONLY call when the user explicitly starts a new 4-week cycle. Start a new 4-week cycle on a habit_forming undertaking. Refuses if the undertaking isn't kind='habit_forming' or if an active cycle already exists. Returns the new {cycle_id, cycle_number, end_date} (start_date is today; end_date is today + 28 days). Warm-restart-on-misses semantics live in the close_cycle reformulation, not here.",
     inputSchema: {
       type: 'object',
       properties: { undertaking_id: { type: 'string', format: 'uuid' } },
@@ -531,7 +539,7 @@ export const tools: Tool[] = [
   {
     name: 'close_cycle',
     description:
-      'Close an active 4-week cycle. Captures streak_summary (free-form JSON — typically the longest streak, gaps, and observed-regularity numbers pulled from Google Tasks completion events on subtasks of the undertaking parent) and reformulation_notes (what to change about the design for the next cycle). Does NOT auto-start the next cycle — the user decides whether to start_cycle again, mark the undertaking sleeping (habit graduated), or evolve it into a different shape.',
+      'ONLY call when the user explicitly closes a cycle after reviewing the streak data and reformulation notes with you. Close an active 4-week cycle. Captures streak_summary (free-form JSON — typically the longest streak, gaps, and observed-regularity numbers pulled from Google Tasks completion events on subtasks of the undertaking parent) and reformulation_notes (what to change about the design for the next cycle). Does NOT auto-start the next cycle — the user decides whether to start_cycle again, mark the undertaking sleeping (habit graduated), or evolve it into a different shape.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -558,7 +566,7 @@ export const tools: Tool[] = [
   {
     name: 'park_idea',
     description:
-      "Librarian capture: file ONE idea into the user's Idea Parking Lot. ONLY call when the user explicitly asks to park/file an idea ('park this', 'add to my parking lot', 'file this idea'). Propose a short title and get the user's confirmation first. `thoughts` must be the user's own words copied verbatim — never paraphrase, summarize, translate or tidy them. Only add tags the user states. Capture is one-way: reply with the receipt only and do NOT search for, suggest or mention related ideas, links, hubs or neighbours — associations happen only in gardening sessions the user starts. Ideas are not tasks (no due dates or priorities). 'Save this session' means save_session, not this tool. Protocol §1.",
+      "Librarian capture: file ONE idea into the user's Idea Parking Lot. ONLY call when the user explicitly asks to park/file an idea ('park this', 'add to my parking lot', 'file this idea'). Propose a short title and get the user's confirmation first. `thoughts` must be the user's own words copied verbatim — never paraphrase, summarize, translate or tidy them. Only add tags the user states. Capture is one-way: reply with the receipt only and do NOT search for, suggest or mention related ideas, links, hubs or neighbours — associations happen only in gardening sessions the user starts. Ideas are not tasks (no due dates or priorities). 'Save this session' means save_session, not this tool. read_protocol('idea-parking-lot') §1.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -666,19 +674,19 @@ export const tools: Tool[] = [
   {
     name: 'update_idea',
     description:
-      "Edit a parked idea: fields (null clears), tags (replace, or add_tags/remove_tags), status (parked | exploring | used | composted — status changes are logged as a note), a synthesis's intent, or append a dated note. ONLY call on the user's explicit request, or to record a decision they just made in a gardening session. Only replace `thoughts` with words the user dictates; prefer append_note (by: 'simon' for their words, 'agent' for yours). Composting keeps the idea; there is no delete. Protocol §2/§5.",
+      "Edit a parked idea: fields (null clears), tags (replace, or add_tags/remove_tags), status (parked | exploring | used | composted — status changes are logged as a note), a synthesis's intent, or append a dated note. ONLY call on the user's explicit request, or to record a decision they just made in a gardening session. Only replace `thoughts` with words the user dictates; prefer append_note (by: 'simon' for their words, 'agent' for yours). Composting keeps the idea; there is no delete. read_protocol('idea-parking-lot') §2/§5.",
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', format: 'uuid' },
         title: { type: 'string', minLength: 1, maxLength: 500, description: 'Cannot be blank' },
-        encountered_where: { type: ['string', 'null'], maxLength: 2000 },
-        source_url: { type: ['string', 'null'], format: 'uri', maxLength: 2048 },
-        source_title: { type: ['string', 'null'], maxLength: 1000 },
-        source_excerpt: { type: ['string', 'null'], maxLength: 8000 },
-        why_interesting: { type: ['string', 'null'], maxLength: 8000 },
-        framing: { type: ['string', 'null'], maxLength: 12000 },
-        thoughts: { type: ['string', 'null'], maxLength: 20000 },
+        encountered_where: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] },
+        source_url: { anyOf: [{ type: 'string', format: 'uri', maxLength: 2048 }, { type: 'null' }] },
+        source_title: { anyOf: [{ type: 'string', maxLength: 1000 }, { type: 'null' }] },
+        source_excerpt: { anyOf: [{ type: 'string', maxLength: 8000 }, { type: 'null' }] },
+        why_interesting: { anyOf: [{ type: 'string', maxLength: 8000 }, { type: 'null' }] },
+        framing: { anyOf: [{ type: 'string', maxLength: 12000 }, { type: 'null' }] },
+        thoughts: { anyOf: [{ type: 'string', maxLength: 20000 }, { type: 'null' }] },
         tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         add_tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         remove_tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
@@ -719,7 +727,7 @@ export const tools: Tool[] = [
   {
     name: 'list_ideas',
     description:
-      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), territory ('frontier' = no output link, 'adjacent' = only revisits an output, 'territory' = became an output), has_output. Read-only. Protocol §5.",
+      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), territory ('frontier' = no output link, 'adjacent' = only revisits an output, 'territory' = became an output), has_output. Read-only. read_protocol('idea-parking-lot') §5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -747,7 +755,7 @@ export const tools: Tool[] = [
   {
     name: 'search_ideas',
     description:
-      "Search the Idea Parking Lot (pull-only — when the user asks 'anything parked about X?'). Hybrid: semantic similarity over embedded ideas plus text matching across all fields (works for Chinese and for ideas filed seconds ago). Includes composted ideas by default. Do NOT use at capture time to suggest links or check duplicates for the user. Read-only. Protocol §5.",
+      "Search the Idea Parking Lot (pull-only — when the user asks 'anything parked about X?'). Hybrid: semantic similarity over embedded ideas plus text matching across all fields (works for Chinese and for ideas filed seconds ago). Includes composted ideas by default. Do NOT use at capture time to suggest links or check duplicates for the user. Read-only. read_protocol('idea-parking-lot') §5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -775,7 +783,7 @@ export const tools: Tool[] = [
   {
     name: 'garden_ideas',
     description:
-      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session the user explicitly started ('let's garden', 'tend my parking lot') — never at capture time. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours; newest first, paged), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?; 40 ideas per page). Global near/band passes cover the most recently updated ideas; focus_idea_id reaches any idea. Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. Protocol §2.",
+      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session the user explicitly started ('let's garden', 'tend my parking lot') — never at capture time. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours; newest first, paged), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?; 40 ideas per page). Global near/band passes cover the most recently updated ideas; focus_idea_id reaches any idea. Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -808,7 +816,7 @@ export const tools: Tool[] = [
   {
     name: 'propose_idea_links',
     description:
-      `Gardening step 2: stage up to 20 typed link PROPOSALS. ONLY call inside a gardening session the user started (origin 'gardening') or during the import protocol (origin 'import'). Proposals are not links until the user accepts them. Rationale: one line naming the specific shared mechanism, tension or dependency. Types: builds_on, example_of (directed idea→idea); part_of (idea→synthesis); tension_with, same_mechanism, combines_with, related (symmetric; related only when nothing specific fits); became, revisits (idea→public_artifact). Pairs the user rejected or retracted are refused unless reconsider_rejected=true, which you may set ONLY when the user explicitly asks to revisit them. Protocol §2.`,
+      `Gardening step 2: stage up to 20 typed link PROPOSALS. ONLY call inside a gardening session the user started (origin 'gardening') or during the import protocol (origin 'import'). Proposals are not links until the user accepts them. Rationale: one line naming the specific shared mechanism, tension or dependency. Types: builds_on, example_of (directed idea→idea); part_of (idea→synthesis); tension_with, same_mechanism, combines_with, related (symmetric; related only when nothing specific fits); became, revisits (idea→public_artifact). Pairs the user rejected or retracted are refused unless reconsider_rejected=true, which you may set ONLY when the user explicitly asks to revisit them. read_protocol('idea-parking-lot') §2.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -846,7 +854,7 @@ export const tools: Tool[] = [
   {
     name: 'list_idea_links',
     description:
-      'List idea links with both endpoints resolved. Defaults to pending proposals (status proposed) — call this first in a gardening session to clear old or imported proposals. Filter by statuses, idea_id, link_type or proposed_by. Read-only. Protocol §2.',
+      'List idea links with both endpoints resolved. Defaults to pending proposals (status proposed) — call this first in a gardening session to clear old or imported proposals. Filter by statuses, idea_id, link_type or proposed_by. Read-only. read_protocol(\'idea-parking-lot\') §2.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -864,7 +872,7 @@ export const tools: Tool[] = [
   {
     name: 'decide_idea_links',
     description:
-      "Record the user's verdicts on link proposals. ONLY with decisions the user explicitly stated in this conversation — never accept or reject on their behalf, and leave unanswered proposals pending. accept (optionally retype with link_type, or reverse a directed link) | reject (remembered; the pair won't be re-proposed) | withdraw (YOU take back your own proposal — not a rejection) | retract (the user un-accepts an accepted link). Protocol §2.",
+      "Record the user's verdicts on link proposals. ONLY with decisions the user explicitly stated in this conversation — never accept or reject on their behalf, and leave unanswered proposals pending. accept (optionally retype with link_type, or reverse a directed link) | reject (remembered; the pair won't be re-proposed) | withdraw (YOU take back your own proposal — not a rejection) | retract (the user un-accepts an accepted link). read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -894,7 +902,7 @@ export const tools: Tool[] = [
   {
     name: 'create_synthesis',
     description:
-      "Combine 2+ ideas into something bigger — an episode seed, essay, series or learning thread. ONLY call when the user explicitly decides to combine them; confirm the title, intent and parts with the user first. Creates a synthesis idea (status exploring by default) with accepted part_of links from each part. Protocol §2.",
+      "Combine 2+ ideas into something bigger — an episode seed, essay, series or learning thread. ONLY call when the user explicitly decides to combine them; confirm the title, intent and parts with the user first. Creates a synthesis idea (status exploring by default) with accepted part_of links from each part. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -925,7 +933,7 @@ export const tools: Tool[] = [
   {
     name: 'export_idea_map',
     description:
-      "Export the curiosity map as graph data for visualisation — call when the user asks to see their idea map/graph, then render it with whatever visualisation tool you have. format: json (canonical idea-map/v1: nodes with degree, connected component and territory; typed edges with rationale; legend), graphml (Gephi / yEd / Cytoscape), mermaid (inline chat, ≤150 nodes). Focus on one idea with focus_idea_id + depth for an ego network. Accepted links only unless include_pending. Read-only. Protocol §3.",
+      "Export the curiosity map as graph data for visualisation — call when the user asks to see their idea map/graph, then render it with whatever visualisation tool you have. format: json (canonical idea-map/v1: nodes with degree, connected component and territory; typed edges with rationale; legend), graphml (Gephi / yEd / Cytoscape), mermaid (inline chat, ≤150 nodes). Focus on one idea with focus_idea_id + depth for an ego network. Accepted links only unless include_pending. Read-only. read_protocol('idea-parking-lot') §3.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -947,4 +955,26 @@ export const tools: Tool[] = [
     },
     handler: exportIdeaMapHandler,
   },
+  // ── Protocols ──────────────────────────────────────────────
+  {
+    name: 'read_protocol',
+    description:
+      "Read an executable protocol: 'idea-parking-lot' (capture §1, gardening §2, map §3, import §4, retrieval §5) or 'goal-amendment' (Section 1A constitution, Section 1B goals). Same text as the MCP resources 2nd-brain://protocol/*, for clients without resource support. Call before using idea tools or proposing amendments; pass section (e.g. '§2', '1B') to fetch one part. Read-only.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', enum: ['idea-parking-lot', 'goal-amendment'] },
+        section: { type: 'string', maxLength: 20, description: "Optional, e.g. '§1' or '1A'" },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    handler: readProtocolHandler,
+  },
 ];
+
+export const tools: Tool[] = definitions.map((t) => ({
+  ...t,
+  title: TOOL_META[t.name]?.title ?? t.name,
+  annotations: TOOL_META[t.name]?.annotations ?? CAUTIOUS,
+}));

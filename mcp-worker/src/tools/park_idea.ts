@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import {
   capturedViaSchema,
   cleanTags,
   dbError,
   errorResult,
+  credentialLabel,
   isoDateTimeSchema,
   jsonParam,
   LIMITS,
@@ -45,6 +47,7 @@ export async function parkIdeaHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal?: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -80,7 +83,8 @@ export async function parkIdeaHandler(
     ...(tags.length > 0 ? ['tags'] : []),
     ...(args.captured_at ? ['captured_at'] : []),
   ];
-  const capturedVia = { ...(args.captured_via ?? {}), role: 'librarian' };
+  // The credential label is stamped server-side (the strict schema rejects a client-sent one).
+  const capturedVia = { ...(args.captured_via ?? {}), role: 'librarian', credential: credentialLabel(principal) };
   const key = args.idempotency_key ?? null;
 
   const sql = getDb(env);
