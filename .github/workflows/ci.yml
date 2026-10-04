@@ -63,3 +63,25 @@ jobs:
 
       - name: Test (root)
         run: npm test
+
+  legal-site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: legal-site
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # wrangler 4 needs Node 22+.
+          node-version: '22'
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      # Validates wrangler.jsonc, routes, _headers and _redirects without
+      # deploying (no Cloudflare credentials needed).
+      - name: Check
+        run: npm run check

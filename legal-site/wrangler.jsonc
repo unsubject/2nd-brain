@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Static Terms of Service and Privacy Statement for every unsubject.com
+  // project, published by Unsubject LLC. Assets-only Worker: no script,
+  // just the files in ./public.
+  "name": "unsubject-legal",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    // /terms serves terms.html, and /terms.html redirects to /terms.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "workers_dev": false,
+  // Only these paths are taken over; the rest of unsubject.com is left to
+  // whatever already serves it. Each pattern also catches its longer
+  // aliases (/terms-of-service, /privacy-policy), which public/_redirects
+  // sends to the canonical URL. The pages inline their CSS so they need no
+  // other paths. Requires the unsubject.com zone in this Cloudflare account
+  // with a proxied (orange-cloud) DNS record for the apex.
+  "routes": [
+    { "pattern": "unsubject.com/terms*", "zone_name": "unsubject.com" },
+    { "pattern": "unsubject.com/privacy*", "zone_name": "unsubject.com" }
+  ]
+}

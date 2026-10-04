@@ -1,0 +1,41 @@
+name: Deploy legal-site
+
+# Publishes unsubject.com/terms and unsubject.com/privacy (Cloudflare
+# Worker "unsubject-legal", static assets only). See legal-site/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'legal-site/**'
+      - '.github/workflows/deploy-legal-site.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-legal-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: legal-site
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # wrangler 4 needs Node 22+.
+          node-version: '22'
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: legal-site
