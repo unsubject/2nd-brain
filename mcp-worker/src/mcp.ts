@@ -26,11 +26,20 @@ Idea Parking Lot: ideas are curated raw material, not tasks. Use park_idea ONLY 
 
 If a tool returns an error, report it and ask the user; don't retry silently.`;
 
-class RpcError extends Error {
-  constructor(public code: number, message: string, public data?: unknown) {
+// httpStatus: the status of the HTTP response when this error answers a
+// single (non-batch) request. JSON-RPC errors are normally sent with 200.
+export class RpcError extends Error {
+  constructor(
+    public code: number,
+    message: string,
+    public data?: unknown,
+    public httpStatus?: number,
+  ) {
     super(message);
   }
 }
+
+type Reply = { body: Record<string, unknown> | null; status: number };
 
 type RequestState = {
   principal: Principal;
@@ -78,13 +87,13 @@ export async function handleMcpRequest(request: Request, env: Env, ctx: Executio
         const out: unknown[] = [];
         for (const msg of body) {
           const r = await handleMessage(msg, env, ctx, state);
-          if (r) out.push(r);
+          if (r.body) out.push(r.body);
         }
         response = out.length > 0 ? rpcJson(out) : new Response(null, { status: 202 });
       }
     } else {
       const r = await handleMessage(body, env, ctx, state);
-      response = r ? rpcJson(r) : new Response(null, { status: 202 });
+      response = r.body ? rpcJson(r.body, r.status) : new Response(null, { status: 202 });
     }
   }
 
@@ -105,30 +114,34 @@ async function handleMessage(
   env: Env,
   ctx: ExecutionContext,
   state: RequestState,
-): Promise<Record<string, unknown> | null> {
+): Promise<Reply> {
+  const reply = (body: Record<string, unknown> | null, status = 200): Reply => ({ body, status });
   const m = msg as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown } | null;
   if (!m || typeof m !== 'object' || m.jsonrpc !== '2.0') {
-    return { jsonrpc: '2.0', id: (m as { id?: unknown } | null)?.id ?? null, error: { code: -32600, message: 'Invalid request' } };
+    return reply({ jsonrpc: '2.0', id: (m as { id?: unknown } | null)?.id ?? null, error: { code: -32600, message: 'Invalid request' } });
   }
   // A JSON-RPC response sent to us (e.g. to a server request) needs no reply.
   if (typeof m.method !== 'string') {
-    if ('result' in m || 'error' in m) return null;
-    return { jsonrpc: '2.0', id: m.id ?? null, error: { code: -32600, message: 'Invalid request' } };
+    if ('result' in m || 'error' in m) return reply(null);
+    return reply({ jsonrpc: '2.0', id: m.id ?? null, error: { code: -32600, message: 'Invalid request' } });
   }
   const isNotification = m.id === undefined;
   try {
     const result = await dispatch(m.method, (m.params ?? {}) as Record<string, any>, env, ctx, state);
-    return isNotification ? null : { jsonrpc: '2.0', id: m.id, result };
+    return reply(isNotification ? null : { jsonrpc: '2.0', id: m.id, result });
   } catch (err) {
-    if (isNotification) return null;
+    if (isNotification) return reply(null);
     if (err instanceof RpcError) {
-      return { jsonrpc: '2.0', id: m.id, error: { code: err.code, message: err.message, data: err.data } };
+      return reply(
+        { jsonrpc: '2.0', id: m.id, error: { code: err.code, message: err.message, data: err.data } },
+        err.httpStatus ?? 200,
+      );
     }
     if (err instanceof ResourceNotFoundError) {
-      return { jsonrpc: '2.0', id: m.id, error: { code: -32602, message: err.message } };
+      return reply({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: err.message } });
     }
     const message = err instanceof Error ? err.message : String(err);
-    return { jsonrpc: '2.0', id: m.id, error: { code: -32603, message: `Internal: ${message}` } };
+    return reply({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: `Internal: ${message}` } });
   }
 }
 
@@ -243,6 +256,6 @@ function cleanClientInfo(info: Record<string, unknown>): Record<string, string> 
   return out;
 }
 
-function rpcJson(body: unknown): Response {
-  return Response.json(body);
+function rpcJson(body: unknown, status = 200): Response {
+  return Response.json(body, { status });
 }
