@@ -22,7 +22,7 @@ Decisions (2026-10-04):
 |---|---|
 | 1 | Every client gets **all tools**. A `scope` column exists for later; only `all` is honoured and anything else fails closed. |
 | 2 | **Per-client revocable credentials**, of two kinds: **OAuth grants**, which the client obtains itself after the owner approves, and **personal access tokens** (PATs), which the owner creates in a console. Both are stored hashed, with a label and last-used time. |
-| 3 | **Writes are attributed on the server.** Idea writes record the credential label in `captured_via` / `proposed_via`, and every tool call is logged per credential. |
+| 3 | **Writes are attributed on the server.** Every idea write records the credential label permanently (`captured_via`, `proposed_via`, `decided_via`, note `credential`, the append-only `edit_log`; migration 022), and every tool call is logged per credential (pruned after the retention window). |
 | 4 | A **per-client setup guide** with a smoke test. |
 | 5 | The master token is kept as a legacy bearer behind `ALLOW_MASTER_BEARER` until the console shows it is unused. Approving connections and signing in to the console use a separate `OWNER_SECRET`, because earlier OAuth clients received `BRAIN_MCP_TOKEN` as their access token. Until `OWNER_SECRET` is set, it falls back to `BRAIN_MCP_TOKEN`, and the console warns about it. |
 
@@ -155,8 +155,13 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 ## 8. Rollout
 
 0. Set the `OWNER_SECRET` Worker secret (`openssl rand -hex 32`).
-1. Merge. The Node monolith applies migration 020 on its next boot. Optionally set `MCP_CALL_LOG_RETENTION_DAYS` on the Railway service (default 90).
-   - Until that happens, the master token still works, but OAuth and the console return errors.
+1. Apply the migrations, then merge. The Worker deploys from CI on its own while the Node monolith applies migrations only when it boots, and the Worker code needs migration 022's columns.
+   - Recommended: first count the string-typed rows 021 will repair (`SELECT count(*) FROM <table> WHERE jsonb_typeof(<column>) = 'string'` for each column it lists), then run `npm run migrate` against production from the branch, then merge; the monolith's boot then skips them. 020 and 022 are additive; 021 rewrites string-wrapped jsonb in place, which every reader already accepts; all three are idempotent.
+   - A database that ran 022 from an earlier revision of the branch (it added `idea.updated_via`) still gets today's file, which has a different name; it drops `updated_via` and converges.
+   - Rolling the Worker back to a build without 022's columns is safe: the `decided_via` CHECK only checks its shape, so the older reopen (which clears `decided_at` alone) still works. Links it reopens keep a stale `decided_via` until they are decided again.
+   - Otherwise, until the monolith has booted: OAuth and the console return errors, and `get_idea`, `list_idea_links`, `update_idea`, `decide_idea_links`, `propose_idea_links` (reopen), `create_synthesis` and the `import_ideas` merge path fail with a missing-column error, even with the master token. Re-run the deploy workflow if the Worker went live first and something stays broken.
+   - Rows the old `close_cycle`/`record_pick` write between the migration and the Worker deploy stay string-wrapped; readers unwrap them, and re-running 021's `DO` block by hand (idempotent) repairs them.
+   - Optionally set `MCP_CALL_LOG_RETENTION_DAYS` on the Railway service (default 90).
 2. Run `npm run smoke` with the master token. Then create a PAT and run `--write`, and after revoking it run `--expect-401`.
 3. Reconnect each client following the setup guide, so that each one gets its own label.
 4. Watch the console's master-token banner. Give each remaining caller (for example socialisn2) its own PAT.
@@ -178,4 +183,3 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
   4. A tool whose schema has `additionalProperties` (e.g. `read_protocol`) loads and runs.
 
   If check 1 fails, consider a longer reuse grace for Google-family refresh tokens. Keep rotation itself: the MCP spec requires it for public clients.
-- Stamp the credential on the remaining idea writes too: `update_idea` notes and `decide_idea_links`. These are covered by the call log today.

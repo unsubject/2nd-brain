@@ -32,7 +32,7 @@ Design background: `docs/phase-idea-parking-lot-spec.md`.
 | `thoughts` | The user's, **verbatim**. Never paraphrased, summarized, translated or tidied. |
 | `why_interesting` | Why it matters — the user's reason in their framing when captured by the Librarian; for imported rows, whatever the source recorded (see `idea_source`). |
 | `framing` | AI-written context ("what it is / what it is not"). Never presented as the user's words. |
-| `notes` | Dated development log; each note records `by`: `simon` (the user), `agent`, `import` or `system`. |
+| `notes` | Dated development log; each note records `by`: `simon` (the user), `agent`, `import` or `system`, and the server adds `credential` (which connection wrote it). |
 
 **Links are made only in gardening.** Capture is one-way. An AI proposes typed links with a one-line rationale; the user accepts or rejects. Only `decide_idea_links` (accept) and `create_synthesis` produce accepted links.
 
@@ -98,7 +98,7 @@ Reply with the receipt: title, captured time, id, and the fields filed. **Nothin
 
 ### Step 0 — Clear the queue first
 
-Call `list_idea_links()` (defaults to pending proposals). If there are leftovers — from an earlier session or from the import (§4) — present those first (Step 5 format) before pulling new candidates.
+Call `list_idea_links()` (defaults to pending proposals; each link shows `proposed_via` and, once decided, `decided_via`, i.e. which connection proposed or recorded it). If there are leftovers — from an earlier session or from the import (§4) — present those first (Step 5 format) before pulling new candidates.
 
 ### Step 1 — Pick a mode with the user
 

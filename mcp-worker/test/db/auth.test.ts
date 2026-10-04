@@ -134,3 +134,199 @@ describe.skipIf(!TEST_DB)('/mcp per-client credentials', () => {
     expect(res.headers.get('Retry-After')).toBe('5');
   });
 });
+
+describe.skipIf(!TEST_DB)('full attribution on idea writes', () => {
+  beforeEach(async () => {
+    await resetAuthData();
+    await resetIdeaData();
+  });
+
+  const as = (token: string) => async (name: string, args: unknown) => {
+    const r = await callTool(name, args, { token });
+    if (r.isError) throw new Error(`${name}: ${r.texts.join(' ')}`);
+    return r.json;
+  };
+  const master = as('test-token');
+  const via = (v: unknown) => (v as { credential?: string } | null)?.credential ?? null;
+
+  it('update_idea stamps its notes and appends to the edit log', async () => {
+    const g = as((await seedPat('Gardener')).token);
+    const { idea_id: id } = await master('park_idea', { title: 'Tidal locking' });
+    await g('update_idea', { id, status: 'exploring', append_note: { text: 'look at Io', by: 'agent' } });
+    const idea = (await master('get_idea', { id })).idea;
+    expect(idea.notes.map((n: any) => [n.by, n.credential])).toEqual([
+      ['system', 'Gardener'],
+      ['agent', 'Gardener'],
+    ]);
+    expect(idea.edit_log).toHaveLength(1);
+    expect(idea.edit_log[0]).toMatchObject({ credential: 'Gardener', tool: 'update_idea', fields: ['status', 'append_note'] });
+    // Field edits write no note; the log keeps every editor, not just the last.
+    await master('update_idea', { id, title: 'Tidal locking, revisited' });
+    const log = (await master('get_idea', { id })).idea.edit_log;
+    expect(log.map((e: any) => [e.credential, e.fields])).toEqual([
+      ['Gardener', ['status', 'append_note']],
+      ['master', ['title']],
+    ]);
+  });
+
+  it('records proposer and decider separately, and keeps both on reopen', async () => {
+    const a = as((await seedPat('Proposer')).token);
+    const b = as((await seedPat('Decider')).token);
+    const { idea_id: x } = await master('park_idea', { title: 'Moons' });
+    const { idea_id: y } = await master('park_idea', { title: 'Tides' });
+    const link = { source_idea_id: x, target_idea_id: y, link_type: 'related', rationale: 'Both about orbits' };
+    const p = await a('propose_idea_links', { origin: 'gardening', links: [link] });
+    const linkId = p.results[0].link_id;
+    await b('decide_idea_links', { decisions: [{ link_id: linkId, decision: 'accept' }] });
+
+    const listed = (await master('list_idea_links', { idea_id: x, statuses: ['accepted'] })).links[0];
+    expect([via(listed.proposed_via), via(listed.decided_via)]).toEqual(['Proposer', 'Decider']);
+    const shown = (await master('get_idea', { id: x })).links[0];
+    expect([via(shown.proposed_via), via(shown.decided_via)]).toEqual(['Proposer', 'Decider']);
+
+    // A different connection retracts it: the accept (and who made it) is
+    // kept in history.
+    const r = as((await seedPat('Retractor')).token);
+    await r('decide_idea_links', { decisions: [{ link_id: linkId, decision: 'retract', note: 'not really' }] });
+    const [retracted] = await admin`SELECT decided_via, history FROM idea_link WHERE id = ${linkId}`;
+    expect(via(retracted.decided_via)).toBe('Retractor');
+    expect(retracted.history.map((h: any) => [h.status, via(h.decided_via)])).toEqual([['accepted', 'Decider']]);
+
+    // Then another connection re-proposes it: the decider is cleared and
+    // every earlier stamp survives in history.
+    const c = as((await seedPat('Second proposer')).token);
+    await c('propose_idea_links', { origin: 'gardening', reconsider_rejected: true, links: [link] });
+    const [row] = await admin`SELECT status, decided_via, proposed_via, history FROM idea_link WHERE id = ${linkId}`;
+    expect(row.status).toBe('proposed');
+    expect(row.decided_via).toBeNull();
+    expect(via(row.proposed_via)).toBe('Second proposer');
+    expect(row.history.map((h: any) => [via(h.proposed_via), via(h.decided_via)])).toEqual([
+      [null, 'Decider'],
+      ['Proposer', 'Retractor'],
+    ]);
+  });
+
+  it('a revived link takes over the accepted proposal and its proposer', async () => {
+    const a = as((await seedPat('A')).token);
+    const b = as((await seedPat('B')).token);
+    const c = as((await seedPat('C')).token);
+    const d = as((await seedPat('D')).token);
+    const { idea_id: x } = await master('park_idea', { title: 'Orbital resonance' });
+    const { idea_id: y } = await master('park_idea', { title: 'Kirkwood gaps' });
+    const p1 = await a('propose_idea_links', {
+      origin: 'gardening',
+      links: [{ source_idea_id: x, target_idea_id: y, link_type: 'builds_on', rationale: 'X extends Y somehow', similarity: 0.91 }],
+    });
+    const builds = p1.results[0].link_id;
+    await b('decide_idea_links', { decisions: [{ link_id: builds, decision: 'reject' }] });
+    // The pair was rejected once, so a new proposal must ask to reconsider.
+    const p2 = await c('propose_idea_links', {
+      origin: 'gardening',
+      reconsider_rejected: true,
+      links: [{ source_idea_id: x, target_idea_id: y, link_type: 'related', rationale: 'X and Y are related', similarity: 0.42 }],
+    });
+    const related = p2.results[0].link_id;
+    await admin`UPDATE idea_link SET proposed_at = '2026-01-01T00:00:00Z' WHERE id = ${builds}`;
+    const [{ proposed_at: relatedAt }] = await admin`SELECT proposed_at FROM idea_link WHERE id = ${related}`;
+    const r = await d('decide_idea_links', { decisions: [{ link_id: related, decision: 'accept', link_type: 'builds_on' }] });
+    expect(r.results[0]).toMatchObject({ link_id: builds, superseded: related });
+
+    const [revived] = await admin`
+      SELECT proposed_via, decided_via, rationale, history, proposed_at, similarity FROM idea_link WHERE id = ${builds}
+    `;
+    expect([via(revived.proposed_via), via(revived.decided_via)]).toEqual(['C', 'D']);
+    // Proposer, time, score and rationale all come from the accepted proposal.
+    expect(revived.rationale).toBe('X and Y are related');
+    expect(revived.similarity).toBeCloseTo(0.42);
+    expect(revived.proposed_at).toEqual(relatedAt);
+    const before = revived.history[revived.history.length - 1];
+    expect([via(before.proposed_via), via(before.decided_via), before.similarity]).toEqual(['A', 'B', 0.91]);
+    expect(new Date(before.proposed_at).toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    const [withdrawn] = await admin`SELECT status, decided_via FROM idea_link WHERE id = ${related}`;
+    expect([withdrawn.status, via(withdrawn.decided_via)]).toEqual(['withdrawn', 'D']);
+  });
+
+  it('stamps synthesis part_of links and import merges', async () => {
+    const s = as((await seedPat('Synthesist')).token);
+    const { idea_id: x } = await master('park_idea', { title: 'Moons' });
+    const { idea_id: y } = await master('park_idea', { title: 'Tides' });
+    await s('create_synthesis', { title: 'Episode on tides', intent: 'episode', part_ids: [x, y] });
+    const links = await admin`SELECT proposed_via, decided_via FROM idea_link WHERE link_type = 'part_of'`;
+    expect(links).toHaveLength(2);
+    for (const l of links) expect([via(l.proposed_via), via(l.decided_via)]).toEqual(['Synthesist', 'Synthesist']);
+
+    const imp = as((await seedPat('Importer')).token);
+    await imp('import_ideas', {
+      source_system: 'notion',
+      items: [{ source_external_id: 'n-1', import_payload: {}, merge_into_idea_id: x, thoughts: 'merged text' }],
+    });
+    const idea = (await master('get_idea', { id: x })).idea;
+    expect(idea.notes.at(-1).credential).toBe('Importer');
+    expect(idea.edit_log.at(-1)).toMatchObject({ credential: 'Importer', tool: 'import_ideas' });
+  });
+
+  it('keeps the proposed type and direction when an accept changes them', async () => {
+    const a = as((await seedPat('Proposer')).token);
+    const d = as((await seedPat('Decider')).token);
+    const { idea_id: x } = await master('park_idea', { title: 'Orbital resonance' });
+    const { idea_id: y } = await master('park_idea', { title: 'Kirkwood gaps' });
+    const { idea_id: z } = await master('park_idea', { title: 'Lagrange points' });
+    const p = await a('propose_idea_links', {
+      origin: 'gardening',
+      links: [
+        { source_idea_id: x, target_idea_id: y, link_type: 'related', rationale: 'Both about resonance', similarity: 0.77 },
+        { source_idea_id: x, target_idea_id: z, link_type: 'related', rationale: 'Both about orbits' },
+      ],
+    });
+    const [retyped, plain] = p.results.map((r: any) => r.link_id);
+    // `related` is symmetric, so the proposal is stored in canonical order.
+    const [proposed] = await admin`SELECT source_idea_id, target_idea_id FROM idea_link WHERE id = ${retyped}`;
+    await d('decide_idea_links', {
+      decisions: [
+        { link_id: retyped, decision: 'accept', link_type: 'builds_on', reverse: true },
+        { link_id: plain, decision: 'accept', link_type: 'related' },
+      ],
+    });
+
+    const [row] = await admin`SELECT link_type, source_idea_id, proposed_via, decided_via, history FROM idea_link WHERE id = ${retyped}`;
+    expect([row.link_type, row.source_idea_id, via(row.proposed_via), via(row.decided_via)]).toEqual([
+      'builds_on',
+      proposed.target_idea_id,
+      'Proposer',
+      'Decider',
+    ]);
+    expect(row.history).toHaveLength(1);
+    expect(row.history[0]).toMatchObject({
+      status: 'proposed',
+      link_type: 'related',
+      source_idea_id: proposed.source_idea_id,
+      target_idea_id: proposed.target_idea_id,
+      rationale: 'Both about resonance',
+      similarity: 0.77,
+      proposed_via: { credential: 'Proposer' },
+    });
+    expect(row.history[0].retyped_at).toBeTruthy();
+    // Accepting as proposed (even naming the same type) leaves no snapshot.
+    const [unchanged] = await admin`SELECT history FROM idea_link WHERE id = ${plain}`;
+    expect(unchanged.history).toEqual([]);
+  });
+
+  it('decided_via must be an object, but an older Worker can still reopen a link', async () => {
+    const { idea_id: x } = await master('park_idea', { title: 'Moons' });
+    const { idea_id: y } = await master('park_idea', { title: 'Tides' });
+    const p = await master('propose_idea_links', {
+      origin: 'gardening',
+      links: [{ source_idea_id: x, target_idea_id: y, link_type: 'related', rationale: 'Both about orbits' }],
+    });
+    const id = p.results[0].link_id;
+    await master('decide_idea_links', { decisions: [{ link_id: id, decision: 'reject' }] });
+    await expect(admin`UPDATE idea_link SET decided_via = '"x"'::jsonb WHERE id = ${id}`).rejects.toMatchObject({
+      code: '23514',
+    });
+    // A Worker that predates migration 022 reopens by clearing decided_at
+    // only; rolling back to one must not trip a CHECK.
+    await admin`UPDATE idea_link SET status = 'proposed', decided_at = NULL, decision_note = NULL WHERE id = ${id}`;
+    const [row] = await admin`SELECT status, decided_via FROM idea_link WHERE id = ${id}`;
+    expect([row.status, via(row.decided_via)]).toEqual(['proposed', 'master']);
+  });
+});

@@ -54,7 +54,8 @@ export const tagsSchema = z.array(z.string().min(1).max(60)).max(20);
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
 
 export type NoteBy = 'simon' | 'agent' | 'import' | 'system';
-export type Note = { at: string; by: NoteBy; text: string };
+// `credential`: the MCP connection that wrote the note (server-set).
+export type Note = { at: string; by: NoteBy; text: string; credential?: string };
 
 // Which credential (connected agent) made a write — stamped server-side.
 // The connection that made the call; set by the server, never by the client.
@@ -138,7 +139,7 @@ export function ideaColumns(q: Q) {
     i.id, i.kind, i.intent, i.title, i.status, i.captured_at,
     i.encountered_where, i.source_url, i.source_title, i.source_excerpt,
     i.why_interesting, i.thoughts, i.framing, i.notes,
-    to_jsonb(i.tags) AS tags, i.captured_via,
+    to_jsonb(i.tags) AS tags, i.captured_via, i.edit_log,
     (i.embedding IS NOT NULL) AS embedded, i.embed_error,
     i.status_changed_at, i.created_at, i.updated_at
   `;
@@ -161,6 +162,7 @@ export type IdeaRow = {
   notes: unknown;
   tags: unknown;
   captured_via: unknown;
+  edit_log: unknown;
   embedded: boolean;
   embed_error: string | null;
   status_changed_at: Date | string;
@@ -188,6 +190,8 @@ export function ideaFromRow(r: IdeaRow) {
     notes: sortNotes(parseJsonb<Note[]>(r.notes, [])),
     tags: parseJsonb<string[]>(r.tags, []),
     captured_via: parseJsonb<Record<string, unknown> | null>(r.captured_via, null),
+    // Who changed the idea after capture, oldest first: [{at, credential, tool, fields?}].
+    edit_log: parseJsonb<Array<Record<string, unknown>>>(r.edit_log, []),
     embedding_status: r.embedded ? 'embedded' : r.embed_error ? 'error' : 'pending',
     status_changed_at: toIso(r.status_changed_at),
     created_at: toIso(r.created_at),
