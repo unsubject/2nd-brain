@@ -43,10 +43,14 @@ ${body}
 
 // Same-origin POSTs only. Browsers send Origin on every POST; non-browser
 // callers with neither header are let through to the CSRF/session checks.
+// `Origin: null` is what a sandboxed or opaque context sends, but also what
+// a browser sends from our own page under a no-referrer policy (or a cached
+// copy of one), so it passes only when Sec-Fetch-Site vouches for it.
 export function sameOrigin(request: Request): boolean {
   const origin = request.headers.get('Origin');
-  if (origin !== null) return origin === baseUrl(request);
   const site = request.headers.get('Sec-Fetch-Site');
+  if (origin === 'null') return site === 'same-origin';
+  if (origin !== null) return origin === baseUrl(request);
   return site === null || site === 'same-origin' || site === 'none';
 }
 
