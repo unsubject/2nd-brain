@@ -159,7 +159,7 @@ A few hard rules:
 
 - The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), `goals` / `undertakings` / `undertaking_cycles` / `goal_amendments` (PR #49), the constitution split (PR #54) which added `constitution_domains` and `constitution_amendments` and repointed `goals` to the SMART layer, and the Idea Parking Lot (`idea`, `idea_source`, `idea_link`; spec in `docs/phase-idea-parking-lot-spec.md`). Any further new write target needs a deliberate decision and a doc update here.
 - **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (tags, classification, embedding) in a single place. The same rule holds for ideas: the Worker inserts `idea` rows with `embedding NULL` and the Node sweeper `src/ideas/worker.ts` embeds them (and re-embeds after the `idea_before_update` trigger clears a stale embedding).
-- The Worker should not own its own scheduled jobs in v1. If something needs to run periodically, it lives in the Node monolith's scheduler.
+- The Worker should not own its own scheduled jobs in v1. If something needs to run periodically, it lives in the Node monolith's scheduler (e.g. `src/mcp/retention.ts` prunes the Worker's call log and stale auth rows daily).
 
 ### DB access
 
@@ -198,7 +198,7 @@ Every client has **its own revocable credential**. The design is in [`phase-mcp-
 - **Owner console** `/tokens` (`src/console.ts`): sign in with the owner secret to see agents and activity, mint PATs, and revoke anything.
 - **Attribution.** The tool handlers receive the caller's `Principal` as a fourth argument.
   - `park_idea`, `import_ideas`, `create_synthesis` and `propose_idea_links` stamp `credential: <label>` into `captured_via` or `proposed_via`. Clients can't set it themselves: the schemas are strict, and `master` and `unknown` are reserved labels.
-  - `src/calllog.ts` logs every tool call per credential: the tool, whether it was a write, whether it succeeded, its duration, and the result ids. It never logs arguments. This runs in `ctx.waitUntil`, and any failure in it is swallowed.
+  - `src/calllog.ts` logs every tool call per credential: the tool, whether it was a write, whether it succeeded, its duration, and the result ids. It never logs arguments; rows are pruned after `MCP_CALL_LOG_RETENTION_DAYS` (default 90) by the monolith. This runs in `ctx.waitUntil`, and any failure in it is swallowed.
 
 Every 401 carries `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource/mcp"`, plus `error="invalid_token"` when a token was presented. The response is the same whatever was wrong with the token. A database outage returns 503, never 401, so clients don't throw away good tokens.
 
@@ -216,7 +216,7 @@ Every auth read carries `now()` like the idea tools (Hyperdrive caching, above).
 - **Vitest** + a tiny vite plugin (`vitest.config.ts`) that transforms `.md` imports into string-default exports at test time, mirroring wrangler's Text rule. This lets the dispatcher tests exercise the real `resources.ts` (which imports the bundled `goal-amendment-interview.md`) without spinning up `@cloudflare/vitest-pool-workers`.
 - Tests live in `mcp-worker/test/`. The dispatcher test pattern (drive `handleMcpRequest` with mock requests + Bearer header; assert JSON-RPC response shape) is the right one for any future `tools/*` or `resources/*` coverage.
 - CI gate: `deploy-mcp-worker.yml` runs `npm test` (with a Postgres service, so the DB suites run) between Typecheck and Deploy. Tests must pass to ship.
-- Tool-handler tests that need DB hit a **real test Postgres**, not mocks. This codebase has a feedback memory that mock/prod divergence has burned past work — don't reintroduce DB mocks. Handler tests for the idea tools live in `mcp-worker/test/db/` and run when `TEST_DATABASE_URL` points at a local `*_test` database: `test/setup/test-db.ts` checks both the URL and the server it actually reached, resets that database and applies (and records) every migration, so the suites also prove the newest migration applies on top of the others. Without the variable they skip. Only external HTTP (the OpenAI embeddings call) may be stubbed, never the database. Root-level Node tests (`npm test` in the repo root, `tsx --test test/*.test.ts`) cover the idea embedding sweeper the same way. CI (`.github/workflows/ci.yml` on pull requests and `main`, and the deploy workflow's test step) runs all of it against a `pgvector/pgvector:pg16` service. A static test (`mcp-worker/test/ideas.fixes.test.ts`) fails if any read query in an idea tool lacks `now()` (the Hyperdrive convention above).
+- Tool-handler tests that need DB hit a **real test Postgres**, not mocks. This codebase has a feedback memory that mock/prod divergence has burned past work — don't reintroduce DB mocks. Handler tests for the idea tools live in `mcp-worker/test/db/` and run when `TEST_DATABASE_URL` points at a local `*_test` database: `test/setup/test-db.ts` checks both the URL and the server it actually reached, resets that database and applies (and records) every migration, so the suites also prove the newest migration applies on top of the others. Without the variable they skip. Only external HTTP (the OpenAI embeddings call) may be stubbed, never the database. Root-level Node tests (`npm test` in the repo root, `tsx --test test/*.test.ts`) cover the idea embedding sweeper and the MCP retention job (`src/mcp/retention.ts`) the same way. CI (`.github/workflows/ci.yml` on pull requests and `main`, and the deploy workflow's test step) runs all of it against a `pgvector/pgvector:pg16` service. A static test (`mcp-worker/test/ideas.fixes.test.ts`) fails if any read query in an idea tool lacks `now()` (the Hyperdrive convention above).
 
 ### Deploy
 
@@ -270,6 +270,7 @@ All four Google syncs use one refresh token stored for user `default` in `google
 | Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `second-brain://protocol/goal-amendment`) |
 | Idea Parking Lot protocol (capture, gardening, map, import, retrieval) | `docs/idea-parking-lot-protocol.md` (also served as MCP resource `second-brain://protocol/idea-parking-lot`) |
 | Idea embedding sweeper | `src/ideas/` (Node monolith) |
+| MCP call-log and auth-row retention | `src/mcp/retention.ts` (Node monolith; `MCP_CALL_LOG_RETENTION_DAYS`) |
 | DB schema source of truth | `migrations/` |
 | Phase build specs | `docs/phase-*-build-spec.md` |
 | Cross-session conventions | `docs/*.md` (this file is one) |

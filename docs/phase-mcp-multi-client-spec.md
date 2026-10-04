@@ -34,9 +34,9 @@ Decisions (2026-10-04):
 | `mcp_credential` | One per connected agent: `label` (unique among live credentials, case-insensitive), `kind` `pat`/`oauth`, `scope`, `last_used_at`, `last_client_info` (from `initialize`), `revoked_at` + `revoked_reason` (`owner`, `replaced`, `client`, `code_reuse`). The labels `master` and `unknown` are reserved. |
 | `mcp_token` | SHA-256 hex hashes of opaque tokens: `access` (1 h); `refresh` (90-day idle expiry, rotated, with `reuse_count` bounding grace-window reuse); `pat` (no expiry, one per credential). |
 | `mcp_auth_code` | Single-use codes (hashed, 5 min). Each is bound to the client, redirect URI, PKCE challenge, resource, label and the owner's "replace" choice, and records the credential it minted. |
-| `mcp_call_log` | One row per tool call: credential, label, tool, write flag, ok, error code, duration, result ids. **Never arguments.** |
+| `mcp_call_log` | One row per tool call: credential, label, tool, write flag, ok, error code, duration, result ids. **Never arguments.** Kept `MCP_CALL_LOG_RETENTION_DAYS` days (default 90, minimum 7), pruned daily by the Node monolith (`src/mcp/retention.ts`). |
 
-Revoking a credential leaves its token rows in place; every lookup joins on `revoked_at IS NULL`. Tokens are prefixed `brain_at_`, `brain_rt_` and `brain_pat_`, so a leaked token is easy to recognise and grep for.
+Revoking a credential leaves its token rows in place; every lookup joins on `revoked_at IS NULL`. The monolith's daily retention job (`src/mcp/retention.ts`) deletes tokens of credentials revoked more than a day ago, tokens expired or rotated more than a day ago, expired codes, and registrations never approved within 7 days; credential rows are kept for the console's "Recently revoked" list. The Worker's own sweeps after successful OAuth requests stay as a second line. Tokens are prefixed `brain_at_`, `brain_rt_` and `brain_pat_`, so a leaked token is easy to recognise and grep for.
 
 ## 3. `/mcp` authentication
 
@@ -119,7 +119,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 - **Agents list:** label, kind (PAT hint / OAuth family), last used, calls in the last 7 days, last `clientInfo`, connection date, activity link, Revoke.
 - **Master-token banner:** shown while the master token is still being used.
 - **New PAT:** the token is shown **once**, with snippets for Meta Muse, Claude Code, Cursor and Gemini CLI, plus the smoke command.
-- **Activity:** the latest 200 calls, either across all agents or for one of them.
+- **Activity:** the latest 200 calls, either across all agents or for one of them, within the call-log retention window.
 
 ## 6. Client compatibility
 
@@ -155,7 +155,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 ## 8. Rollout
 
 0. Set the `OWNER_SECRET` Worker secret (`openssl rand -hex 32`).
-1. Merge. The Node monolith applies migration 020 on its next boot.
+1. Merge. The Node monolith applies migration 020 on its next boot. Optionally set `MCP_CALL_LOG_RETENTION_DAYS` on the Railway service (default 90).
    - Until that happens, the master token still works, but OAuth and the console return errors.
 2. Run `npm run smoke` with the master token. Then create a PAT and run `--write`, and after revoking it run `--expect-401`.
 3. Reconnect each client following the setup guide, so that each one gets its own label.
@@ -168,7 +168,6 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 
 ## 9. Follow-ups (not in this phase)
 
-- Prune `mcp_call_log` on a retention schedule, from the monolith scheduler.
 - Per-tool scopes, such as read-only credentials for experimental agents.
 - Rate-limit wrong owner-secret attempts. The secret is 256-bit random, so brute force is not practical today.
 - Spark callbacks are per user and per connector (`/r/user_bound_custom-mcp-<id>-<host>`), so the built-in rule pins that prefix rather than one exact URI. An owner-specific exact pin would belong in a private setting, never in the public repo.

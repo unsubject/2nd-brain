@@ -1,7 +1,7 @@
 name: CI
 
 # Pull-request and main-branch checks for both packages. The DB-backed
-# suites (mcp-worker/test/db, root test/ideas-sweeper) run against a
+# suites (mcp-worker/test/db, root test/*.test.ts: idea sweeper, MCP retention) run against a
 # throwaway Postgres + pgvector service; the mcp-worker test setup resets
 # and migrates it, then the root tests reuse the migrated database.
 
