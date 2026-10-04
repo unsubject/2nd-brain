@@ -21,12 +21,16 @@ CREATE TABLE IF NOT EXISTS mcp_client (
   client_family TEXT,
   token_endpoint_auth_method TEXT NOT NULL DEFAULT 'none',
   registration JSONB,
+  -- Hash of the registering IP, for the per-source registration cap.
+  registered_from TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_authorized_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_mcp_client_unused
   ON mcp_client (created_at) WHERE last_authorized_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mcp_client_unused_source
+  ON mcp_client (registered_from, created_at) WHERE last_authorized_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS mcp_credential (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -43,7 +47,10 @@ CREATE TABLE IF NOT EXISTS mcp_credential (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_used_at TIMESTAMPTZ,
   revoked_at TIMESTAMPTZ,
-  revoked_reason TEXT CHECK (revoked_reason IN ('owner', 'client', 'refresh_reuse', 'code_reuse')),
+  -- owner: revoked in /tokens; replaced: superseded by a reconnect with the
+  -- same label; client: via /revoke; code_reuse: an authorization code was
+  -- redeemed twice.
+  revoked_reason TEXT CHECK (revoked_reason IN ('owner', 'replaced', 'client', 'code_reuse')),
   CONSTRAINT mcp_credential_revoked_consistent CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
 );
 
@@ -58,19 +65,20 @@ CREATE TABLE IF NOT EXISTS mcp_token (
   kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh', 'pat')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ,
-  -- Refresh tokens only: set when exchanged for a new pair.
+  -- Refresh tokens only: set when first exchanged for a new pair. Within a
+  -- short grace window the same token may be redeemed again (parallel
+  -- requests, processes sharing one token store); reuse_count bounds that.
   rotated_at TIMESTAMPTZ,
+  reuse_count INT NOT NULL DEFAULT 0,
   CONSTRAINT mcp_token_expiry CHECK (kind = 'pat' OR expires_at IS NOT NULL),
-  CONSTRAINT mcp_token_rotation CHECK (kind = 'refresh' OR rotated_at IS NULL)
+  CONSTRAINT mcp_token_rotation CHECK (kind = 'refresh' OR (rotated_at IS NULL AND reuse_count = 0))
 );
 
 CREATE INDEX IF NOT EXISTS idx_mcp_token_credential ON mcp_token (credential_id, kind);
--- At most one live refresh token per credential (one token family).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_token_live_refresh
-  ON mcp_token (credential_id) WHERE kind = 'refresh' AND rotated_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_token_one_pat
   ON mcp_token (credential_id) WHERE kind = 'pat';
 CREATE INDEX IF NOT EXISTS idx_mcp_token_expires ON mcp_token (expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mcp_token_rotated ON mcp_token (rotated_at) WHERE rotated_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS mcp_auth_code (
   code_hash TEXT PRIMARY KEY CHECK (code_hash ~ '^[0-9a-f]{64}$'),
@@ -80,6 +88,8 @@ CREATE TABLE IF NOT EXISTS mcp_auth_code (
   resource TEXT,
   scope TEXT NOT NULL,
   label TEXT NOT NULL CHECK (length(btrim(label)) BETWEEN 1 AND 80),
+  -- Owner chose "replace the existing connection with this name".
+  replace_label BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL,
   used_at TIMESTAMPTZ,

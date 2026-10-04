@@ -45,31 +45,38 @@ export async function recordActivity(
   entries: CallEntry[],
   clientInfo: Record<string, unknown> | null,
 ): Promise<void> {
+  // Each step on its own: one failure must not drop the rest.
+  const step = async (what: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (err) {
+      console.error(`[calllog] ${what} failed:`, err instanceof Error ? err.message : err);
+    }
+  };
   try {
-    if (principal.credentialId) {
-      await db`
+    const id = principal.credentialId;
+    if (id) {
+      await step('last_used_at', () => db`
         UPDATE mcp_credential SET last_used_at = now()
-         WHERE id = ${principal.credentialId}
+         WHERE id = ${id}
            AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
-      `;
+      `);
       if (clientInfo) {
-        await db`
+        await step('last_client_info', () => db`
           UPDATE mcp_credential SET last_client_info = ${db.json(clientInfo as never)}
-           WHERE id = ${principal.credentialId}
-        `;
+           WHERE id = ${id}
+        `);
       }
     }
     for (const e of entries) {
-      await db`
+      await step('insert', () => db`
         INSERT INTO mcp_call_log (credential_id, label, method, tool, is_write, ok, error_code, duration_ms, result_ids)
         VALUES (
-          ${principal.credentialId}, ${principal.label}, ${e.method}, ${e.tool}, ${e.isWrite},
+          ${id}, ${principal.label}, ${e.method}, ${e.tool}, ${e.isWrite},
           ${e.ok}, ${e.errorCode}, ${e.durationMs}, ${db.json(e.resultIds)}
         )
-      `;
+      `);
     }
-  } catch (err) {
-    console.error('[calllog] write failed:', err instanceof Error ? err.message : err);
   } finally {
     await db.end({ timeout: 5 }).catch(() => {});
   }

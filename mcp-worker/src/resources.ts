@@ -24,7 +24,7 @@ export type McpResource = {
 
 export const resources: McpResource[] = [
   {
-    uri: '2nd-brain://protocol/goal-amendment',
+    uri: 'second-brain://protocol/goal-amendment',
     name: 'Goal & Constitution Amendment Interview',
     description:
       'Executable protocol for constitution-domain amendments (Section 1A) and SMART-goal amendments (Section 1B), plus rationale and a cheat sheet. Read at the start of any session that touches list_constitution_domains, list_goals, or any propose/commit_*_amendment tool. Source of truth: docs/goal-amendment-interview.md in the repo.',
@@ -32,7 +32,7 @@ export const resources: McpResource[] = [
     text: goalAmendmentInterview,
   },
   {
-    uri: '2nd-brain://protocol/idea-parking-lot',
+    uri: 'second-brain://protocol/idea-parking-lot',
     name: 'Idea Parking Lot Protocol',
     description:
       'Executable protocol for the Idea Parking Lot: Librarian capture (§1), gardening / creating associations (§2), the curiosity map (§3), the one-time Notion + Google Tasks import (§4), and pull-only retrieval (§5). Read before calling any idea tool (park_idea, garden_ideas, propose/decide_idea_links, create_synthesis, export_idea_map, import_ideas). Source of truth: docs/idea-parking-lot-protocol.md in the repo.',

@@ -1,8 +1,9 @@
 // Owner console (/tokens): login, CSRF, PAT lifecycle, activity.
 
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
-import { admin, BASE, callTool, form, resetAuthData, resetIdeaData, rpcRaw, TEST_DB, TOKEN, workerFetch } from './helpers';
+import { admin, BASE, callTool, env, form, resetAuthData, resetIdeaData, rpcRaw, TEST_DB, TOKEN, USER, workerFetch } from './helpers';
 import { createSession } from '../../src/auth/session';
+import { hashToken } from '../../src/auth/tokens';
 
 afterAll(() => admin.end({ timeout: 5 }));
 
@@ -74,7 +75,7 @@ describe.skipIf(!TEST_DB)('owner console', () => {
 
     const [cred] = await admin`SELECT id, label, kind, token_hint FROM mcp_credential`;
     expect(cred).toMatchObject({ label: 'Meta Muse', kind: 'pat', token_hint: token.slice(-4) });
-    expect(await admin`SELECT 1 FROM mcp_token WHERE token_hash = ${token}`).toHaveLength(0);
+    expect(await admin`SELECT kind FROM mcp_token WHERE token_hash = ${await hashToken(token)}`).toEqual([{ kind: 'pat' }]);
 
     expect((await callTool('list_ideas', {}, { token })).isError).toBe(false);
     const after = await getPage('/tokens', cookie);
@@ -108,6 +109,9 @@ describe.skipIf(!TEST_DB)('owner console', () => {
   it('warns while the master token is still in use', async () => {
     const cookie = await login();
     expect((await getPage('/tokens', cookie)).html).not.toContain('master token');
+    // Calls from deleted credentials (credential_id set NULL) are not master calls.
+    await admin`INSERT INTO mcp_call_log (credential_id, label, method, ok) VALUES (NULL, 'Gone', 'tools/call', true)`;
+    expect((await getPage('/tokens', cookie)).html).not.toContain('The master token');
     await callTool('list_ideas', {});
     const html = (await getPage('/tokens', cookie)).html;
     expect(html).toContain('The master token');
@@ -125,6 +129,32 @@ describe.skipIf(!TEST_DB)('owner console', () => {
     expect((await getPage('/tokens', `__Host-brain_console=${foreign}`)).html).toContain('Sign in');
     const res = await postAs(tampered, '/tokens/revoke', { id: '00000000-0000-4000-8000-000000000000', csrf: 'x' });
     expect(res.status).toBe(401);
+  });
+
+  it('uses OWNER_SECRET once set, and nags until it is', async () => {
+    const cookie = await login();
+    expect((await getPage('/tokens', cookie)).html).toContain('The owner secret is still');
+
+    const separate = { ...env, OWNER_SECRET: 'console-owner-secret' };
+    expect((await workerFetch('/tokens/login', form({ owner_secret: TOKEN }), { env: separate })).status).toBe(401);
+    // Sessions signed with the old secret are void.
+    expect((await (await workerFetch('/tokens', { headers: { Cookie: cookie } }, { env: separate })).text())).toContain('Sign in');
+    const res = await workerFetch('/tokens/login', form({ owner_secret: 'console-owner-secret' }), { env: separate });
+    expect(res.status).toBe(303);
+    const fresh = res.headers.get('Set-Cookie')!.split(';')[0];
+    const html = await (await workerFetch('/tokens', { headers: { Cookie: fresh } }, { env: separate })).text();
+    expect(html).toContain('connected agents');
+    expect(html).not.toContain('The owner secret is still');
+  });
+
+  it('labels OAuth grants by the redirect they were issued to', async () => {
+    await admin`INSERT INTO mcp_client (client_id, client_name, redirect_uris, client_family)
+                VALUES ('c1', 'Claude', '["https://claude.ai/api/mcp/auth_callback","http://127.0.0.1/cb"]'::jsonb, 'claude')`;
+    await admin`INSERT INTO mcp_credential (user_id, label, kind, client_id, redirect_uri)
+                VALUES (${USER}, 'Sneaky', 'oauth', 'c1', 'http://127.0.0.1/cb')`;
+    const html = (await getPage('/tokens', await login())).html;
+    expect(html).toContain('OAuth · Local app');
+    expect(html).not.toContain('OAuth · Claude');
   });
 
   it('signs out by clearing the cookie', async () => {

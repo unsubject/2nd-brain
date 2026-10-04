@@ -51,6 +51,42 @@ export function redirect(location: string, status = 302, extra: Record<string, s
   return new Response(null, { status, headers: { Location: location, ...NO_STORE, ...extra } });
 }
 
+// Read a request body without buffering more than `max` bytes (Workers
+// accept bodies far larger than anything we parse). null = too large.
+export async function readLimitedText(request: Request, max: number): Promise<string | null> {
+  const declared = Number(request.headers.get('Content-Length') ?? '');
+  if (Number.isFinite(declared) && declared > max) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(all);
+}
+
+// Owner-facing forms are plain urlencoded posts. null = unreadable or too large.
+export async function readForm(request: Request, max = 16 * 1024): Promise<URLSearchParams | null> {
+  const ct = (request.headers.get('Content-Type') ?? '').toLowerCase();
+  if (ct && !ct.includes('application/x-www-form-urlencoded')) return null;
+  const text = await readLimitedText(request, max);
+  return text === null ? null : new URLSearchParams(text);
+}
+
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -105,6 +141,7 @@ export const PAGE_STYLE = `
   table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
   form.inline { display: inline; }
+  label.check { font-weight: normal; display: flex; gap: 8px; align-items: baseline; }
   @media (prefers-color-scheme: dark) {
     body { background: #0d1117; color: #e6edf3; }
     p, li { color: #c9d1d9; }

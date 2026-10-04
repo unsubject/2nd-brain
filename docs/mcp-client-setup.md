@@ -9,15 +9,18 @@ How to connect each AI client Simon uses to the 2nd-brain MCP server, and how to
 | | |
 |---|---|
 | **Server URL** | `https://2nd-brain-mcp.simon-lee.workers.dev/mcp` |
-| **Owner console** | `https://2nd-brain-mcp.simon-lee.workers.dev/tokens` (sign in with `BRAIN_MCP_TOKEN`) |
+| **Owner console** | `https://2nd-brain-mcp.simon-lee.workers.dev/tokens` (sign in with the owner secret) |
 
-Every client gets **its own credential**. Each one has a name ("label") that appears in the console and is recorded on everything that client writes, and each one can be revoked on its own. Never give a vendor the master `BRAIN_MCP_TOKEN`. It is the owner password: you type it only on the 2nd-brain consent page and the console login, both served from the `workers.dev` address above.
+**Owner secret.** Set a Worker secret `OWNER_SECRET` (`openssl rand -hex 32`) before you connect anything. It approves connections, signs you in to `/tokens`, and nothing else ever sees it. Until it is set, the owner secret falls back to `BRAIN_MCP_TOKEN`, and the console shows a warning. That fallback is unsafe because OAuth clients connected before October 2026 received `BRAIN_MCP_TOKEN` itself as their access token.
+
+Every client gets **its own credential**. Each one has a name ("label") that appears in the console and on the call log, and each one can be revoked on its own. Captured ideas, imports, syntheses and link proposals also record the name. Never give a vendor `OWNER_SECRET` or `BRAIN_MCP_TOKEN`. Type the owner secret only on the 2nd-brain consent page and the console login, both served from the `workers.dev` address above.
 
 There are two ways a client gets a credential:
 
 - **OAuth.** The client opens a 2nd-brain consent page and you approve it there. Used by Claude, ChatGPT, Cursor, Gemini CLI, Claude Code and Gemini Spark.
   - The page tells you which client family is asking and where you will be sent back to.
   - You name the connection, type the owner secret, and press **Approve**.
+  - When reconnecting a client you already had, tick **Replace** (ticked by default for Claude, ChatGPT and Gemini Spark). The old connection with that exact name is revoked and the new one keeps the name. Otherwise it becomes e.g. `Claude (2)`.
   - The client then receives an access token that lasts 1 hour, plus a refresh token that rotates on every use.
 - **Personal access token (PAT).** You create it in `/tokens` → **New personal access token**. Used by Meta Muse, scripts, and clients set up from a config file.
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
@@ -65,7 +68,7 @@ Add this to `~/.cursor/mcp.json` (or to `.cursor/mcp.json` in a project):
 { "mcpServers": { "2nd-brain": { "url": "https://2nd-brain-mcp.simon-lee.workers.dev/mcp" } } }
 ```
 
-Cursor shows **Needs login**. Click it and approve (label `Cursor`). If OAuth fails, use the PAT snippet from `/tokens`, which adds a `headers` block.
+Cursor shows **Needs login**. Click it and approve (label `Cursor`). Cursor registers both its app callback and its Cloud Agents callback (`https://www.cursor.com/agents/mcp/oauth/callback`); both are allowed. If OAuth fails, use the PAT snippet from `/tokens`, which adds a `headers` block.
 
 Cursor allows only about 40 tools across all servers. 2nd-brain uses 38, so disable other servers' tools if you hit the limit.
 
@@ -139,18 +142,21 @@ Gardening leaves composted ideas out by default, so smoke ideas don't get in the
 
 | Symptom | Cause and fix |
 |---|---|
-| Consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Google, `http://localhost` / `127.0.0.1` / `[::1]`). Add its `https://` prefix to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
+| Registration fails with `invalid_redirect_uri`, or the consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Google, `http://localhost` / `127.0.0.1` / `[::1]`). Unknown URIs are dropped at registration, and registration fails only if none is allowed. Add the client's `https://` prefix, ending in `/`, to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
 | Consent page says **Unknown client** | The client's registration was swept: unapproved registrations are deleted after 7 days. Remove the connector and add it again. |
-| Client suddenly says it must re-authenticate | Its credential was revoked. Possible reasons: you revoked it, the client called `/revoke`, a refresh token was replayed more than 60 seconds after rotation (`refresh_reuse`), or an authorization code was replayed (`code_reuse`). Reconnect. `/tokens` → **Recently revoked** shows the reason. |
+| Client suddenly says it must re-authenticate | Either its credential was revoked, or it presented a refresh token that had already been used more than 5 minutes earlier. Credentials are revoked when you revoke or replace them in `/tokens`, when the client calls `/revoke`, or when an authorization code is redeemed twice (`code_reuse`). A stale refresh token is refused but revokes nothing; this happens with stale copies held by idle processes. Reconnect if it persists. `/tokens` → **Recently revoked** shows the reason. |
 | `401` with `error="invalid_token"` | The token is expired, revoked or unknown. OAuth clients refresh automatically. A PAT that fails was revoked. |
 | `503` from `/mcp` | The credential store (Postgres via Hyperdrive) is unreachable. Clients should retry, so don't revoke anything. |
 | Client lists no tools or rejects the schema | Run `npm run smoke` to confirm the server works, then check the client's tool limit (Cursor allows about 40). The schemas avoid type arrays and `$ref` on purpose (`test/schema-portability.test.ts`). |
 | Client ignores the protocol rules | It probably doesn't read MCP resources. Tell it to call `read_protocol` first. |
-| Too many registrations (`429`) | More than 50 registrations went unapproved in the last hour. Wait, or approve or clear the stuck ones. |
+| Too many registrations (`429`) | More than 10 registrations from one address, or 200 in total, went unapproved in the last hour. Wait an hour. |
 
 ## Retiring the master token
 
 1. Reconnect every client as above, and give every script a PAT.
 2. Wait until the console's master-token banner has been empty for a week.
 3. Commit `"ALLOW_MASTER_BEARER": "false"` in `mcp-worker/wrangler.jsonc` and deploy.
-4. Rotate `BRAIN_MCP_TOKEN`: `openssl rand -hex 32`, then set it as a Worker secret. It is now only the owner password. Rotating it also signs you out of the console. Existing OAuth and PAT credentials are not affected.
+4. Rotate `BRAIN_MCP_TOKEN` (`openssl rand -hex 32`, set as a Worker secret). With `ALLOW_MASTER_BEARER` off and `OWNER_SECRET` set, nothing uses it any more. Existing OAuth and PAT credentials are not affected.
+5. Review the agents list in `/tokens` and revoke anything you don't recognise.
+
+**One risk remains.** Someone could add their own Claude or ChatGPT connector pointing at this server and send you the consent link. The page would truthfully say "Claude". Approve only connections you started yourself, seconds earlier.

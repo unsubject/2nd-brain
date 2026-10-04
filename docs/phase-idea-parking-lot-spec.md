@@ -1,7 +1,7 @@
 # Phase: Idea Parking Lot — build spec
 
 Status: v1 implemented (migration `019_idea_parking_lot.sql`, 13 MCP tools, Node embedding sweeper, protocol resource).
-Agent-facing protocol: [`docs/idea-parking-lot-protocol.md`](idea-parking-lot-protocol.md) (served as `2nd-brain://protocol/idea-parking-lot`).
+Agent-facing protocol: [`docs/idea-parking-lot-protocol.md`](idea-parking-lot-protocol.md) (served as `second-brain://protocol/idea-parking-lot`).
 
 ## 1. Context and decisions
 

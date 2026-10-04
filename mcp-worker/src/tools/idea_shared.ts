@@ -57,8 +57,9 @@ export type NoteBy = 'simon' | 'agent' | 'import' | 'system';
 export type Note = { at: string; by: NoteBy; text: string };
 
 // Which credential (connected agent) made a write — stamped server-side.
-export function credentialLabel(principal: { label: string } | undefined): string {
-  return principal?.label ?? 'unknown';
+// The connection that made the call; set by the server, never by the client.
+export function credentialLabel(principal: { label: string }): string {
+  return principal.label;
 }
 
 export function ok(obj: unknown): ToolResult {

@@ -25,6 +25,8 @@ const RULES: Rule[] = [
   { family: 'chatgpt', exact: 'https://chatgpt.com/connector_platform_oauth_redirect' },
   { family: 'chatgpt', origin: 'https://chatgpt.com', pathPrefix: '/connector/oauth/' },
   { family: 'cursor', exact: 'cursor://anysphere.cursor-mcp/oauth/callback' },
+  // Cursor Cloud Agents; Cursor registers it alongside the cursor:// one.
+  { family: 'cursor', exact: 'https://www.cursor.com/agents/mcp/oauth/callback' },
   { family: 'google', origin: 'https://oauth-redirect.googleusercontent.com', pathPrefix: '/r/' },
 ];
 
@@ -43,6 +45,18 @@ function isLoopback(u: URL): boolean {
   return u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname);
 }
 
+// A path under a prefix rule: no dot segments and no encoded slashes,
+// backslashes or dots that a server might decode into a traversal.
+function safeSubPath(path: string): boolean {
+  return !/\/\.\.?(\/|$)/.test(path) && !/%(2f|5c|2e)/i.test(path);
+}
+
+// `prefix` matches the path itself or anything below it at a "/" boundary.
+function underPrefix(path: string, prefix: string): boolean {
+  if (path === prefix) return true;
+  return path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`);
+}
+
 // Returns the family a redirect URI belongs to, or null if it is not allowed.
 export function classifyRedirect(uri: string, extraPrefixes: readonly string[] = []): ClientFamily | null {
   const u = parse(uri);
@@ -56,8 +70,7 @@ export function classifyRedirect(uri: string, extraPrefixes: readonly string[] =
       u.origin === r.origin &&
       u.pathname.startsWith(r.pathPrefix) &&
       u.pathname.length > r.pathPrefix.length &&
-      !u.pathname.includes('/..') &&
-      !u.pathname.includes('/./')
+      safeSubPath(u.pathname)
     ) {
       return r.family;
     }
@@ -65,7 +78,7 @@ export function classifyRedirect(uri: string, extraPrefixes: readonly string[] =
   for (const prefix of extraPrefixes) {
     const p = parse(prefix);
     if (!p || p.protocol !== 'https:') continue;
-    if (u.origin === p.origin && u.pathname.startsWith(p.pathname) && !u.pathname.includes('/..')) {
+    if (u.origin === p.origin && underPrefix(u.pathname, p.pathname) && safeSubPath(u.pathname)) {
       return 'custom';
     }
   }

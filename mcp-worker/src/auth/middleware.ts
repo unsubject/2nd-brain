@@ -18,6 +18,15 @@ export function authDb(env: Env): AuthDb {
   return postgres(env.HYPERDRIVE.connectionString, { max: 1, fetch_types: false });
 }
 
+// The secret that approves OAuth connections and signs in to /tokens.
+export function ownerSecret(env: Env): string | null {
+  return env.OWNER_SECRET?.trim() || env.BRAIN_MCP_TOKEN || null;
+}
+
+export function ownerSecretIsSeparate(env: Env): boolean {
+  return !!env.OWNER_SECRET?.trim();
+}
+
 export function masterBearerAllowed(env: Env): boolean {
   return (env.ALLOW_MASTER_BEARER ?? 'true').trim().toLowerCase() !== 'false';
 }

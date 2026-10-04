@@ -27,6 +27,7 @@ export function consentPage(opts: {
   redirectHost: string;
   clientName: string | null;
   label: string;
+  replace: boolean;
   error?: string;
   status?: number;
 }): Response {
@@ -46,8 +47,10 @@ ${opts.error ? `<div class="error">${e(opts.error)}</div>` : ''}
   <input type="hidden" name="decision" value="approve">
   <label for="label">Name this connection</label>
   <input id="label" type="text" name="label" value="${e(label)}" maxlength="80" required>
-  <div class="muted">Shown in /tokens and recorded on everything this agent writes.</div>
-  <label for="owner_secret">Owner secret (BRAIN_MCP_TOKEN)</label>
+  <div class="muted">Shown in /tokens and recorded on everything this agent writes. If the name is already in use, a number is added.</div>
+  <label class="check"><input type="checkbox" name="replace" value="on"${opts.replace ? ' checked' : ''}>
+    Reconnecting? Replace (revoke) my existing OAuth connection with exactly this name.</label>
+  <label for="owner_secret">Owner secret</label>
   <input id="owner_secret" type="password" name="owner_secret" autofocus required autocomplete="off">
   <button type="submit">Approve</button>
 </form>

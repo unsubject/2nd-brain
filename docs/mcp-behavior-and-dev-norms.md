@@ -102,7 +102,7 @@ Follow-up after a `search_brain` hit looks promising and the user wants the full
 
 ### Personal goal system — when to use these tools
 
-The goal system is the user's **constitution** plus measurable commitments beneath it. The 4-layer hierarchy is described above. Treat amendments at every layer as deliberate, never autonomous — see `docs/goal-amendment-interview.md` for the full protocols (Section 1A for constitution, Section 1B for goals), which the amendment tools assume you are running. The MCP server also exposes the protocol doc as a resource at `2nd-brain://protocol/goal-amendment` — fetch it via `resources/read` if your client supports MCP resources.
+The goal system is the user's **constitution** plus measurable commitments beneath it. The 4-layer hierarchy is described above. Treat amendments at every layer as deliberate, never autonomous — see `docs/goal-amendment-interview.md` for the full protocols (Section 1A for constitution, Section 1B for goals), which the amendment tools assume you are running. The MCP server also exposes the protocol doc as a resource at `second-brain://protocol/goal-amendment` — fetch it via `resources/read` if your client supports MCP resources.
 
 #### Constitution layer (5 north-star domains)
 
@@ -120,7 +120,7 @@ The goal system is the user's **constitution** plus measurable commitments benea
 
 #### Idea Parking Lot — when to use these tools
 
-The executable protocol is `docs/idea-parking-lot-protocol.md`, also served as the MCP resource `2nd-brain://protocol/idea-parking-lot` — read it before capturing, gardening, mapping or importing. In short:
+The executable protocol is `docs/idea-parking-lot-protocol.md`, also served as the MCP resource `second-brain://protocol/idea-parking-lot` — read it before capturing, gardening, mapping or importing. In short:
 
 - **`park_idea`** — ONLY when the user explicitly asks to park/file an idea. Confirm the title; copy their own thoughts **verbatim**; reply with the receipt only. Capture is one-way: never suggest related ideas, links, tags or hubs at capture time. "Save this session" still means `save_session`; ask if unclear.
 - **`list_ideas` / `search_ideas` / `get_idea`** — pull-only: when the user asks about their ideas. Never surface parked ideas unprompted or in unrelated conversations.
@@ -190,14 +190,14 @@ Every client has **its own revocable credential**. The design is in [`phase-mcp-
   Revoking a credential therefore takes effect on the next call. Anything else returns 401 without a database round-trip.
 - **OAuth 2.1** lives in `src/oauth/*`:
   - Registrations are stored, and their redirect URIs must pass the allow-list in `src/auth/redirects.ts`.
-  - The owner approves each connection by typing `BRAIN_MCP_TOKEN` and naming it.
+  - The owner approves each connection by typing the owner secret (`OWNER_SECRET`, falling back to `BRAIN_MCP_TOKEN`) and naming it. An optional **Replace** revokes the existing OAuth connection with that name.
   - Codes are single-use, bound to the client, redirect and PKCE S256, and expire in 5 minutes.
   - Every redirect carries `state` and `iss`.
-  - Refresh tokens rotate. Replaying one more than 60 seconds after rotation revokes the credential.
+  - Refresh tokens rotate. Reuse within 5 minutes of a rotation is tolerated, up to 10 times (parallel or shared-store clients). Later reuse is refused, and nothing is revoked.
   - `/revoke` follows RFC 7009.
 - **Owner console** `/tokens` (`src/console.ts`): sign in with the owner secret to see agents and activity, mint PATs, and revoke anything.
 - **Attribution.** The tool handlers receive the caller's `Principal` as a fourth argument.
-  - Idea writes stamp `credential: <label>` into `captured_via` or `proposed_via`. Clients can't set it themselves: the schemas are strict.
+  - `park_idea`, `import_ideas`, `create_synthesis` and `propose_idea_links` stamp `credential: <label>` into `captured_via` or `proposed_via`. Clients can't set it themselves: the schemas are strict, and `master` and `unknown` are reserved labels.
   - `src/calllog.ts` logs every tool call per credential: the tool, whether it was a write, whether it succeeded, its duration, and the result ids. It never logs arguments. This runs in `ctx.waitUntil`, and any failure in it is swallowed.
 
 Every 401 carries `WWW-Authenticate: Bearer realm="2nd-brain", resource_metadata="<server>/.well-known/oauth-protected-resource/mcp"`, plus `error="invalid_token"` when a token was presented. The response is the same whatever was wrong with the token. A database outage returns 503, never 401, so clients don't throw away good tokens.
@@ -226,7 +226,7 @@ Docs bundled into the Worker via `src/resources.ts` are an additional deploy tri
 
 Worker secrets and the Hyperdrive config are managed outside this repo:
 
-- **Worker secrets** (`BRAIN_MCP_TOKEN`, `OPENAI_API_KEY`, `BRAIN_USER_ID`): set via CF dashboard or the CF API (`PUT /accounts/{id}/workers/scripts/2nd-brain-mcp/secrets`).
+- **Worker secrets** (`OWNER_SECRET`, `BRAIN_MCP_TOKEN`, `OPENAI_API_KEY`, `BRAIN_USER_ID`): set via CF dashboard or the CF API (`PUT /accounts/{id}/workers/scripts/2nd-brain-mcp/secrets`).
 - **Hyperdrive config**: created once via `POST /accounts/{id}/hyperdrive/configs`; its ID is baked into `wrangler.jsonc`. The Railway PG connection string lives **only** inside Hyperdrive — never as a Worker secret.
 - **GitHub repo secrets** (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`): set via `gh secret set`.
 
@@ -256,8 +256,8 @@ Observability stays on (`observability.enabled: true`). Workers logs are how we 
 | AI-tool MCP surface | `mcp-worker/` (CF Worker) |
 | Per-client credentials, OAuth, owner console | `mcp-worker/src/auth/`, `src/oauth/`, `src/console.ts`; tables in migration 020 |
 | MCP resources (protocol docs) | `mcp-worker/src/resources.ts` + bundled `docs/*.md` via wrangler Text rule |
-| Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `2nd-brain://protocol/goal-amendment`) |
-| Idea Parking Lot protocol (capture, gardening, map, import, retrieval) | `docs/idea-parking-lot-protocol.md` (also served as MCP resource `2nd-brain://protocol/idea-parking-lot`) |
+| Constitution + goal amendment protocol (executable script + rationale) | `docs/goal-amendment-interview.md` (also served as MCP resource `second-brain://protocol/goal-amendment`) |
+| Idea Parking Lot protocol (capture, gardening, map, import, retrieval) | `docs/idea-parking-lot-protocol.md` (also served as MCP resource `second-brain://protocol/idea-parking-lot`) |
 | Idea embedding sweeper | `src/ideas/` (Node monolith) |
 | DB schema source of truth | `migrations/` |
 | Phase build specs | `docs/phase-*-build-spec.md` |

@@ -45,7 +45,7 @@ Existing src/worker.ts polling loop processes the row
 
 The Node monolith needs **zero changes** — the worker already polls `processing_status='pending'` without filtering by channel.
 
-The Worker also exposes the OAuth endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/register`, `/authorize`, `/token`) needed by claude.ai's custom-connector flow. State is stateless: authorization codes are HMAC-signed with `BRAIN_MCP_TOKEN`, so no KV / DO is required.
+The Worker also exposes the OAuth endpoints (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/register`, `/authorize`, `/token`, `/revoke`) and the owner console (`/tokens`). Since migration 020, registrations, codes and tokens live in Postgres (see [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md)).
 
 ## Tool catalogue
 
@@ -159,7 +159,7 @@ effect:
 
 ## Auth
 
-> **Superseded (2026-10).** Since migration 020, every client gets its own revocable credential: an OAuth grant or a personal access token. `BRAIN_MCP_TOKEN` is now the owner password. It stays accepted as an `/mcp` bearer only while `ALLOW_MASTER_BEARER` is `"true"`. For the design, see [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md); for per-client setup, see [`mcp-client-setup.md`](mcp-client-setup.md). The original v1 design is kept below as history.
+> **Superseded (2026-10).** Since migration 020, every client gets its own revocable credential: an OAuth grant or a personal access token. Connections are approved with a separate `OWNER_SECRET`. `BRAIN_MCP_TOKEN` stays accepted as an `/mcp` bearer only while `ALLOW_MASTER_BEARER` is `"true"`. For the design, see [`phase-mcp-multi-client-spec.md`](phase-mcp-multi-client-spec.md); for per-client setup, see [`mcp-client-setup.md`](mcp-client-setup.md). The original v1 design is kept below as history.
 
 <details><summary>v1 auth (historical)</summary>
 

@@ -112,8 +112,22 @@ describe.skipIf(!TEST_DB)('OAuth: registration', () => {
     expect(row).toEqual({ client_family: 'claude', client_name: 'claudeai' });
   });
 
-  it('refuses redirect URIs outside the allow-list', async () => {
-    for (const uris of [['https://evil.example/cb'], [], [REDIRECT, 'https://evil.example/cb']]) {
+  it('keeps only the allowed redirect URIs of a multi-callback registration', async () => {
+    const cursor = ['cursor://anysphere.cursor-mcp/oauth/callback', 'https://www.cursor.com/agents/mcp/oauth/callback'];
+    const a = await register(cursor, 'Cursor');
+    expect(a.status).toBe(201);
+    expect(((await a.json()) as { redirect_uris: string[] }).redirect_uris).toEqual(cursor);
+    const b = await register([REDIRECT, 'https://evil.example/cb']);
+    expect(b.status).toBe(201);
+    const body = (await b.json()) as { client_id: string; redirect_uris: string[] };
+    expect(body.redirect_uris).toEqual([REDIRECT]);
+    // The dropped one is refused at /authorize.
+    const q = new URLSearchParams(await authParams({ clientId: body.client_id, redirectUri: 'https://evil.example/cb' }));
+    expect((await workerFetch(`/authorize?${q}`)).status).toBe(400);
+  });
+
+  it('refuses registrations with no allowed redirect URI', async () => {
+    for (const uris of [['https://evil.example/cb'], [], ['https://evil.example/a', 'https://evil.example/b']]) {
       const res = await register(uris);
       expect(res.status).toBe(400);
       expect(((await res.json()) as { error: string }).error).toBe('invalid_redirect_uri');
@@ -123,15 +137,42 @@ describe.skipIf(!TEST_DB)('OAuth: registration', () => {
     expect(await admin`SELECT 1 FROM mcp_client`).toHaveLength(0);
   });
 
-  it('caps unauthorized registrations per hour', async () => {
-    await admin`
-      INSERT INTO mcp_client (client_id, redirect_uris)
-      SELECT 'spam-' || g, '[]'::jsonb FROM generate_series(1, 50) g
-    `;
-    const res = await register();
-    expect(res.status).toBe(429);
+  const registerFrom = (ip: string) =>
+    workerFetch('/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+      body: JSON.stringify({ redirect_uris: [REDIRECT] }),
+    });
+
+  it('caps unapproved registrations per source, atomically', async () => {
+    const burst = await Promise.all(Array.from({ length: 15 }, () => registerFrom('203.0.113.5')));
+    expect(burst.filter((r) => r.status === 201)).toHaveLength(10);
+    expect(burst.filter((r) => r.status === 429)).toHaveLength(5);
+    // Another caller is not locked out by the noisy one.
+    expect((await registerFrom('198.51.100.7')).status).toBe(201);
+    // Approved registrations stop counting.
     await admin`UPDATE mcp_client SET last_authorized_at = now()`;
-    expect((await register()).status).toBe(201);
+    expect((await registerFrom('203.0.113.5')).status).toBe(201);
+  });
+
+  it('caps unapproved registrations globally', async () => {
+    await admin`
+      INSERT INTO mcp_client (client_id, redirect_uris, registered_from)
+      SELECT 'spam-' || g, '[]'::jsonb, 'source-' || (g % 40) FROM generate_series(1, 200) g
+    `;
+    expect((await registerFrom('192.0.2.1')).status).toBe(429);
+  });
+
+  it('refuses oversized bodies without buffering them', async () => {
+    const big = JSON.stringify({ redirect_uris: [REDIRECT], client_name: 'x'.repeat(20000) });
+    const res = await workerFetch('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: big });
+    expect(res.status).toBe(400);
+    const tok = await workerFetch('/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=refresh_token&refresh_token=${'a'.repeat(20000)}`,
+    });
+    expect(((await tok.json()) as { error: string }).error).toBe('invalid_request');
   });
 
   it('sweeps registrations never authorized within a week', async () => {
@@ -159,6 +200,18 @@ describe.skipIf(!TEST_DB)('OAuth: consent', () => {
     expect(html).toContain('127.0.0.1:50000');
     expect(html).toContain('value="Test CLI"');
     expect(html).toContain('(unverified)');
+  });
+
+  it('does not reveal existing labels before approval', async () => {
+    await admin`INSERT INTO mcp_credential (user_id, label, kind) VALUES (${env.BRAIN_USER_ID}, 'Test CLI', 'pat')`;
+    const clientId = await registeredClient();
+    const q = new URLSearchParams(await authParams({ clientId }));
+    const html = await (await workerFetch(`/authorize?${q}`)).text();
+    expect(html).toContain('value="Test CLI"');
+    expect(html).not.toContain('Test CLI (2)');
+    // The duplicate is resolved when the grant is minted.
+    const t = (await exchange(clientId, await getCode({ clientId, label: 'Test CLI' }))).body;
+    expect((await credentialOf(t.access_token)).label).toBe('Test CLI (2)');
   });
 
   it('never redirects for an unknown client or unregistered redirect', async () => {
@@ -233,6 +286,18 @@ describe.skipIf(!TEST_DB)('OAuth: consent', () => {
     );
     expect((await workerFetch(`/authorize?${evil}`)).status).toBe(400);
   });
+
+  it('never redirects errors or denials for a legacy id that is not yet adopted', async () => {
+    const legacy = 'mcp-client-0b5c9a3e-1111-4222-8333-944445555668';
+    const target = 'http://localhost:6379/anything';
+    const q = new URLSearchParams({ ...(await authParams({ clientId: legacy, redirectUri: target })), response_type: 'token' });
+    const err = await workerFetch(`/authorize?${q}`);
+    expect(err.status).toBe(400);
+    expect(err.headers.get('Location')).toBeNull();
+    const deny = await workerFetch('/authorize', form({ ...(await authParams({ clientId: legacy, redirectUri: target })), decision: 'deny' }));
+    expect(deny.status).toBe(400);
+    expect(deny.headers.get('Location')).toBeNull();
+  });
 });
 
 describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
@@ -250,22 +315,22 @@ describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
     expect(await mcpStatus(t.body.access_token)).toBe(200);
     const cred = await credentialOf(t.body.access_token);
     expect(cred).toMatchObject({ label: 'Gemini CLI', kind: 'oauth', revoked_reason: null, client_id: clientId });
-    // Only hashes are stored.
-    const raw = await admin`SELECT 1 FROM mcp_token WHERE token_hash = ${t.body.access_token}`;
-    expect(raw).toHaveLength(0);
+    // Stored as its SHA-256 hash.
+    const stored = await admin`SELECT kind FROM mcp_token WHERE token_hash = ${await hashToken(t.body.access_token)}`;
+    expect(stored).toEqual([{ kind: 'access' }]);
   });
 
-  it('burns a code on PKCE failure and binds it to the client', async () => {
+  it('binds codes to client, redirect and verifier without letting a code holder burn them', async () => {
     const clientId = await registeredClient();
     const other = await registeredClient();
     const code = await getCode({ clientId });
     expect((await exchange(clientId, code, 'w'.repeat(50))).body.error).toBe('invalid_grant');
-    expect((await exchange(clientId, code)).body.error).toBe('invalid_grant');
-    const code2 = await getCode({ clientId });
-    expect((await exchange(other, code2)).body.error).toBe('invalid_grant');
-    const code3 = await getCode({ clientId });
-    expect((await exchange(clientId, code3, VERIFIER, 'http://127.0.0.1:43210/elsewhere')).body.error).toBe('invalid_grant');
+    expect((await exchange(clientId, code, 'short')).body.error).toBe('invalid_grant');
+    expect((await exchange(other, code)).body.error).toBe('invalid_grant');
+    expect((await exchange(clientId, code, VERIFIER, 'http://127.0.0.1:43210/elsewhere')).body.error).toBe('invalid_grant');
     expect(await admin`SELECT 1 FROM mcp_credential`).toHaveLength(0);
+    // The rightful client can still redeem it.
+    expect((await exchange(clientId, code)).status).toBe(200);
   });
 
   it('rejects expired codes', async () => {
@@ -275,38 +340,86 @@ describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
     expect((await exchange(clientId, code)).body.error).toBe('invalid_grant');
   });
 
-  it('revokes the credential when a used code is replayed', async () => {
+  it('revokes the credential when a used code is replayed by its client', async () => {
     const clientId = await registeredClient();
     const code = await getCode({ clientId });
     const t = await exchange(clientId, code);
     expect(t.status).toBe(200);
+    // Someone who only saw the code can't trigger the revocation.
+    expect((await exchange(clientId, code, 'x'.repeat(50))).body.error).toBe('invalid_grant');
+    expect((await credentialOf(t.body.access_token)).revoked_reason).toBeNull();
     const replay = await exchange(clientId, code);
     expect(replay.body.error).toBe('invalid_grant');
     expect((await credentialOf(t.body.access_token)).revoked_reason).toBe('code_reuse');
     expect(await mcpStatus(t.body.access_token)).toBe(401);
   });
 
-  it('rotates refresh tokens and treats late reuse as theft', async () => {
+  it('rotates refresh tokens, tolerating parallel and shared-store reuse', async () => {
     const clientId = await registeredClient();
     const first = (await exchange(clientId, await getCode({ clientId }))).body;
-    const second = await token({ grant_type: 'refresh_token', refresh_token: first.refresh_token, client_id: clientId });
-    expect(second.status).toBe(200);
-    expect(second.body.refresh_token).not.toBe(first.refresh_token);
-    expect(await mcpStatus(second.body.access_token)).toBe(200);
+    const refreshWith = (rt: string) => token({ grant_type: 'refresh_token', refresh_token: rt, client_id: clientId });
 
-    // A retry race within the grace window: rejected, nothing revoked.
-    const race = await token({ grant_type: 'refresh_token', refresh_token: first.refresh_token, client_id: clientId });
-    expect(race.body.error).toBe('invalid_grant');
-    expect(await mcpStatus(second.body.access_token)).toBe(200);
+    // Three parallel refreshes with one token (SDK clients do this): all succeed.
+    const parallel = await Promise.all([1, 2, 3].map(() => refreshWith(first.refresh_token)));
+    expect(parallel.map((r) => r.status)).toEqual([200, 200, 200]);
+    const pairs = parallel.map((r) => r.body);
+    expect(new Set(pairs.map((p) => p.refresh_token)).size).toBe(3);
+    for (const p of pairs) expect(await mcpStatus(p.access_token)).toBe(200);
 
-    // Later reuse of a rotated token revokes the whole credential.
-    await admin`UPDATE mcp_token SET rotated_at = now() - interval '5 minutes' WHERE token_hash = ${await hashToken(first.refresh_token)}`;
-    const theft = await token({ grant_type: 'refresh_token', refresh_token: first.refresh_token, client_id: clientId });
-    expect(theft.body.error).toBe('invalid_grant');
-    expect((await credentialOf(second.body.access_token)).revoked_reason).toBe('refresh_reuse');
-    expect(await mcpStatus(second.body.access_token)).toBe(401);
-    const after = await token({ grant_type: 'refresh_token', refresh_token: second.body.refresh_token });
-    expect(after.body.error).toBe('invalid_grant');
+    // Every sibling refresh token keeps working on its own.
+    for (const p of pairs) expect((await refreshWith(p.refresh_token)).status).toBe(200);
+
+    // Reuse is bounded within the window…
+    const hash = await hashToken(first.refresh_token);
+    await admin`UPDATE mcp_token SET reuse_count = 10 WHERE token_hash = ${hash}`;
+    expect((await refreshWith(first.refresh_token)).body.error).toBe('invalid_grant');
+    // …and refused after it, without revoking anything (a stale copy in an
+    // idle process must not log out the live ones).
+    await admin`UPDATE mcp_token SET reuse_count = 0, rotated_at = now() - interval '6 minutes' WHERE token_hash = ${hash}`;
+    expect((await refreshWith(first.refresh_token)).body.error).toBe('invalid_grant');
+    expect((await credentialOf(pairs[0].access_token)).revoked_reason).toBeNull();
+    expect(await mcpStatus(pairs[0].access_token)).toBe(200);
+  });
+
+  it('keeps a reconnect under its name when the owner chooses replace', async () => {
+    const clientId = await registeredClient(['https://claude.ai/api/mcp/auth_callback']);
+    const claude = 'https://claude.ai/api/mcp/auth_callback';
+    // Default on for server-side vendors, off for local apps.
+    const page = await workerFetch(`/authorize?${new URLSearchParams(await authParams({ clientId, redirectUri: claude }))}`);
+    expect(await page.text()).toMatch(/name="replace" value="on" checked/);
+    const loop = await registeredClient();
+    const loopPage = await workerFetch(`/authorize?${new URLSearchParams(await authParams({ clientId: loop }))}`);
+    expect(await loopPage.text()).not.toMatch(/name="replace" value="on" checked/);
+
+    await admin`INSERT INTO mcp_credential (user_id, label, kind) VALUES (${env.BRAIN_USER_ID}, 'Claude PAT', 'pat')`;
+    const approveAs = async (replace: boolean) => {
+      const fields: Record<string, string> = {
+        ...(await authParams({ clientId, redirectUri: claude })),
+        decision: 'approve',
+        label: 'Claude',
+        owner_secret: TOKEN,
+      };
+      if (replace) fields.replace = 'on';
+      const res = await workerFetch('/authorize', form(fields));
+      return new URL(res.headers.get('Location')!).searchParams.get('code')!;
+    };
+    const a = (await exchange(clientId, await approveAs(true), VERIFIER, claude)).body;
+    const b = (await exchange(clientId, await approveAs(true), VERIFIER, claude)).body;
+    expect((await credentialOf(b.access_token)).label).toBe('Claude');
+    expect((await credentialOf(a.access_token)).revoked_reason).toBe('replaced');
+    expect(await mcpStatus(a.access_token)).toBe(401);
+    const c = (await exchange(clientId, await approveAs(false), VERIFIER, claude)).body;
+    expect((await credentialOf(c.access_token)).label).toBe('Claude (2)');
+    // PATs are never replaced by an OAuth reconnect.
+    const [pat] = await admin`SELECT revoked_at FROM mcp_credential WHERE label = 'Claude PAT'`;
+    expect(pat.revoked_at).toBeNull();
+  });
+
+  it('refuses reserved labels', async () => {
+    const clientId = await registeredClient();
+    const res = await approve({ clientId, label: 'Master' });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('reserved');
   });
 
   it('checks the client on refresh and rejects expired refresh tokens', async () => {
@@ -329,12 +442,21 @@ describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
     expect(res.headers.get('WWW-Authenticate')).toContain('error="invalid_token"');
   });
 
-  it('gives each grant a unique label', async () => {
+  it('gives each grant a unique label, folding case as Postgres does', async () => {
     const clientId = await registeredClient();
     const a = (await exchange(clientId, await getCode({ clientId, label: 'Twin' }))).body;
     const b = (await exchange(clientId, await getCode({ clientId, label: 'twin' }))).body;
     expect((await credentialOf(a.access_token)).label).toBe('Twin');
     expect((await credentialOf(b.access_token)).label).toBe('twin (2)');
+    // JS and Postgres lower() disagree on final sigma; the index decides.
+    const c = await exchange(clientId, await getCode({ clientId, label: 'ΟΔΟΣ' }));
+    const d = await exchange(clientId, await getCode({ clientId, label: 'ΟΔΟΣ' }));
+    expect(c.status).toBe(200);
+    expect(d.status).toBe(200);
+    expect((await credentialOf(d.body.access_token)).label).toBe('ΟΔΟΣ (2)');
+    const e = await exchange(clientId, await getCode({ clientId, label: 'i' }));
+    const f = await exchange(clientId, await getCode({ clientId, label: 'İ' }));
+    expect([e.status, f.status]).toEqual([200, 200]);
   });
 
   it('answers grant and request errors per RFC 6749', async () => {
@@ -382,6 +504,20 @@ describe.skipIf(!TEST_DB)('OAuth: revocation', () => {
 
 describe.skipIf(!TEST_DB)('OAuth: environment switches', () => {
   beforeEach(resetAuthData);
+
+  it('approves with OWNER_SECRET, not the legacy bearer, once it is set', async () => {
+    const separate = { ...env, OWNER_SECRET: 'a-separate-owner-secret' };
+    const clientId = await registeredClient();
+    const params = await authParams({ clientId });
+    const legacy = await workerFetch('/authorize', form({ ...params, decision: 'approve', label: 'X', owner_secret: TOKEN }), { env: separate });
+    expect(legacy.status).toBe(401);
+    const owner = await workerFetch(
+      '/authorize',
+      form({ ...params, decision: 'approve', label: 'X', owner_secret: 'a-separate-owner-secret' }),
+      { env: separate },
+    );
+    expect(owner.status).toBe(302);
+  });
 
   it('accepts extra redirect prefixes from OAUTH_EXTRA_REDIRECT_PREFIXES', async () => {
     const custom = { ...env, OAUTH_EXTRA_REDIRECT_PREFIXES: 'https://agent.example/oauth/' };

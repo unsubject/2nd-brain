@@ -62,7 +62,9 @@ export default {
     if (path === '/revoke') return revokeEndpoint(request, env, ctx);
     if (path === '/tokens' || path.startsWith('/tokens/')) return handleConsole(request, env, ctx);
 
-    if (path === '/mcp' || path === '/mcp/') {
+    // Exactly /mcp: the protected-resource metadata names that URL, and
+    // clients such as Gemini CLI require the configured URL to match it.
+    if (path === '/mcp') {
       return handleMcpRequest(request, env, ctx);
     }
 

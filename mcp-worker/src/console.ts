@@ -2,12 +2,12 @@
 // called, what it did; mint personal access tokens (PATs) for clients
 // that take a static bearer (Meta Muse, scripts); revoke anything.
 //
-// Login is the owner secret (BRAIN_MCP_TOKEN) → a signed, HttpOnly,
+// Login is the owner secret (OWNER_SECRET, else BRAIN_MCP_TOKEN) → a signed, HttpOnly,
 // SameSite=Strict __Host- cookie (30 min). Every POST also needs a
 // same-origin Origin/Sec-Fetch-Site and, once logged in, a CSRF token.
 
 import type { Env } from './env';
-import { authDb, type AuthDb } from './auth/middleware';
+import { authDb, ownerSecret, ownerSecretIsSeparate, type AuthDb } from './auth/middleware';
 import { constantTimeEqual } from './auth/crypto';
 import { normalizeLabel, uniqueLabel } from './auth/labels';
 import {
@@ -21,8 +21,8 @@ import {
   verifySession,
 } from './auth/session';
 import { hashToken, newToken } from './auth/tokens';
-import { FAMILY_NAMES, type ClientFamily } from './auth/redirects';
-import { baseUrl, escapeHtml as e, htmlPage, PAGE_STYLE, redirect } from './http';
+import { classifyRedirect, FAMILY_NAMES, parseExtraPrefixes } from './auth/redirects';
+import { baseUrl, escapeHtml as e, htmlPage, PAGE_STYLE, readForm, redirect } from './http';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -70,7 +70,7 @@ function loginPage(error?: string, status = 200): Response {
   return page(
     'Owner console',
     `<h1>2nd-brain — connected agents</h1>
-<p>Sign in with the owner secret (<code>BRAIN_MCP_TOKEN</code>).</p>
+<p>Sign in with the owner secret.</p>
 ${error ? `<div class="error">${e(error)}</div>` : ''}
 <form method="post" action="/tokens/login">
   <label for="owner_secret">Owner secret</label>
@@ -83,14 +83,15 @@ ${error ? `<div class="error">${e(error)}</div>` : ''}
 
 type Session = { sid: string; csrf: string };
 
-async function session(request: Request, env: Env): Promise<Session | null> {
-  const sid = await verifySession(env.BRAIN_MCP_TOKEN, readCookie(request, SESSION_COOKIE), nowSeconds());
-  return sid ? { sid, csrf: await csrfToken(env.BRAIN_MCP_TOKEN, sid) } : null;
+async function session(request: Request, secret: string): Promise<Session | null> {
+  const sid = await verifySession(secret, readCookie(request, SESSION_COOKIE), nowSeconds());
+  return sid ? { sid, csrf: await csrfToken(secret, sid) } : null;
 }
 
 export async function handleConsole(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (!env.BRAIN_MCP_TOKEN) {
-    return page('Not configured', '<div class="error">BRAIN_MCP_TOKEN is not set on this Worker.</div>', 500);
+  const secret = ownerSecret(env);
+  if (!secret) {
+    return page('Not configured', '<div class="error">No owner secret is set on this Worker (OWNER_SECRET).</div>', 500);
   }
   const path = new URL(request.url).pathname.replace(/\/+$/, '') || '/tokens';
   const method = request.method;
@@ -100,23 +101,18 @@ export async function handleConsole(request: Request, env: Env, ctx: ExecutionCo
   }
 
   if (path === '/tokens/login' && method === 'POST') {
-    let secret: unknown = null;
-    try {
-      secret = (await request.formData()).get('owner_secret');
-    } catch {
-      secret = null;
-    }
-    if (typeof secret !== 'string' || !constantTimeEqual(secret, env.BRAIN_MCP_TOKEN)) {
+    const given = (await readForm(request))?.get('owner_secret') ?? null;
+    if (given === null || !constantTimeEqual(given, secret)) {
       return loginPage('Wrong owner secret.', 401);
     }
-    const value = await createSession(env.BRAIN_MCP_TOKEN, nowSeconds());
+    const value = await createSession(secret, nowSeconds());
     return redirect('/tokens', 303, { 'Set-Cookie': sessionCookieHeader(value) });
   }
   if (path === '/tokens/logout' && method === 'POST') {
     return redirect('/tokens', 303, { 'Set-Cookie': clearSessionCookieHeader() });
   }
 
-  const s = await session(request, env);
+  const s = await session(request, secret);
   if (!s) {
     if (method === 'GET' && path === '/tokens') return loginPage();
     if (method === 'GET') return redirect('/tokens', 303);
@@ -129,19 +125,14 @@ export async function handleConsole(request: Request, env: Env, ctx: ExecutionCo
     if (method === 'GET' && path === '/tokens/activity') return await activity(request, db, s);
 
     if (method === 'POST' && (path === '/tokens/create' || path === '/tokens/revoke')) {
-      let form: FormData;
-      try {
-        form = await request.formData();
-      } catch {
-        return page('Bad request', '<div class="error">Expected a form submission.</div>', 400);
-      }
-      const csrf = form.get('csrf');
-      if (!(await verifyCsrf(env.BRAIN_MCP_TOKEN, s.sid, typeof csrf === 'string' ? csrf : null))) {
+      const form = await readForm(request);
+      if (!form) return page('Bad request', '<div class="error">Expected a form submission.</div>', 400);
+      if (!(await verifyCsrf(secret, s.sid, form.get('csrf')))) {
         return page('Forbidden', '<div class="error">Invalid form token. Reload /tokens and try again.</div>', 403);
       }
       if (path === '/tokens/create') return await createPat(request, env, db, s, form);
       const id = form.get('id');
-      if (typeof id !== 'string' || !UUID.test(id)) {
+      if (id === null || !UUID.test(id)) {
         return page('Bad request', '<div class="error">Unknown credential.</div>', 400);
       }
       await db`
@@ -167,8 +158,8 @@ type CredRow = {
   last_client_info: unknown;
   created_at: Date;
   last_used_at: Date | null;
+  redirect_uri: string | null;
   client_name: string | null;
-  client_family: string | null;
   calls_7d: number;
 };
 
@@ -196,7 +187,7 @@ function header(s: Session, title: string): string {
 async function dashboard(request: Request, env: Env, db: AuthDb, s: Session, notice = ''): Promise<Response> {
   const active = await db<CredRow[]>`
     SELECT c.id, c.label, c.kind, c.token_hint, c.last_client_info, c.created_at, c.last_used_at,
-           cl.client_name, cl.client_family,
+           c.redirect_uri, cl.client_name,
            (SELECT count(*)::int FROM mcp_call_log l
              WHERE l.credential_id = c.id AND l.at > now() - interval '7 days') AS calls_7d,
            now() AS as_of
@@ -213,13 +204,16 @@ async function dashboard(request: Request, env: Env, db: AuthDb, s: Session, not
   `;
   const [master] = await db<Array<{ n: number; last_at: Date | null }>>`
     SELECT count(*)::int AS n, max(at) AS last_at, now() AS as_of
-      FROM mcp_call_log WHERE credential_id IS NULL AND at > now() - interval '7 days'
+      FROM mcp_call_log WHERE credential_id IS NULL AND label = 'master' AND at > now() - interval '7 days'
   `;
 
   const mcpUrl = `${baseUrl(request)}/mcp`;
+  const extra = parseExtraPrefixes(env.OAUTH_EXTRA_REDIRECT_PREFIXES);
   const rows = active
     .map((c) => {
-      const family = c.client_family && c.client_family in FAMILY_NAMES ? FAMILY_NAMES[c.client_family as ClientFamily] : '';
+      // The family of the redirect URI this grant was actually issued to.
+      const fam = c.redirect_uri ? classifyRedirect(c.redirect_uri, extra) : null;
+      const family = fam ? FAMILY_NAMES[fam] : '';
       const via = c.kind === 'pat' ? `PAT …${e(c.token_hint ?? '')}` : `OAuth${family ? ` · ${e(family)}` : ''}`;
       const ci = clientInfoText(c.last_client_info);
       return `<tr>
@@ -236,6 +230,10 @@ async function dashboard(request: Request, env: Env, db: AuthDb, s: Session, not
     })
     .join('\n');
 
+  const ownerBanner = ownerSecretIsSeparate(env)
+    ? ''
+    : `<div class="warn">The owner secret is still <code>BRAIN_MCP_TOKEN</code>, which OAuth clients connected before this console existed received as their access token.
+Set a separate <code>OWNER_SECRET</code> Worker secret (<code>openssl rand -hex 32</code>), then review this list and revoke anything you don't recognise.</div>`;
   const masterBanner =
     master.n > 0
       ? `<div class="warn">The master token (<code>BRAIN_MCP_TOKEN</code>) made ${master.n} call(s) in the last 7 days,
@@ -245,6 +243,7 @@ last ${when(master.last_at)}. Move those clients to their own token, then set <c
 
   const body = `${header(s, '2nd-brain — connected agents')}
 ${notice}
+${ownerBanner}
 ${masterBanner}
 <p>MCP endpoint: <code>${e(mcpUrl)}</code></p>
 <h2>Active (${active.length})</h2>
@@ -271,10 +270,10 @@ ${
   return page('Connected agents', body);
 }
 
-async function createPat(request: Request, env: Env, db: AuthDb, s: Session, form: FormData): Promise<Response> {
+async function createPat(request: Request, env: Env, db: AuthDb, s: Session, form: URLSearchParams): Promise<Response> {
   const base = normalizeLabel(form.get('label'));
   if (!base) {
-    return dashboard(request, env, db, s, '<div class="error">Give the token a name (1–80 characters).</div>');
+    return dashboard(request, env, db, s, '<div class="error">Give the token a name (1–80 characters; "master" and "unknown" are reserved).</div>');
   }
   const token = newToken('pat');
   const hash = await hashToken(token);
@@ -326,7 +325,7 @@ async function activity(request: Request, db: AuthDb, s: Session): Promise<Respo
   const which = new URL(request.url).searchParams.get('credential');
   const filter =
     which === 'master'
-      ? db`credential_id IS NULL`
+      ? db`credential_id IS NULL AND label = 'master'`
       : which && UUID.test(which)
         ? db`credential_id = ${which}`
         : db`true`;

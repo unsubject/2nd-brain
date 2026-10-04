@@ -67,6 +67,31 @@ describe.skipIf(!TEST_DB)('/mcp per-client credentials', () => {
     expect(log).toEqual([{ tool: 'list_ideas', is_write: false }]);
   });
 
+  it('keeps logging calls when clientInfo is hostile', async () => {
+    const pat = await seedPat('Fuzzer');
+    const res = await rpcRaw(
+      'initialize',
+      { protocolVersion: '2025-06-18', clientInfo: { name: 'a\u0000b'.repeat(500), version: 7, extra: 'x'.repeat(100000) } },
+      { token: pat.token },
+    );
+    expect(res.status).toBe(200);
+    await callTool('list_ideas', {}, { token: pat.token });
+    const [cred] = await admin`SELECT last_client_info FROM mcp_credential WHERE id = ${pat.id}`;
+    expect(cred.last_client_info.clientInfo).toEqual({ name: 'ab'.repeat(50) });
+    expect(await admin`SELECT tool FROM mcp_call_log`).toEqual([{ tool: 'list_ideas' }]);
+  });
+
+  it('serves MCP only at exactly /mcp', async () => {
+    const { workerFetch } = await import('./helpers');
+    const pat = await seedPat('Path');
+    const res = await workerFetch('/mcp/', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pat.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('stops a revoked credential on the very next request', async () => {
     const pat = await seedPat('Scripts');
     expect((await rpcRaw('tools/list', {}, { token: pat.token })).status).toBe(200);

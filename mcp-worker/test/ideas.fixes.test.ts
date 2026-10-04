@@ -24,17 +24,16 @@ describe('Hyperdrive cache-busting convention', () => {
   // working on the next request, and a used code must stay used.
   const srcDir = fileURLToPath(new URL('../src/', import.meta.url).href);
   const authFiles = [
-    'auth/middleware.ts',
-    'auth/labels.ts',
-    'oauth/common.ts',
-    'oauth/register.ts',
-    'oauth/authorize.ts',
-    'oauth/token.ts',
-    'oauth/revoke.ts',
+    ...readdirSync(`${srcDir}/auth`).filter((f) => f.endsWith('.ts')).map((f) => `auth/${f}`),
+    ...readdirSync(`${srcDir}/oauth`).filter((f) => f.endsWith('.ts')).map((f) => `oauth/${f}`),
     'console.ts',
     'calllog.ts',
     'index.ts',
   ];
+
+  it('scans every auth and OAuth module', () => {
+    expect(authFiles).toEqual(expect.arrayContaining(['auth/middleware.ts', 'auth/labels.ts', 'oauth/token.ts', 'oauth/register.ts']));
+  });
   const scanned = [
     ...ideaTools.map((f) => ({ path: `${dir}/${f}`, name: f, mustQuery: true })),
     ...authFiles.map((f) => ({ path: `${srcDir}/${f}`, name: f, mustQuery: false })),

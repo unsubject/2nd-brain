@@ -562,7 +562,7 @@ const definitions: ToolDefinition[] = [
   // sessions the user starts (garden_ideas → propose_idea_links → the
   // user decides → decide_idea_links). Pull-only: never surface ideas
   // unprompted. Protocol: docs/idea-parking-lot-protocol.md, served as
-  // 2nd-brain://protocol/idea-parking-lot.
+  // second-brain://protocol/idea-parking-lot.
   {
     name: 'park_idea',
     description:
@@ -959,7 +959,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'read_protocol',
     description:
-      "Read an executable protocol: 'idea-parking-lot' (capture §1, gardening §2, map §3, import §4, retrieval §5) or 'goal-amendment' (Section 1A constitution, Section 1B goals). Same text as the MCP resources 2nd-brain://protocol/*, for clients without resource support. Call before using idea tools or proposing amendments; pass section (e.g. '§2', '1B') to fetch one part. Read-only.",
+      "Read an executable protocol: 'idea-parking-lot' (capture §1, gardening §2, map §3, import §4, retrieval §5) or 'goal-amendment' (Section 1A constitution, Section 1B goals). Same text as the MCP resources second-brain://protocol/*, for clients without resource support. Call before using idea tools or proposing amendments; pass section (e.g. '§2', '1B') to fetch one part. Read-only.",
     inputSchema: {
       type: 'object',
       properties: {

@@ -18,9 +18,13 @@ export const ACCESS_TTL_SECONDS = 60 * 60;
 // Sliding idle expiry: each refresh issues a new refresh token valid this long.
 export const REFRESH_TTL_SECONDS = 90 * 24 * 60 * 60;
 export const CODE_TTL_SECONDS = 5 * 60;
-// A rotated refresh token presented again within this window is treated as
-// a client retry race (rejected, nothing revoked); later, as theft.
-export const REFRESH_REUSE_GRACE_SECONDS = 60;
+// A rotated refresh token presented again within this window still gets a
+// new pair: parallel requests from one client, or several processes sharing
+// one token store (Claude Code, Gemini CLI), all refresh with the same
+// token. Bounded per token. Later reuse is refused but revokes nothing — a
+// stale copy in an idle process must not log out the live ones.
+export const REFRESH_REUSE_GRACE_SECONDS = 5 * 60;
+export const REFRESH_MAX_REUSES = 10;
 
 export function newToken(kind: TokenKind): string {
   return `${PREFIX[kind]}${randomBase64url(32)}`;

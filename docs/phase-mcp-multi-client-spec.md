@@ -24,16 +24,16 @@ Decisions (2026-10-04):
 | 2 | **Per-client revocable credentials**, of two kinds: **OAuth grants**, which the client obtains itself after the owner approves, and **personal access tokens** (PATs), which the owner creates in a console. Both are stored hashed, with a label and last-used time. |
 | 3 | **Writes are attributed on the server.** Idea writes record the credential label in `captured_via` / `proposed_via`, and every tool call is logged per credential. |
 | 4 | A **per-client setup guide** with a smoke test. |
-| 5 | The master token is kept as a legacy bearer behind `ALLOW_MASTER_BEARER` until the console shows it is unused. After that it is only the owner password. |
+| 5 | The master token is kept as a legacy bearer behind `ALLOW_MASTER_BEARER` until the console shows it is unused. Approving connections and signing in to the console use a separate `OWNER_SECRET`, because earlier OAuth clients received `BRAIN_MCP_TOKEN` as their access token. Until `OWNER_SECRET` is set, it falls back to `BRAIN_MCP_TOKEN`, and the console warns about it. |
 
 ## 2. Data model (migration 020)
 
 | Table | Holds |
 |---|---|
-| `mcp_client` | RFC 7591 registrations: redirect URIs, client family, raw metadata. Rows never approved are swept after 7 days. |
-| `mcp_credential` | One per connected agent: `label` (unique among live credentials, case-insensitive), `kind` `pat`/`oauth`, `scope`, `last_used_at`, `last_client_info` (from `initialize`), `revoked_at` + `revoked_reason` (`owner`, `client`, `refresh_reuse`, `code_reuse`). |
-| `mcp_token` | SHA-256 hex hashes of opaque tokens: `access` (1 h), `refresh` (90-day idle expiry, rotated, at most one live per credential), `pat` (no expiry, one per credential). |
-| `mcp_auth_code` | Single-use codes (hashed, 5 min). Each is bound to the client, redirect URI, PKCE challenge, resource and label, and records the credential it minted. |
+| `mcp_client` | RFC 7591 registrations: the allowed redirect URIs, client family, raw metadata, and a hash of the registering IP (for the cap). Rows never approved are swept after 7 days. |
+| `mcp_credential` | One per connected agent: `label` (unique among live credentials, case-insensitive), `kind` `pat`/`oauth`, `scope`, `last_used_at`, `last_client_info` (from `initialize`), `revoked_at` + `revoked_reason` (`owner`, `replaced`, `client`, `code_reuse`). The labels `master` and `unknown` are reserved. |
+| `mcp_token` | SHA-256 hex hashes of opaque tokens: `access` (1 h); `refresh` (90-day idle expiry, rotated, with `reuse_count` bounding grace-window reuse); `pat` (no expiry, one per credential). |
+| `mcp_auth_code` | Single-use codes (hashed, 5 min). Each is bound to the client, redirect URI, PKCE challenge, resource, label and the owner's "replace" choice, and records the credential it minted. |
 | `mcp_call_log` | One row per tool call: credential, label, tool, write flag, ok, error code, duration, result ids. **Never arguments.** |
 
 Revoking a credential leaves its token rows in place; every lookup joins on `revoked_at IS NULL`. Tokens are prefixed `brain_at_`, `brain_rt_` and `brain_pat_`, so a leaked token is easy to recognise and grep for.
@@ -68,29 +68,38 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     |---|---|
     | Claude | `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback` (exact) |
     | ChatGPT | `https://chatgpt.com/connector_platform_oauth_redirect` (exact) or the `https://chatgpt.com/connector/oauth/` prefix |
-    | Cursor | `cursor://anysphere.cursor-mcp/oauth/callback` |
+    | Cursor | `cursor://anysphere.cursor-mcp/oauth/callback`, `https://www.cursor.com/agents/mcp/oauth/callback` (Cloud Agents) |
     | Google | the `https://oauth-redirect.googleusercontent.com/r/` prefix |
     | Native apps | RFC 8252 loopback (`http://localhost`, `127.0.0.1`, `[::1]`); the port may differ from the registered one |
-    | Custom | any `https://` prefix listed in `OAUTH_EXTRA_REDIRECT_PREFIXES` |
+    | Custom | any `https://` prefix listed in `OAUTH_EXTRA_REDIRECT_PREFIXES`, matched at a `/` boundary |
 
-  - At most 50 registrations may wait unapproved in any hour.
+  - Prefix rules refuse dot segments and encoded `/`, `\` and `.` in the path.
+  - URIs off the list are dropped from a registration (RFC 7591 §3.2.1). Registration fails only if none remains.
+  - Registrations still waiting for approval are capped per hour: 10 per source IP and 200 in total. The count and the insert happen under one lock.
+  - Request bodies over 16 KB are refused without being buffered.
 - **Authorize**
   - Problems with the client or its redirect URI are shown as an error page and never redirected.
-  - Every other error is redirected back with `state` and `iss`. That covers a wrong `response_type`, a missing or non-S256 PKCE challenge, and a foreign `resource` (`invalid_target`).
+  - Every other error is redirected back with `state` and `iss`. The exception is a legacy client that hasn't been adopted yet: its redirect URI is merely allow-listed, not registered, so its errors and denials are shown as pages too. That covers a wrong `response_type`, a missing or non-S256 PKCE challenge, and a foreign `resource` (`invalid_target`).
   - The consent page shows the client family and redirect host. Both are derived from the redirect URI, so they can be trusted. The client's self-declared name is shown and marked *unverified*.
-  - The owner names the connection and types the owner secret to approve. The page cannot be framed, is never cached, and loads no third-party resources.
+  - The owner names the connection and types the owner secret to approve.
+    - The page doesn't look up existing labels, because it is unauthenticated. A clashing label gets " (2)" at `/token`.
+    - A **Replace** checkbox revokes the owner's existing OAuth connection with exactly that label, so a reconnect keeps its name. It is ticked by default for Claude, ChatGPT and Google, whose vendors hold one connection per account.
+    - The page cannot be framed, is never cached, and loads no third-party resources.
   - Legacy `mcp-client-<uuid>` ids issued by the old stateless flow are adopted on approval, provided the redirect URI they present passes the allow-list.
 - **Token**
-  - **Authorization-code grant:**
-    - The code is consumed atomically.
-    - A replayed code revokes the credential it minted (`code_reuse`).
-    - The client id, the redirect URI (if sent), the PKCE verifier and the resource are all checked.
-    - The label is made unique inside the transaction, under an advisory lock.
+  - **Authorization-code grant:** one transaction.
+    - The code row is locked first. The client id, redirect URI (if sent) and PKCE verifier are checked *before* the code is consumed. Someone who merely saw a code can neither burn it nor trigger revocation.
+    - A code redeemed again with the right verifier revokes the credential it minted (`code_reuse`).
+    - The label is made unique under an advisory lock. Each candidate is checked with the index's own `lower(btrim())`, because JavaScript and Postgres case folding differ.
     - A refresh token is **always** issued: Claude does not ask for `offline_access`, and Spark needs a refresh token.
   - **Refresh grant:**
     - The row is locked and rotated.
-    - Presenting an already-rotated token within 60 s is treated as a client race: it is rejected and nothing is revoked.
-    - Presenting it later is treated as theft and revokes the credential (`refresh_reuse`).
+    - Within 5 minutes of its first rotation, the same token may be redeemed again, up to 10 times. Each time it gets its own new pair.
+      - This is needed because SDK clients refresh in parallel, and Claude Code and Gemini CLI processes share one token store.
+      - Reusing the token doesn't extend the window.
+    - After the window the token is refused, and **nothing is revoked**.
+      - Revoking would mean a stale copy in an idle process logs out the live ones.
+      - Theft response is the owner's call in `/tokens`, where every call is visible.
   - Errors follow RFC 6749 JSON. Responses carry `Cache-Control: no-store`.
 - **Revoke** (`/revoke`, RFC 7009)
   - Any of our tokens revokes its whole credential.
@@ -98,7 +107,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 
 ## 5. Owner console (`/tokens`)
 
-- **Login:** the owner secret creates an HMAC-signed `__Host-brain_console` cookie (HttpOnly, Secure, SameSite=Strict, 30 min). No server-side session store is needed. Rotating `BRAIN_MCP_TOKEN` logs out every session.
+- **Login:** the owner secret (`OWNER_SECRET`, else `BRAIN_MCP_TOKEN` with a warning banner) creates an HMAC-signed `__Host-brain_console` cookie (HttpOnly, Secure, SameSite=Strict, 30 min). No server-side session store is needed. Rotating `BRAIN_MCP_TOKEN` logs out every session.
 - **POST protection:** every POST needs a same-origin `Origin` (or `Sec-Fetch-Site`). Once logged in, it also needs a CSRF token bound to the session id.
 - **Page hardening:** CSP `default-src 'none'; form-action 'self'; frame-ancestors 'none'`.
 - **Agents list:** label, kind (PAT hint / OAuth family), last used, calls in the last 7 days, last `clientInfo`, connection date, activity link, Revoke.
@@ -137,6 +146,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 
 ## 8. Rollout
 
+0. Set the `OWNER_SECRET` Worker secret (`openssl rand -hex 32`).
 1. Merge. The Node monolith applies migration 020 on its next boot.
    - Until that happens, the master token still works, but OAuth and the console return errors.
 2. Run `npm run smoke` with the master token. Then create a PAT and run `--write`, and after revoking it run `--expect-401`.
@@ -145,9 +155,13 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 5. After a quiet week:
    1. Commit `ALLOW_MASTER_BEARER: "false"`.
    2. Rotate `BRAIN_MCP_TOKEN`.
+   3. Review `/tokens` and revoke anything you don't recognise.
+- **Residual risk:** an attacker can add their own vendor connector pointing at this server and send the owner its consent link. The page truthfully names the vendor. The only defences are the warning text and approving only connections you just started yourself.
 
 ## 9. Follow-ups (not in this phase)
 
 - Prune `mcp_call_log` on a retention schedule, from the monolith scheduler.
 - Per-tool scopes, such as read-only credentials for experimental agents.
 - Rate-limit wrong owner-secret attempts. The secret is 256-bit random, so brute force is not practical today.
+- Pin Gemini Spark's exact `/r/<project>` redirect once it is known. Today any `oauth-redirect.googleusercontent.com/r/` path is allowed.
+- Stamp the credential on the remaining idea writes too: `update_idea` notes and `decide_idea_links`. These are covered by the call log today.

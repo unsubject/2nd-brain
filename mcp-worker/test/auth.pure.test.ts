@@ -47,6 +47,7 @@ describe('redirect allow-list', () => {
     ['https://chatgpt.com/connector_platform_oauth_redirect', 'chatgpt'],
     ['https://chatgpt.com/connector/oauth/abc123', 'chatgpt'],
     ['cursor://anysphere.cursor-mcp/oauth/callback', 'cursor'],
+    ['https://www.cursor.com/agents/mcp/oauth/callback', 'cursor'],
     ['https://oauth-redirect.googleusercontent.com/r/my-project', 'google'],
     ['http://localhost:33418/callback', 'loopback'],
     ['http://127.0.0.1/cb', 'loopback'],
@@ -71,18 +72,26 @@ describe('redirect allow-list', () => {
     'https://claude.ai/api/mcp/auth_callback#frag',
     'javascript:alert(1)',
     'not a url',
+    'https://chatgpt.com/connector/oauth/x%2f..%2f..%2fsteal',
+    'https://chatgpt.com/connector/oauth/x%5C..%5Csteal',
+    'https://oauth-redirect.googleusercontent.com/r/%2e%2e/steal',
     `https://chatgpt.com/connector/oauth/${'a'.repeat(2100)}`,
   ];
   for (const uri of refused) {
     it(`refuses ${uri.slice(0, 60)}`, () => expect(classifyRedirect(uri)).toBeNull());
   }
 
-  it('honours https-only extra prefixes', () => {
+  it('honours https-only extra prefixes at a path boundary', () => {
     const extra = parseExtraPrefixes(' https://agent.example/cb/ , http://insecure.example/, junk');
     expect(extra).toEqual(['https://agent.example/cb/']);
     expect(classifyRedirect('https://agent.example/cb/x', extra)).toBe('custom');
     expect(classifyRedirect('https://agent.example/other', extra)).toBeNull();
     expect(classifyRedirect('https://agent.example/cb/../other', extra)).toBeNull();
+    expect(classifyRedirect('https://agent.example/cb/a%2f..%2fb', extra)).toBeNull();
+    const bare = ['https://agent.example/oauth'];
+    expect(classifyRedirect('https://agent.example/oauth', bare)).toBe('custom');
+    expect(classifyRedirect('https://agent.example/oauth/cb', bare)).toBe('custom');
+    expect(classifyRedirect('https://agent.example/oauth-evil', bare)).toBeNull();
   });
 
   it('lets loopback redirects change port but nothing else', () => {
@@ -120,7 +129,8 @@ describe('console session cookie', () => {
     const [v, exp, sid, sig] = cookie.split('.');
     expect(await verifySession(secret, `${v}.${Number(exp) + 3600}.${sid}.${sig}`, now)).toBeNull();
     expect(await verifySession(secret, `${v}.${exp}.other.${sig}`, now)).toBeNull();
-    expect(await verifySession(secret, `${v}.${exp}.${sid}.${sig.slice(0, -1)}A`, now)).toBeNull();
+    const flipped = `${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`;
+    expect(await verifySession(secret, `${v}.${exp}.${sid}.${flipped}`, now)).toBeNull();
     expect(await verifySession(secret, cookie, now + SESSION_TTL_SECONDS + 1)).toBeNull();
     expect(await verifySession('rotated', cookie, now)).toBeNull();
     expect(await verifySession(secret, '', now)).toBeNull();
@@ -155,6 +165,11 @@ describe('tokens and labels', () => {
     expect(normalizeLabel('   ')).toBeNull();
     expect(normalizeLabel('x'.repeat(81))).toBeNull();
     expect(normalizeLabel(42)).toBeNull();
+    expect(normalizeLabel('Claude\u200b')).toBe('Claude');
+    expect(normalizeLabel('\u202eedualC')).toBe('edualC');
+    expect(normalizeLabel('\u200b')).toBeNull();
+    expect(normalizeLabel('Master')).toBeNull();
+    expect(normalizeLabel(' unknown ')).toBeNull();
     expect(pickUniqueLabel('Claude', new Set())).toBe('Claude');
     expect(pickUniqueLabel('Claude', new Set(['claude']))).toBe('Claude (2)');
     expect(pickUniqueLabel('Claude', new Set(['claude', 'claude (2)']))).toBe('Claude (3)');

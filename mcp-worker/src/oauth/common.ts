@@ -1,7 +1,7 @@
 // Helpers shared by the OAuth endpoints.
 
 import type postgres from 'postgres';
-import { CORS_HEADERS, jsonNoStore } from '../http';
+import { CORS_HEADERS, jsonNoStore, readLimitedText } from '../http';
 import { ACCESS_TTL_SECONDS, hashToken, newToken, REFRESH_TTL_SECONDS } from '../auth/tokens';
 
 // RFC 6749 §5.2 error body. invalid_client is the only 401.
@@ -19,8 +19,8 @@ const MAX_BODY_BYTES = 16 * 1024;
 // accepted leniently. null = unreadable body (bad content type or JSON).
 export async function readBodyParams(request: Request): Promise<URLSearchParams | null> {
   const ct = (request.headers.get('Content-Type') ?? '').toLowerCase();
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) return null;
+  const text = await readLimitedText(request, MAX_BODY_BYTES);
+  if (text === null) return null;
   if (ct.includes('application/json')) {
     try {
       const body = JSON.parse(text) as unknown;

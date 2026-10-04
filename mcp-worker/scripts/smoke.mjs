@@ -126,7 +126,7 @@ async function writes(token) {
   if (!parked.json?.idea_id) return;
   const got = await callTool(token, 'get_idea', { id: parked.json.idea_id });
   const via = got.json?.idea?.captured_via ?? got.json?.captured_via;
-  if (via?.credential) pass(`attributed to credential "${via.credential}"`);
+  check(typeof via?.credential === 'string' && via.credential.length > 0, `attributed to credential "${via?.credential}"`);
   const composted = await callTool(token, 'update_idea', { id: parked.json.idea_id, status: 'composted' });
   check(!composted.isError, 'update_idea → composted');
 }

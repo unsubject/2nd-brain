@@ -7,8 +7,8 @@ import { resources } from '../resources';
 // resources (e.g. agent-built connectors). Same text as resources/read.
 
 export const PROTOCOLS = {
-  'idea-parking-lot': '2nd-brain://protocol/idea-parking-lot',
-  'goal-amendment': '2nd-brain://protocol/goal-amendment',
+  'idea-parking-lot': 'second-brain://protocol/idea-parking-lot',
+  'goal-amendment': 'second-brain://protocol/goal-amendment',
 } as const;
 
 const inputSchema = z

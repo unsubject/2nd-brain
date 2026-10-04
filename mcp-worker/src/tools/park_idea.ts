@@ -47,7 +47,7 @@ export async function parkIdeaHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
-  principal?: Principal,
+  principal: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {

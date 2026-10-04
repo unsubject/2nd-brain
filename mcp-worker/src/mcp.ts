@@ -19,9 +19,9 @@ export const INSTRUCTIONS = `You are connected to the user's personal 2nd-brain:
 
 Journal: use search_brain when the user brainstorms a topic they may have thought about before, or asks "have I thought about X?"; get_entry to follow a hit; list_recent for "what have I been thinking about lately". Use save_session ONLY when the user explicitly asks ("save this", "log this"): propose a title, confirm it, and write a narrative summary, not a transcript. Similarity below ~0.3 is noise; above ~0.5 is worth attention. The journal is private: treat it with discretion.
 
-Goals and constitution: amendments are NEVER autonomous. Before any propose_*/commit_*_amendment call, read read_protocol('goal-amendment') (same text as resource 2nd-brain://protocol/goal-amendment).
+Goals and constitution: amendments are NEVER autonomous. Before any propose_*/commit_*_amendment call, read read_protocol('goal-amendment') (same text as resource second-brain://protocol/goal-amendment).
 
-Idea Parking Lot: ideas are curated raw material, not tasks. Use park_idea ONLY when the user asks to park or file an idea: confirm the title, copy their own thoughts verbatim, and reply with the receipt only, never suggesting links at capture. "Save this session" still means save_session. Associations are made only in gardening sessions the user starts (garden_ideas, propose_idea_links, the user decides, decide_idea_links with exactly their verdicts). Idea tools are pull-only: never surface ideas unprompted. For a map, call export_idea_map and render it with your own tools. Before capturing, gardening, mapping or importing, read read_protocol('idea-parking-lot') (same text as resource 2nd-brain://protocol/idea-parking-lot).
+Idea Parking Lot: ideas are curated raw material, not tasks. Use park_idea ONLY when the user asks to park or file an idea: confirm the title, copy their own thoughts verbatim, and reply with the receipt only, never suggesting links at capture. "Save this session" still means save_session. Associations are made only in gardening sessions the user starts (garden_ideas, propose_idea_links, the user decides, decide_idea_links with exactly their verdicts). Idea tools are pull-only: never surface ideas unprompted. For a map, call export_idea_map and render it with your own tools. Before capturing, gardening, mapping or importing, read read_protocol('idea-parking-lot') (same text as resource second-brain://protocol/idea-parking-lot).
 
 If a tool returns an error, report it and ask the user; don't retry silently.`;
 
@@ -140,8 +140,8 @@ async function dispatch(
       const protocolVersion = negotiateVersion(params?.protocolVersion);
       if (params?.clientInfo && typeof params.clientInfo === 'object') {
         state.clientInfo = {
-          clientInfo: params.clientInfo,
-          requestedProtocolVersion: params?.protocolVersion ?? null,
+          clientInfo: cleanClientInfo(params.clientInfo),
+          requestedProtocolVersion: shortString(params?.protocolVersion),
           protocolVersion,
           at: new Date().toISOString(),
         };
@@ -223,6 +223,20 @@ async function dispatch(
     default:
       throw new RpcError(-32601, `Method not found: ${method}`);
   }
+}
+
+// Only the identifying strings, bounded and free of NULs (jsonb rejects \u0000).
+function shortString(v: unknown, max = 100): string | null {
+  return typeof v === 'string' ? v.replace(/\u0000/g, '').slice(0, max) : null;
+}
+
+function cleanClientInfo(info: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of ['name', 'title', 'version']) {
+    const v = shortString(info[k]);
+    if (v) out[k] = v;
+  }
+  return out;
 }
 
 function rpcJson(body: unknown): Response {

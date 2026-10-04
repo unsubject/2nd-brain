@@ -92,7 +92,7 @@ describe('mcp dispatcher', () => {
 
   it('initialize instructions mention the idea protocol resource', async () => {
     const r = await rpc('initialize');
-    expect(r.result.instructions).toContain('2nd-brain://protocol/idea-parking-lot');
+    expect(r.result.instructions).toContain('second-brain://protocol/idea-parking-lot');
   });
 
   it('resources/list returns the protocol resources', async () => {
@@ -100,14 +100,14 @@ describe('mcp dispatcher', () => {
     const resources = r.result.resources as Array<{ uri: string; mimeType: string }>;
     expect(resources).toHaveLength(2);
     expect(resources.map((x) => x.uri)).toEqual([
-      '2nd-brain://protocol/goal-amendment',
-      '2nd-brain://protocol/idea-parking-lot',
+      'second-brain://protocol/goal-amendment',
+      'second-brain://protocol/idea-parking-lot',
     ]);
     for (const res of resources) expect(res.mimeType).toBe('text/markdown');
   });
 
   it('resources/read returns the idea protocol with its executable sections', async () => {
-    const r = await rpc('resources/read', { uri: '2nd-brain://protocol/idea-parking-lot' });
+    const r = await rpc('resources/read', { uri: 'second-brain://protocol/idea-parking-lot' });
     const text = (r.result.contents as Array<{ text: string }>)[0].text;
     for (const heading of ['## §0', '## §1', '## §2', '## §3', '## §4', '## §5', '## §6']) {
       expect(text).toContain(heading);
@@ -115,7 +115,7 @@ describe('mcp dispatcher', () => {
   });
 
   it('resources/read returns the doc text for a known uri', async () => {
-    const r = await rpc('resources/read', { uri: '2nd-brain://protocol/goal-amendment' });
+    const r = await rpc('resources/read', { uri: 'second-brain://protocol/goal-amendment' });
     const contents = r.result.contents as Array<{ uri: string; text: string }>;
     expect(contents).toHaveLength(1);
     expect(contents[0].text.length).toBeGreaterThan(100);
