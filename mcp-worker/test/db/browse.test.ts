@@ -1,5 +1,18 @@
 import { describe, it, expect, beforeEach, afterAll, afterEach, vi } from 'vitest';
-import { admin, axis, callTool, mix, ok, resetIdeaData, seedArtifact, seedIdea, setEmbedding, TEST_DB } from './helpers';
+import {
+  admin,
+  axis,
+  callTool,
+  mix,
+  ok,
+  resetIdeaData,
+  resetJournalData,
+  seedArtifact,
+  seedIdea,
+  seedJournalEntry,
+  setEmbedding,
+  TEST_DB,
+} from './helpers';
 
 afterAll(() => admin.end({ timeout: 5 }));
 
@@ -148,5 +161,37 @@ describe.skipIf(!TEST_DB)('export_idea_map', () => {
 
     const missing = await callTool('export_idea_map', { focus_idea_id: '00000000-0000-0000-0000-000000000000' });
     expect(missing.isError).toBe(true);
+  });
+});
+
+describe.skipIf(!TEST_DB)('search_brain', () => {
+  beforeEach(resetJournalData);
+  afterEach(() => vi.unstubAllGlobals());
+
+  const titles = (r: any) => (r.hits as Array<{ summary: string }>).map((h) => h.summary).sort();
+
+  it('filters by tags, including tags with commas and quotes', async () => {
+    stubEmbeddings(axis(0));
+    await seedJournalEntry({ vector: axis(0), tags: ['alpha'], summary: 'A' });
+    await seedJournalEntry({ vector: mix(0, 1, 0.9), tags: ['beta', 'a,b"c'], summary: 'B' });
+    await seedJournalEntry({ vector: mix(0, 1, 0.8), summary: 'C' });
+
+    expect(titles(await ok('search_brain', { query: 'q', tags: ['alpha'] }))).toEqual(['A']);
+    // A JS array bound raw used to fail here with "malformed array literal".
+    expect(titles(await ok('search_brain', { query: 'q', tags: ['a,b"c'] }))).toEqual(['B']);
+    expect(titles(await ok('search_brain', { query: 'q', tags: ['beta', 'a,b"c'] }))).toEqual(['B']);
+    expect(titles(await ok('search_brain', { query: 'q' }))).toEqual(['A', 'B', 'C']);
+  });
+
+  it('keeps scope, primary type and processing filters', async () => {
+    stubEmbeddings(axis(0));
+    await seedJournalEntry({ vector: axis(0), summary: 'P', primaryType: 'task_candidate' });
+    await seedJournalEntry({ vector: axis(0), summary: 'F', scope: 'family' });
+    await seedJournalEntry({ vector: axis(0), summary: 'U', status: 'pending' });
+
+    expect(titles(await ok('search_brain', { query: 'q' }))).toEqual(['P']);
+    expect(titles(await ok('search_brain', { query: 'q', scope: 'all' }))).toEqual(['F', 'P']);
+    expect(titles(await ok('search_brain', { query: 'q', primary_type: 'knowledge_candidate' }))).toEqual([]);
+    expect(titles(await ok('search_brain', { query: 'q', primary_type: 'task_candidate' }))).toEqual(['P']);
   });
 });

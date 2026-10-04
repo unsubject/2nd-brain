@@ -87,6 +87,33 @@ export async function resetAuthData(): Promise<void> {
   await admin`TRUNCATE mcp_call_log, mcp_token, mcp_auth_code, mcp_credential, mcp_client CASCADE`;
 }
 
+export async function resetJournalData(): Promise<void> {
+  await admin`TRUNCATE journal_entry CASCADE`;
+}
+
+// A processed, embedded journal entry with synthetic text.
+export async function seedJournalEntry(o: {
+  vector: number[];
+  tags?: string[];
+  scope?: 'personal' | 'family';
+  primaryType?: string;
+  status?: string;
+  summary?: string;
+}): Promise<string> {
+  const rows = await admin<Array<{ id: string }>>`
+    INSERT INTO journal_entry (
+      user_id, channel, created_at, updated_at, stitch_window_start, stitch_window_end,
+      full_text, processing_status, clean_text, summary, tags, primary_type, embedding, scope
+    ) VALUES (
+      ${USER}, 'test', now(), now(), now(), now(),
+      'synthetic entry', ${o.status ?? 'processed'}, 'synthetic entry', ${o.summary ?? 'synthetic'},
+      ${o.tags ?? null}, ${o.primaryType ?? 'archive_only'}, ${vecLiteral(o.vector)}::vector, ${o.scope ?? 'personal'}
+    )
+    RETURNING id
+  `;
+  return rows[0].id;
+}
+
 export async function resetIdeaData(): Promise<void> {
   await admin`TRUNCATE idea, idea_source, idea_link, public_artifact, task_ref, project_ref CASCADE`;
 }
