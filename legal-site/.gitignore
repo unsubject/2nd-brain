@@ -1,0 +1,4 @@
+node_modules
+.wrangler
+# No lockfile, matching mcp-worker: CI runs npm install.
+package-lock.json

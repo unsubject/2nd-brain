@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>Page not found · Unsubject</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --text: #1f1e1c;
+    --muted: #5f5c57;
+    --rule: #e3dfd7;
+    --accent: #2f5d50;
+    --accent-soft: #edf3f0;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --serif: Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --surface: #1d1d1b;
+      --text: #ebe9e4;
+      --muted: #a8a49c;
+      --rule: #33322f;
+      --accent: #8fc4b0;
+      --accent-soft: #1e2a26;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: 1rem; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 1.0625rem/1.65 var(--serif);
+    overflow-wrap: break-word;
+  }
+  a { color: var(--accent); text-underline-offset: 0.15em; }
+  a:hover { text-decoration-thickness: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  .wrap { max-width: 44rem; margin: 0 auto; padding: 0 16px; }
+  .site-header { border-bottom: 1px solid var(--rule); font-family: var(--sans); }
+  .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: 1rem; padding-bottom: 1rem; }
+  .brand { font-weight: 700; letter-spacing: 0.02em; font-size: 1.05rem; }
+  .site-header nav { display: flex; gap: 1.25rem; font-size: 0.95rem; }
+  .site-header nav a { color: var(--muted); text-decoration: none; }
+  .site-header nav a:hover { color: var(--text); }
+  .site-header nav a[aria-current="page"] { color: var(--text); font-weight: 600; }
+  main.wrap { padding-top: 2.5rem; padding-bottom: 3rem; }
+  h1, h2, h3 { font-family: var(--sans); line-height: 1.25; }
+  h1 { font-size: clamp(1.75rem, 5vw, 2.25rem); margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.25rem; margin: 2.5rem 0 0.75rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+  .meta { font-family: var(--sans); color: var(--muted); font-size: 0.9rem; margin: 0 0 1.5rem; }
+  .lede { font-size: 1.125rem; }
+  p, ul, ol { margin: 0 0 1rem; }
+  li { margin-bottom: 0.4rem; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1.25rem 1.25rem 0.5rem;
+    margin: 1.75rem 0;
+  }
+  .card h2 { margin: 0 0 0.75rem; padding: 0; border: 0; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .toc ol { font-family: var(--sans); font-size: 0.95rem; columns: 2 16rem; column-gap: 2rem; padding-left: 1.75rem; }
+  .toc li { break-inside: avoid; }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 0.9rem 1rem; border-radius: 0 8px 8px 0; margin: 1.25rem 0; }
+  .note p:last-child { margin-bottom: 0; }
+  .caps { font-size: 0.95rem; letter-spacing: 0.01em; }
+  .site-footer { border-top: 1px solid var(--rule); font-family: var(--sans); font-size: 0.875rem; color: var(--muted); }
+  .site-footer .wrap { padding-top: 1.5rem; padding-bottom: 2rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
+  .site-footer a { color: var(--muted); }
+  @media print {
+    :root { --bg: #fff; --surface: #fff; --text: #000; --muted: #333; --rule: #bbb; --accent: #000; --accent-soft: #fff; }
+    .site-header nav, .toc, .site-footer { display: none; }
+    a { text-decoration: none; }
+    h2 { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <span class="brand">Unsubject</span>
+    <nav aria-label="Legal">
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Page not found</h1>
+  <p>There is nothing at this address. You may be looking for our <a href="/terms">Terms of Service</a> or <a href="/privacy">Privacy Statement</a>.</p>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>© 2026 Unsubject LLC</span>
+    <a href="mailto:webmaster@unsubject.com">webmaster@unsubject.com</a>
+  </div>
+</footer>
+</body>
+</html>
