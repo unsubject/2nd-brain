@@ -6,7 +6,9 @@ import * as archiveQueries from "./queries";
 export function archiveRoutes(): Router {
   const router = Router();
 
-  router.post("/archive/import/youtube", json(), async (req, res) => {
+  // Full transcripts run past body-parser's 100kb default: the sync script's
+  // JSON escapes each CJK char as \uXXXX, so a 30k-char transcript is ~180kb.
+  router.post("/archive/import/youtube", json({ limit: "10mb" }), async (req, res) => {
     const body = req.body as Partial<YouTubeImportBody> | undefined;
     if (!body?.video_id || !body?.title || !body?.transcript) {
       res.status(400).json({
