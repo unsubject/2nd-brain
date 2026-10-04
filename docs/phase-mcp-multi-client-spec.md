@@ -1,6 +1,6 @@
 # Phase: multi-client MCP access — build spec
 
-Status: implemented. It consists of migration `020_mcp_credentials.sql`, `mcp-worker/src/auth/*`, `src/oauth/*`, `src/console.ts` and `src/calllog.ts`.
+Status: implemented. It consists of migration `020_mcp_credentials.sql`, `mcp-worker/src/auth/*`, `src/oauth/*`, `src/console.ts` and `src/calllog.ts`; follow-ups added write attribution (migration `022_idea_write_attribution.sql`), call-log retention (`src/mcp/retention.ts` in the monolith) and MCP 2026-07-28 support (`mcp-worker/src/protocol.ts`).
 Setup guide for each client: [`mcp-client-setup.md`](mcp-client-setup.md).
 
 ## 1. Context and decisions
@@ -130,9 +130,17 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
   - A tokenless `HEAD` gets the same 401 discovery challenge as a tokenless `POST`, because Gemini Spark probes with it.
   - `GET`, `DELETE`, and a `HEAD` that carries a token get 405. The spec allows this when there is no SSE stream or session.
   - Notifications and client responses get 202.
-  - JSON-RPC batches of up to 20 messages are accepted leniently.
-  - Protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05 are negotiated.
+  - JSON-RPC batches of up to 20 messages are accepted leniently (2025-era messages only).
+  - Protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05 are negotiated through `initialize`.
   - Empty `prompts/list` and `resources/templates/list` are served, and `logging/setLevel` is accepted.
+- **MCP 2026-07-28 (dual-era server, `src/protocol.ts`)**
+  - A message is served the 2026 way only on an explicit signal: method `server/discover`, the `io.modelcontextprotocol/protocolVersion` key in `params._meta` (any value: the key exists only from 2026-07-28, so a 2025 version there is a 2026 request with an unsupported version), or a 2026 `MCP-Protocol-Version` header. `initialize` is always 2025-era, and 2025-era requests never see a 2026 error or field, so 2026 clients that probe first still fall back cleanly.
+  - `server/discover` returns `supportedVersions` (2026-07-28 first, then the 2025 versions), capabilities, instructions and `serverInfo`.
+  - Each 2026 request is validated: missing `_meta` protocol version or client capabilities → `-32602`; missing or mismatched `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` (surrounding whitespace stripped, base64 sentinel decoded; raw non-ASCII or control characters are refused, so non-ASCII names must use `=?base64?…?=`) → `-32020`; unsupported version → `-32022` with `{supported, requested}`. All with HTTP 400, and no version strings in error messages (Claude Code misreads them).
+  - Results carry `resultType: "complete"` and `serverInfo` in `_meta`; discover, lists and reads also carry `ttlMs` (5 minutes) and `cacheScope: "private"`.
+  - `ping`, `logging/setLevel` (removed in 2026-07-28) and unknown methods answer HTTP 404 / `-32601`. A batch containing a 2026 message is refused.
+  - `clientInfo` comes from `_meta` and is stored on the credential only when it changes.
+  - The CORS preflight allows `Mcp-Method` and `Mcp-Name`.
 - **Tool descriptions**
   - All 38 tools have a `title` and full `annotations`. ChatGPT asks for confirmation before any tool not marked read-only, and Gemini CLI reads `readOnlyHint`. Gemini Spark confirms write actions; July 2026 field notes saw it confirm every call on a server without annotations, so it is unverified whether it honours `readOnlyHint`.
   - Every write tool's "ONLY call when…" / "NEVER call autonomously" sentence appears in its first 300 characters, so clients that truncate still see it.
@@ -148,10 +156,12 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
   - pure auth, redirect, session, metadata and schema checks;
   - transport cases;
   - OAuth end to end, including rotation, reuse revocation and `/revoke`;
-  - PAT authentication and attribution;
-  - the console's CSRF, cookies, and PAT lifecycle.
+  - PAT authentication and attribution, including proposer/decider stamps;
+  - the console's CSRF, cookies, and PAT lifecycle;
+  - the 2026-07-28 path (`test/protocol.test.ts` and the dual-era block in `test/dispatcher.test.ts`).
+- **Root tests:** `test/mcp-retention.test.ts` covers the daily pruning.
 - **Hyperdrive static test:** it checks that every read in an auth, OAuth or console file carries `now()`.
-- **Smoke script:** `npm run smoke` (see the setup guide) has been checked against `wrangler dev` on a local Postgres, with the master token, a PAT, and the full OAuth flow including `--revoke`.
+- **Smoke script:** `npm run smoke` (see the setup guide) has been checked against `wrangler dev` on a local Postgres, with the master token, a PAT, and the full OAuth flow including `--revoke`; `--modern` adds the 2026-07-28 checks.
 
 ## 8. Rollout
 
@@ -173,6 +183,9 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 - **Residual risk:** an attacker can add their own vendor connector pointing at this server and send the owner its consent link. The page truthfully names the vendor. The only defences are the warning text and approving only connections you just started yourself. For Google, the pinned prefix makes the label truthful, but an attacker's own Spark connector still matches it, so the same defence applies.
 
 ## 9. Follow-ups (not in this phase)
+
+- **Client ID Metadata Documents (CIMD), deferred.** MCP 2026-07-28 makes CIMD the preferred registration and deprecates DCR, but DCR can't be removed before 2027-07-28, and every target client registers itself when CIMD isn't advertised. Revisit when a client requires it. Accepting URL client ids needs an SSRF-safe fetch from the Worker, a host trust policy and caching.
+- **`Origin` validation on `/mcp`, deferred.** The 2026 transport says servers MUST reject an invalid `Origin` with 403. `/mcp` is bearer-only with no cookies and serves browser-based clients (MCP Inspector) with wildcard CORS, so there is no DNS-rebinding exposure to protect; an allow-list would break those clients.
 
 - Per-tool scopes, such as read-only credentials for experimental agents.
 - Rate-limit wrong owner-secret attempts. The secret is 256-bit random, so brute force is not practical today.
