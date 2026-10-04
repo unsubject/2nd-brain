@@ -2,6 +2,36 @@ import { Router, json } from "express";
 import { importYouTubeVideo, YouTubeImportBody } from "./ingest/youtube";
 import { hybridSearch, SearchRequest } from "./search";
 import * as archiveQueries from "./queries";
+import { auditPublicArtifacts } from "./consolidation/audit";
+import { startCollection, type CollectRequest } from "./consolidation/runner";
+import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
+import { describeGoogleError } from "../google/errors";
+
+// Drive ids go into a Drive search query, so accept only id characters.
+const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+export function parseCollectRequest(body: unknown): CollectRequest | string {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const refetch = b.refetch === true;
+  if (b.source === "gmail") {
+    const label = b.label === undefined ? "Writing" : b.label;
+    if (typeof label !== "string" || label.trim().length === 0 || label.length > 200) {
+      return "label must be a non-empty string";
+    }
+    return { source: "gmail", label: label.trim(), refetch };
+  }
+  if (b.source === "gdrive") {
+    const ids = b.folderIds;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > 20) {
+      return "folderIds must be a non-empty array (max 20)";
+    }
+    if (!ids.every((id) => typeof id === "string" && DRIVE_ID.test(id))) {
+      return "folderIds must be Drive folder ids";
+    }
+    return { source: "gdrive", folderIds: ids as string[], refetch };
+  }
+  return "source must be 'gmail' or 'gdrive'";
+}
 
 export function archiveRoutes(): Router {
   const router = Router();
@@ -60,6 +90,36 @@ export function archiveRoutes(): Router {
     } catch (err) {
       console.error("[archive] Retry-errors error:", err);
       res.status(500).json({ error: "Failed to reset errored artifacts" });
+    }
+  });
+
+  // Published-archive consolidation, step 1 (docs/archive-consolidation.md).
+  router.post("/archive/consolidation/collect", json(), async (req, res) => {
+    const parsed = parseCollectRequest(req.body);
+    if (typeof parsed === "string") {
+      res.status(400).json({ error: parsed });
+      return;
+    }
+    try {
+      const runId = await startCollection(parsed);
+      res.status(202).json({ runId, status: "running" });
+    } catch (err) {
+      if (err instanceof RunAlreadyActiveError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      console.error("[consolidation] collect error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to start collection" });
+    }
+  });
+
+  router.get("/archive/consolidation/status", async (_req, res) => {
+    try {
+      const [staging, audit] = await Promise.all([getStagingStatus(), auditPublicArtifacts()]);
+      res.json({ staging, publicArtifactAudit: audit });
+    } catch (err) {
+      console.error("[consolidation] status error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to get consolidation status" });
     }
   });
 
