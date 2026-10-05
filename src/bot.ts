@@ -76,16 +76,10 @@ export function createBot(token: string): Bot {
   return bot;
 }
 
-export interface WebhookExtras {
-  familyBot?: Bot;
-  familyWebhookSecret?: string;
-}
-
 export function startWebhook(
   bot: Bot,
   port: number,
-  webhookSecret: string,
-  extras?: WebhookExtras
+  webhookSecret: string
 ): void {
   const app = express();
 
@@ -98,15 +92,6 @@ export function startWebhook(
     express.json(),
     webhookCallback(bot, "express")
   );
-
-  if (extras?.familyBot && extras.familyWebhookSecret) {
-    app.post(
-      `/family-webhook/${extras.familyWebhookSecret}`,
-      express.json(),
-      webhookCallback(extras.familyBot, "express")
-    );
-    console.log("Family bot webhook registered");
-  }
 
   app.use(
     googleAuthRoutes({

@@ -1,30 +1,11 @@
 import { migrate } from "./db/migrate";
 import { createBot, startWebhook } from "./bot";
-import { createFamilyBot, startFamilyDraftSweeper } from "./familyBot";
 import { startWorker } from "./worker";
-import { startScheduler, startFamilyScheduler } from "./scheduler";
+import { startScheduler } from "./scheduler";
 import { startGoogleSync } from "./google/sync";
 import { startArchiveWorker } from "./archive/worker";
 import { startIdeaEmbeddingWorker } from "./ideas/worker";
 import { startTaskSuggestionSweeper } from "./taskSuggestionSweeper";
-
-const TELEGRAM_MAX_CHARS = 3900;
-
-function splitForTelegram(text: string, maxChars = TELEGRAM_MAX_CHARS): string[] {
-  if (text.length <= maxChars) return [text];
-  const chunks: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    let end = Math.min(i + maxChars, text.length);
-    if (end < text.length) {
-      const nl = text.lastIndexOf("\n", end);
-      if (nl > i + Math.floor(maxChars / 2)) end = nl;
-    }
-    chunks.push(text.slice(i, end));
-    i = end;
-  }
-  return chunks;
-}
 
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -46,56 +27,13 @@ async function main() {
   await bot.api.setWebhook(fullWebhookUrl);
   console.log("Telegram webhook registered");
 
-  const familyToken = process.env.FAMILY_TELEGRAM_BOT_TOKEN;
-  const familySecret =
-    process.env.FAMILY_WEBHOOK_SECRET || webhookSecret;
-  const familyGroupChatId = process.env.FAMILY_TELEGRAM_GROUP_CHAT_ID;
-  const familyUserIdsRaw = process.env.FAMILY_TELEGRAM_USER_IDS || "";
-  const familyUserIds = new Set(
-    familyUserIdsRaw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
-
-  let familyBot = undefined;
-  if (familyToken) {
-    if (!familyGroupChatId) {
-      throw new Error(
-        "FAMILY_TELEGRAM_GROUP_CHAT_ID is required when FAMILY_TELEGRAM_BOT_TOKEN is set"
-      );
-    }
-    familyBot = createFamilyBot(familyToken, {
-      groupChatId: familyGroupChatId,
-      familyUserIds,
-    });
-    await familyBot.init();
-    const familyWebhookUrl = `${webhookUrl}/family-webhook/${familySecret}`;
-    await familyBot.api.setWebhook(familyWebhookUrl);
-    console.log(
-      `Family bot registered (@${familyBot.botInfo?.username}, group ${familyGroupChatId}, ${familyUserIds.size} DM user(s))`
-    );
-  }
-
-  startWebhook(bot, port, webhookSecret, {
-    familyBot,
-    familyWebhookSecret: familySecret,
-  });
+  startWebhook(bot, port, webhookSecret);
   startWorker();
   startScheduler();
   startGoogleSync();
   startArchiveWorker();
   startIdeaEmbeddingWorker();
-  startTaskSuggestionSweeper({ personalBot: bot, familyBot });
-
-  if (familyBot && familyGroupChatId) {
-    startFamilyDraftSweeper();
-    startFamilyScheduler(async (content) => {
-      for (const chunk of splitForTelegram(content)) {
-        await familyBot!.api.sendMessage(familyGroupChatId, chunk);
-      }
-    });
-  }
+  startTaskSuggestionSweeper(bot);
 }
 
 main().catch((err) => {
