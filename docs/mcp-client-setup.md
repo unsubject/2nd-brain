@@ -17,17 +17,17 @@ Every client gets **its own credential**. Each one has a name ("label") that app
 
 There are two ways a client gets a credential:
 
-- **OAuth.** The client opens a 2nd-brain consent page and you approve it there. Used by Claude, ChatGPT, Cursor, Gemini CLI, Claude Code and Gemini Spark.
+- **OAuth.** The client opens a 2nd-brain consent page and you approve it there. Used by Claude, ChatGPT, Cursor, Gemini CLI, Claude Code, Gemini Spark and Meta Muse.
   - The page tells you which client family is asking and where you will be sent back to.
   - You name the connection, type the owner secret, and press **Approve**.
   - When reconnecting a client you already had, tick **Replace** (ticked by default for Claude, ChatGPT and Gemini Spark). The old connection with that exact name is revoked and the new one keeps the name. Otherwise it becomes e.g. `Claude (2)`.
   - The client then receives an access token that lasts 1 hour, plus a refresh token that rotates on every use.
   - Removing or disconnecting a connector inside a client may not tell 2nd-brain. Revoke it in `/tokens` too; otherwise its refresh token stays valid until 90 days after it was last used.
-- **Personal access token (PAT).** You create it in `/tokens` → **New personal access token**. Used by Meta Muse, scripts, and clients set up from a config file.
+- **Personal access token (PAT).** You create it in `/tokens` → **New personal access token**. Used by scripts, clients set up from a config file, and Meta Muse if it asks for a header instead of signing in.
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
   - Only a hash of it is stored.
 
-Every client sees the same 38 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
+The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 38 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
 
 ## Claude (claude.ai web, Desktop, mobile)
 
@@ -125,16 +125,22 @@ These notes come from third-party field reports (July–September 2026), not fro
 
 ## Meta Muse (Meta's agent)
 
-You set up Muse by asking it in chat to build a **Custom Connector**. Availability depends on your region; it is US-only as of October 2026. Muse uses a static bearer token, so give it a PAT.
+You set up Muse by asking it in chat to build a **Custom Connector**. Availability depends on your region; it is US-only as of October 2026. Muse connects with OAuth and registers itself, like Claude; its callback is `https://agent.meta.ai/api/hatch/oauth/callback`.
 
-1. In `/tokens`, create a PAT named `Meta Muse` and copy it.
-2. Store it in Muse's **Secure Credentials Store** as `BRAIN_PAT`. Never paste it into the chat itself.
-3. Send Muse this prompt:
+1. Send Muse this prompt:
 
-   > Create a custom connector called "2nd-brain". It is a remote MCP server (Streamable HTTP, JSON responses) at https://2nd-brain-mcp.simon-lee.workers.dev/mcp. Authenticate every request with the header `Authorization: Bearer <BRAIN_PAT>`, using the credential I stored as BRAIN_PAT. After connecting, list its tools and call `read_protocol` with `{"name": "idea-parking-lot", "section": "§1"}` and show me the first lines.
+   > Create a custom connector called "2nd-brain" for the remote MCP server at https://2nd-brain-mcp.simon-lee.workers.dev/mcp. After connecting, list its tools and call `read_protocol` with `{"name": "idea-parking-lot", "section": "§1"}` and show me the first lines.
    > Rules for using it: the tool descriptions are binding. Never call a tool whose description says "ONLY when the user asks…" unless I asked for exactly that. Ideas are pull-only: never surface them unprompted.
 
-4. Muse may not support MCP resources. The `read_protocol` tool gives it the same protocol text.
+2. Approve the consent page. It shows **Meta (Muse)** with a redirect to `agent.meta.ai`. Keep the label `Meta Muse`; **Replace** is ticked by default.
+3. Muse may not support MCP resources. The `read_protocol` tool gives it the same protocol text.
+
+**If Muse asks for an API key or header instead of signing in,** give it a PAT:
+1. In `/tokens`, create a PAT named `Meta Muse` and copy it.
+2. Store it in Muse's **Secure Credentials Store** as `BRAIN_PAT`. Never paste it into the chat itself.
+3. Add to the prompt above: "Authenticate every request with the header `Authorization: Bearer <BRAIN_PAT>`, using the credential I stored as BRAIN_PAT."
+
+**"The provider rejected the automatic app registration"** means `/register` refused Muse's callback, for example because Meta changed it. Workers Logs show the refused callback in a `[register] refused` line; see Troubleshooting.
 
 ## Scripts and automation (e.g. socialisn2)
 
@@ -149,6 +155,7 @@ BRAIN_TOKEN=brain_pat_… npm run smoke                  # discovery, initialize
 BRAIN_TOKEN=brain_pat_… npm run smoke -- --write       # + parks and composts a "[smoke] …" idea
 BRAIN_TOKEN=brain_pat_… npm run smoke -- --expect-401  # after revoking: must be refused
 npm run smoke -- --oauth --write --revoke              # whole OAuth flow on a loopback redirect
+BRAIN_TOKEN=brain_pat_… npm run smoke -- --modern      # + the MCP 2026-07-28 (stateless) path
 ```
 
 `BRAIN_MCP_URL` overrides the server URL, for example `http://127.0.0.1:8787/mcp` under `wrangler dev`.
@@ -167,7 +174,7 @@ Gardening leaves composted ideas out by default, so smoke ideas don't get in the
 
 | Symptom | Cause and fix |
 |---|---|
-| Registration fails with `invalid_redirect_uri`, or the consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Gemini Spark's `oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-…` callback, `http://localhost` / `127.0.0.1` / `[::1]`). Unknown URIs are dropped at registration, and registration fails only if none is allowed. Add the client's `https://` prefix, ending in `/`, to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
+| Registration fails with `invalid_redirect_uri` (Muse: **The provider rejected the automatic app registration**), or the consent page says **Redirect not allowed** | The client uses a redirect URI outside the built-in list (Claude, ChatGPT, Cursor, Gemini Spark's `oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-…` callback, Meta Muse's `agent.meta.ai/api/hatch/oauth/callback`, `http://localhost` / `127.0.0.1` / `[::1]`). Unknown URIs are dropped at registration, and registration fails only if none is allowed; Workers Logs then show a `[register] refused` line listing the client's redirect URIs. Add the client's `https://` prefix, ending in `/`, to `OAUTH_EXTRA_REDIRECT_PREFIXES` in `mcp-worker/wrangler.jsonc` `vars` (comma-separated) and deploy. |
 | Consent page says **Unknown client** | The client's registration was swept: unapproved registrations are deleted after 7 days. Remove the connector and add it again. |
 | Client suddenly says it must re-authenticate | Either its credential was revoked, or it presented a refresh token that had already been used more than 5 minutes earlier. Credentials are revoked when you revoke or replace them in `/tokens`, when the client calls `/revoke`, or when an authorization code is redeemed twice (`code_reuse`). A stale refresh token is refused but revokes nothing; this happens with stale copies held by idle processes. Reconnect if it persists. `/tokens` → **Recently revoked** shows the reason. |
 | Gemini Spark says **Automatic registration with this server failed. Please enter the OAuth client ID and client secret…** (reported by third parties) | Spark stopped during discovery or `/register`. Don't fill in the fields: 2nd-brain has no static client. In Workers Logs (Cloudflare dashboard → Workers → 2nd-brain-mcp → Logs, or `npx wrangler tail`), check that `GET /.well-known/oauth-protected-resource/mcp` and `GET /.well-known/oauth-authorization-server` returned 200 and `POST /register` returned 201. A `400 invalid_redirect_uri` means Google changed its callback (first row); a `429` is the registration cap (last row). Then add the app again. |

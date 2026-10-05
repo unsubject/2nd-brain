@@ -6,6 +6,7 @@
 //   BRAIN_TOKEN=brain_pat_… npm run smoke -- --write      # also park + compost a [smoke] idea
 //   BRAIN_TOKEN=brain_pat_… npm run smoke -- --expect-401 # after revoking: must be refused
 //   npm run smoke -- --oauth [--write] [--revoke]         # full OAuth flow via a loopback redirect
+//   BRAIN_TOKEN=brain_pat_… npm run smoke -- --modern     # also check the MCP 2026-07-28 (stateless) path
 //
 // BRAIN_MCP_URL defaults to the production Worker's /mcp endpoint.
 // Tokens are never printed.
@@ -20,6 +21,8 @@ const WRITE = args.has('--write');
 const EXPECT_401 = args.has('--expect-401');
 const OAUTH = args.has('--oauth');
 const REVOKE = args.has('--revoke');
+const MODERN = args.has('--modern');
+const MODERN_VERSION = '2026-07-28';
 
 let failures = 0;
 const pass = (msg) => console.log(`  ok   ${msg}`);
@@ -49,6 +52,60 @@ async function rpc(token, method, params = {}) {
     body = null;
   }
   return { status: res.status, headers: res.headers, body };
+}
+
+// MCP 2026-07-28: no initialize; version, capabilities and client info
+// travel in _meta and are mirrored into headers.
+async function rpcModern(token, method, params = {}, version = MODERN_VERSION) {
+  const name = typeof params.name === 'string' ? params.name : typeof params.uri === 'string' ? params.uri : null;
+  const res = await fetch(MCP_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${token}`,
+      'MCP-Protocol-Version': version,
+      'Mcp-Method': method,
+      ...(name ? { 'Mcp-Name': name } : {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: ++rpcId,
+      method,
+      params: {
+        ...params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': version,
+          'io.modelcontextprotocol/clientCapabilities': {},
+          'io.modelcontextprotocol/clientInfo': { name: '2nd-brain-smoke', version: '1.0.0' },
+        },
+      },
+    }),
+  });
+  const text = await res.text();
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = null;
+  }
+  return { status: res.status, body };
+}
+
+async function modernChecks(token) {
+  console.log(`MCP ${MODERN_VERSION} (stateless)`);
+  const d = await rpcModern(token, 'server/discover');
+  check(
+    d.status === 200 && d.body?.result?.resultType === 'complete' && d.body.result.supportedVersions?.[0] === MODERN_VERSION,
+    'server/discover',
+  );
+  check(d.body?.result?._meta?.['io.modelcontextprotocol/serverInfo']?.name === '2nd-brain', 'serverInfo in _meta');
+  const tl = await rpcModern(token, 'tools/list');
+  check(tl.status === 200 && tl.body?.result?.ttlMs > 0 && tl.body.result.cacheScope === 'private', 'tools/list with cache hints');
+  const rp = await rpcModern(token, 'tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot', section: '§1' } });
+  check(rp.status === 200 && (rp.body?.result?.content?.[0]?.text ?? '').startsWith('## §1'), 'tools/call read_protocol');
+  const bad = await rpcModern(token, 'tools/list', {}, '2099-01-01');
+  check(bad.status === 400 && bad.body?.error?.code === -32022 && Array.isArray(bad.body.error.data?.supported), 'unsupported version → 400 / -32022');
 }
 
 async function callTool(token, name, toolArgs) {
@@ -228,6 +285,7 @@ async function main() {
     check(r.status === 401, `token refused (HTTP ${r.status})`);
   } else if (await reads(token)) {
     if (WRITE) await writes(token);
+    if (MODERN) await modernChecks(token);
   }
 
   if (oauth && REVOKE) {

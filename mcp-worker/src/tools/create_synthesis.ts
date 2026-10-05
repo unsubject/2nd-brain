@@ -100,15 +100,17 @@ export async function createSynthesisHandler(
         INSERT INTO idea_source (idea_id, user_id, source_system)
         VALUES (${synthesisId}, ${env.BRAIN_USER_ID}, 'gardening')
       `;
+      const credential = credentialLabel(principal);
       for (const p of partIds) {
         const rationale = rationales[p] ?? `Included by the user in synthesis "${truncateChars(title, 200)}"`;
         await tx`
           INSERT INTO idea_link (
             user_id, source_idea_id, target_idea_id, link_type, status,
-            rationale, proposed_by, decided_at
+            rationale, proposed_by, proposed_via, decided_at, decided_via
           ) VALUES (
             ${env.BRAIN_USER_ID}, ${p}, ${synthesisId}, 'part_of', 'accepted',
-            ${rationale}, 'synthesis', now()
+            ${rationale}, 'synthesis', ${jsonParam(tx, { ...(args.captured_via ?? {}), credential })},
+            now(), ${jsonParam(tx, { credential })}
           )
         `;
       }

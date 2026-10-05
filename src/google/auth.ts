@@ -6,6 +6,8 @@ const SCOPES = [
   "https://www.googleapis.com/auth/contacts.readonly",
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/gmail.readonly",
+  // Archive consolidation reads the Drive archive folders and exports.
+  "https://www.googleapis.com/auth/drive.readonly",
 ];
 
 function createOAuth2Client() {

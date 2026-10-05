@@ -9,6 +9,7 @@ import {
   ideaColumns,
   ideaFromRow,
   ok,
+  parseJsonb,
   toIso,
   toIsoOrNull,
   uuidSchema,
@@ -30,8 +31,10 @@ type LinkRow = {
   rationale: string;
   similarity: number | null;
   proposed_by: string;
+  proposed_via: unknown;
   proposed_at: Date;
   decided_at: Date | null;
+  decided_via: unknown;
   source_idea_id: string;
   target_idea_id: string | null;
   target_artifact_id: string | null;
@@ -86,7 +89,7 @@ export async function getIdeaHandler(
 
     const links = await sql<Array<LinkRow>>`
       SELECT l.id, l.link_type, l.status, l.rationale, l.similarity, l.proposed_by,
-             l.proposed_at, l.decided_at,
+             l.proposed_via, l.proposed_at, l.decided_at, l.decided_via,
              l.source_idea_id, l.target_idea_id, l.target_artifact_id,
              o.id AS other_id, o.title AS other_title, o.kind AS other_kind, o.status AS other_status,
              a.title AS artifact_title, a.canonical_url AS artifact_url,
@@ -113,8 +116,10 @@ export async function getIdeaHandler(
         rationale: l.rationale,
         similarity: l.similarity,
         proposed_by: l.proposed_by,
+        proposed_via: parseJsonb<Record<string, unknown> | null>(l.proposed_via, null),
         proposed_at: toIso(l.proposed_at),
         decided_at: toIsoOrNull(l.decided_at),
+        decided_via: parseJsonb<Record<string, unknown> | null>(l.decided_via, null),
         ...(l.target_artifact_id
           ? {
               artifact: {

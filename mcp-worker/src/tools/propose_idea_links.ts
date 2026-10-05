@@ -150,7 +150,9 @@ export async function proposeIdeaLinksHandler(
               history = history || jsonb_build_array(jsonb_build_object(
                 'status', status, 'rationale', rationale, 'link_type', link_type,
                 'source_idea_id', source_idea_id, 'decided_at', decided_at,
-                'decision_note', decision_note, 'reopened_at', now()
+                'decision_note', decision_note, 'proposed_by', proposed_by,
+                'proposed_via', proposed_via, 'proposed_at', proposed_at, 'similarity', similarity,
+                'decided_via', decided_via, 'reopened_at', now()
               )),
               source_idea_id = ${source},
               target_idea_id = ${targetIdea},
@@ -161,6 +163,7 @@ export async function proposeIdeaLinksHandler(
               proposed_via = ${jsonParam(tx, via)},
               proposed_at = now(),
               decided_at = NULL,
+              decided_via = NULL,
               decision_note = NULL
             WHERE id = ${ex.id}
           `;

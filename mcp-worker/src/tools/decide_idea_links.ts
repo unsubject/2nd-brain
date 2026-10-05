@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import { canonicalPair, endpointError, isSymmetric, type LinkType } from '../ideas/linkTypes';
-import { errorResult, HandlerError, linkTypeSchema, ok } from './idea_shared';
+import { credentialLabel, errorResult, HandlerError, jsonParam, linkTypeSchema, ok } from './idea_shared';
 
 // Record the user's verdicts on proposals (docs/idea-parking-lot-protocol.md §2).
 // Transitions: proposed → accept | reject | withdraw; accepted → retract.
@@ -44,6 +45,7 @@ export async function decideIdeaLinksHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -54,6 +56,7 @@ export async function decideIdeaLinksHandler(
     return errorResult('Invalid arguments: each link_id may appear only once per call');
   }
 
+  const decidedVia = { credential: credentialLabel(principal) };
   const sql = getDb(env);
   const results: Result[] = [];
   const hints: string[] = [];
@@ -145,18 +148,27 @@ export async function decideIdeaLinksHandler(
                   `a ${type} link for this pair already exists (link ${c.id}, ${c.status}); decide that one instead`,
                 );
               }
+              // The revived row takes over the accepted proposal: its
+              // rationale and its proposer; the old ones go to history.
               await tx`
                 UPDATE idea_link SET
                   history = history || jsonb_build_array(jsonb_build_object(
                     'status', status, 'rationale', rationale, 'link_type', link_type,
                     'source_idea_id', source_idea_id, 'decided_at', decided_at,
-                    'decision_note', decision_note, 'revived_at', now()
+                    'decision_note', decision_note, 'proposed_by', proposed_by,
+                    'proposed_via', proposed_via, 'proposed_at', proposed_at, 'similarity', similarity,
+                    'decided_via', decided_via, 'revived_at', now()
                   )),
                   status = 'accepted',
                   source_idea_id = ${source},
                   target_idea_id = ${target},
                   rationale = ${link.rationale},
+                  proposed_by = (SELECT p.proposed_by FROM idea_link p WHERE p.id = ${link.id}),
+                  proposed_via = (SELECT p.proposed_via FROM idea_link p WHERE p.id = ${link.id}),
+                  proposed_at = (SELECT p.proposed_at FROM idea_link p WHERE p.id = ${link.id}),
+                  similarity = (SELECT p.similarity FROM idea_link p WHERE p.id = ${link.id}),
                   decided_at = now(),
+                  decided_via = ${jsonParam(tx, decidedVia)},
                   decision_note = ${d.note ?? null}
                 WHERE id = ${c.id}
               `;
@@ -164,6 +176,7 @@ export async function decideIdeaLinksHandler(
                 UPDATE idea_link SET
                   status = 'withdrawn',
                   decided_at = now(),
+                  decided_via = ${jsonParam(tx, decidedVia)},
                   decision_note = ${`superseded: accepted as ${type} on link ${c.id}`}
                 WHERE id = ${link.id}
               `;
@@ -173,13 +186,32 @@ export async function decideIdeaLinksHandler(
           }
 
           if (!superseded) {
+            // Retracting overwrites the accept: keep who accepted it, and when.
+            // Accepting with a different type or direction overwrites the
+            // proposal: keep what was proposed, and by whom.
             await tx`
               UPDATE idea_link SET
+                history = CASE
+                  WHEN status = 'accepted' THEN history || jsonb_build_array(jsonb_build_object(
+                    'status', status, 'link_type', link_type, 'decided_at', decided_at,
+                    'decided_via', decided_via, 'decision_note', decision_note, 'retracted_at', now()
+                  ))
+                  WHEN link_type IS DISTINCT FROM ${type}
+                    OR source_idea_id IS DISTINCT FROM ${source}
+                    OR target_idea_id IS DISTINCT FROM ${target}
+                  THEN history || jsonb_build_array(jsonb_build_object(
+                    'status', status, 'link_type', link_type, 'source_idea_id', source_idea_id,
+                    'target_idea_id', target_idea_id, 'rationale', rationale, 'proposed_by', proposed_by,
+                    'proposed_via', proposed_via, 'proposed_at', proposed_at, 'similarity', similarity,
+                    'retyped_at', now()
+                  ))
+                  ELSE history END,
                 status = ${next},
                 link_type = ${type},
                 source_idea_id = ${source},
                 target_idea_id = ${target},
                 decided_at = now(),
+                decided_via = ${jsonParam(tx, decidedVia)},
                 decision_note = ${d.note ?? null}
               WHERE id = ${link.id}
             `;

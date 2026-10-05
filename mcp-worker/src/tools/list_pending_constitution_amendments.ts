@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
+import { unwrapJsonb } from './idea_shared';
 
 const inputSchema = z.object({}).strict();
 
@@ -30,7 +31,9 @@ export async function listPendingConstitutionAmendmentsHandler(
          AND status = 'proposed'
        ORDER BY proposed_at DESC
     `;
-    return ok({ count: rows.length, amendments: rows });
+    // Payloads proposed before PR #63 may be stored as JSON strings.
+    const amendments = rows.map((r) => ({ ...r, proposed_payload: unwrapJsonb(r.proposed_payload) }));
+    return ok({ count: amendments.length, amendments });
   } catch (e) {
     return errorResult(`DB error: ${e instanceof Error ? e.message : String(e)}`);
   } finally {

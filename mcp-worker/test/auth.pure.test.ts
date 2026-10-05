@@ -49,6 +49,7 @@ describe('redirect allow-list', () => {
     ['cursor://anysphere.cursor-mcp/oauth/callback', 'cursor'],
     ['https://www.cursor.com/agents/mcp/oauth/callback', 'cursor'],
     ['https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1234567890-2nd-brain-mcp_example_workers_dev', 'google'],
+    ['https://agent.meta.ai/api/hatch/oauth/callback', 'meta'],
     ['http://localhost:33418/callback', 'loopback'],
     ['http://127.0.0.1/cb', 'loopback'],
     ['http://[::1]:8080/cb', 'loopback'],
@@ -68,6 +69,12 @@ describe('redirect allow-list', () => {
     'https://oauth-redirect.googleusercontent.com/r/my-project',
     'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-',
     'https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-1-x',
+    // Meta Muse: exact match only.
+    'https://agent.meta.ai/api/hatch/oauth/callback/x',
+    'https://agent.meta.ai/api/hatch/oauth/callback?next=evil',
+    'https://agent.meta.ai.evil.com/api/hatch/oauth/callback',
+    'http://agent.meta.ai/api/hatch/oauth/callback',
+    'https://muse.ai/connect/oauth-callback',
     'https://localhost/cb',
     'http://localhost.evil.com/cb',
     'http://evil.com/cb',
@@ -196,6 +203,9 @@ describe('/mcp authentication without a database', () => {
     expect(none).toContain(`resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp"`);
     expect(none).not.toContain('invalid_token');
     expect(unauthorized(req(), true).headers.get('WWW-Authenticate')).toContain('error="invalid_token"');
+    // The scope the resource needs (MCP authorization: SHOULD).
+    expect(none).toContain('scope="mcp"');
+    expect(unauthorized(req(), true).headers.get('WWW-Authenticate')).toContain('scope="mcp"');
   });
 
   it('accepts the master token unless ALLOW_MASTER_BEARER is "false"', async () => {
@@ -234,7 +244,10 @@ describe('OAuth discovery', () => {
     const root = await worker.fetch(new Request(`${BASE}/.well-known/oauth-protected-resource`), env, ctx);
     const mcp = await worker.fetch(new Request(`${BASE}/.well-known/oauth-protected-resource/mcp`), env, ctx);
     expect(((await root.json()) as { resource: string }).resource).toBe(BASE);
-    expect(((await mcp.json()) as { resource: string }).resource).toBe(`${BASE}/mcp`);
+    const prm = (await mcp.clone().json()) as { resource: string; scopes_supported: string[] };
+    expect(prm.resource).toBe(`${BASE}/mcp`);
+    // offline_access belongs to the authorization server, not the resource.
+    expect(prm.scopes_supported).toEqual(['mcp']);
     expect(mcp.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(((await protectedResourceMetadata(request, '').json()) as { authorization_servers: string[] }).authorization_servers).toEqual([BASE]);
     const pre = await worker.fetch(new Request(`${BASE}/token`, { method: 'OPTIONS' }), env, ctx);

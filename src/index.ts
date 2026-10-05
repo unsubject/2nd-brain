@@ -5,6 +5,7 @@ import { startScheduler } from "./scheduler";
 import { startGoogleSync } from "./google/sync";
 import { startArchiveWorker } from "./archive/worker";
 import { startIdeaEmbeddingWorker } from "./ideas/worker";
+import { startMcpRetention } from "./mcp/retention";
 import { startTaskSuggestionSweeper } from "./taskSuggestionSweeper";
 
 async function main() {
@@ -33,6 +34,7 @@ async function main() {
   startGoogleSync();
   startArchiveWorker();
   startIdeaEmbeddingWorker();
+  startMcpRetention();
   startTaskSuggestionSweeper(bot);
 }
 

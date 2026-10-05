@@ -3,6 +3,7 @@ import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { embed, vectorLiteral } from '../embeddings';
 import { getDb } from '../db';
+import { textArray } from './idea_shared';
 
 const inputSchema = z.object({
   query: z.string().min(1).max(8000),
@@ -60,7 +61,7 @@ export async function searchBrainHandler(
         AND ${scope === 'all' ? sql`TRUE` : sql`scope = ${scope}`}
         AND ${args.since ? sql`created_at >= ${args.since}` : sql`TRUE`}
         AND ${args.until ? sql`created_at <= ${args.until}` : sql`TRUE`}
-        AND ${args.tags && args.tags.length > 0 ? sql`tags @> ${args.tags}` : sql`TRUE`}
+        AND ${args.tags && args.tags.length > 0 ? sql`tags @> ${textArray(sql, args.tags)}` : sql`TRUE`}
         AND ${args.primary_type ? sql`primary_type = ${args.primary_type}` : sql`TRUE`}
       ORDER BY embedding <=> ${v}::vector
       LIMIT ${limit}

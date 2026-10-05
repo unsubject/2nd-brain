@@ -28,13 +28,14 @@ type ClientRow = { client_id: string; client_name: string | null; redirect_uris:
 // Server-side vendors hold one connection per account, so reconnecting
 // should replace the old one; local apps may legitimately run on several
 // machines under one name.
-const REPLACE_BY_DEFAULT = new Set<ClientFamily>(['claude', 'chatgpt', 'google']);
+const REPLACE_BY_DEFAULT = new Set<ClientFamily>(['claude', 'chatgpt', 'google', 'meta']);
 
 const DEFAULT_LABEL: Record<ClientFamily, string> = {
   claude: 'Claude',
   chatgpt: 'ChatGPT',
   cursor: 'Cursor',
   google: 'Gemini Spark',
+  meta: 'Meta Muse',
   loopback: 'Local app',
   custom: 'Custom client',
 };

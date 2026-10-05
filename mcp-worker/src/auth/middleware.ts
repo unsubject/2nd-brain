@@ -44,6 +44,7 @@ export function unauthorized(request: Request, tokenPresented: boolean): Respons
   const params = [
     'realm="2nd-brain"',
     ...(tokenPresented ? ['error="invalid_token"'] : []),
+    'scope="mcp"',
     `resource_metadata="${protectedResourceMetadataUrl(request)}"`,
   ];
   return new Response(null, {
