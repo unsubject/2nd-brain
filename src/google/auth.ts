@@ -92,18 +92,24 @@ export async function getAuthenticatedClient() {
     expiry_date: new Date(rows[0].expires_at).getTime(),
   });
 
-  oauth2Client.on("tokens", async (tokens) => {
-    await pool.query(
-      `UPDATE google_tokens
-       SET access_token = $1,
-           expires_at = $2,
-           updated_at = now()
-       WHERE user_id = 'default'`,
-      [
-        tokens.access_token,
-        new Date(tokens.expiry_date || Date.now() + 3600 * 1000),
-      ]
-    );
+  // EventEmitter ignores a listener's promise, so a failed UPDATE here would
+  // be an unhandled rejection; the refreshed token is still used in memory.
+  oauth2Client.on("tokens", (tokens) => {
+    pool
+      .query(
+        `UPDATE google_tokens
+         SET access_token = $1,
+             expires_at = $2,
+             updated_at = now()
+         WHERE user_id = 'default'`,
+        [
+          tokens.access_token,
+          new Date(tokens.expiry_date || Date.now() + 3600 * 1000),
+        ]
+      )
+      .catch((err) =>
+        console.error("[google] could not store the refreshed access token:", err instanceof Error ? err.message : String(err))
+      );
   });
 
   return oauth2Client;

@@ -6,6 +6,7 @@ import {
   expireStaleSuggestions,
   TaskSuggestion,
 } from "./db/taskSuggestions";
+import { describeError } from "./telegram/errors";
 
 const POST_INTERVAL_MS = 30_000;
 const EXPIRY_INTERVAL_MS = 5 * 60_000;
@@ -35,8 +36,7 @@ async function postBatch(bot: Bot): Promise<void> {
       await markSuggestionPosted(s.id, msg.message_id.toString());
     } catch (err) {
       console.error(
-        `[taskSuggestSweeper] post failed for ${s.id} (chat ${s.telegram_chat_id}):`,
-        err
+        `[taskSuggestSweeper] post failed for ${s.id} (chat ${s.telegram_chat_id}): ${describeError(err)}`
       );
     }
   }
@@ -70,7 +70,7 @@ export function startTaskSuggestionSweeper(bot: Bot): void {
     try {
       await postBatch(bot);
     } catch (err) {
-      console.error("[taskSuggestSweeper] post tick error:", err);
+      console.error(`[taskSuggestSweeper] post tick error: ${describeError(err)}`);
     } finally {
       setTimeout(postTick, POST_INTERVAL_MS);
     }
@@ -79,7 +79,7 @@ export function startTaskSuggestionSweeper(bot: Bot): void {
     try {
       await expireBatch(bot);
     } catch (err) {
-      console.error("[taskSuggestSweeper] expire tick error:", err);
+      console.error(`[taskSuggestSweeper] expire tick error: ${describeError(err)}`);
     } finally {
       setTimeout(expireTick, EXPIRY_INTERVAL_MS);
     }
