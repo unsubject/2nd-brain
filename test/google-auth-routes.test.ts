@@ -6,7 +6,15 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
-import { STATE_TTL_MS, googleAuthRoutes, secretMatches, signState, verifyState } from "../src/google/routes";
+import {
+  STATE_TTL_MS,
+  googleAuthRoutes,
+  secretMatches,
+  signState,
+  verifyState,
+  type GoogleAuthRouteOptions,
+} from "../src/google/routes";
+import { missingScopes } from "../src/google/auth";
 
 const SECRET = "test-owner-secret-0123456789abcdef";
 
@@ -40,7 +48,10 @@ test("signState / verifyState", () => {
 
 type Started = { base: string; server: Server; codes: string[]; clock: { now: number } };
 
-async function start(secret: string | undefined, handleCallback?: (code: string) => Promise<void>): Promise<Started> {
+async function start(
+  secret: string | undefined,
+  handleCallback?: GoogleAuthRouteOptions["handleCallback"],
+): Promise<Started> {
   const codes: string[] = [];
   const clock = { now: 1_800_000_000_000 };
   const app = express();
@@ -77,6 +88,7 @@ async function issuedState(s: Started): Promise<string> {
 let configured: Started;
 let unconfigured: Started;
 let failing: Started;
+let partial: Started;
 
 before(async () => {
   configured = await start(SECRET);
@@ -87,10 +99,11 @@ before(async () => {
     err.response = { status: 400, data: { error: "invalid_grant" } };
     throw err;
   });
+  partial = await start(SECRET, async () => ({ missingScopes: ["Google Drive (read-only)", "<b>x</b>"] }));
 });
 
 after(() => {
-  for (const s of [configured, unconfigured, failing]) s?.server.close();
+  for (const s of [configured, unconfigured, failing, partial]) s?.server.close();
 });
 
 test("without OWNER_SECRET every route refuses with 503", async () => {
@@ -196,4 +209,31 @@ test("a failing token exchange answers 500 and logs no request data", async (t) 
   assert.equal(logged.length, 1);
   assert.match(logged[0], /invalid_grant \(HTTP 400: invalid_grant\)/);
   assert.ok(!logged[0].includes("must-not-be-logged"));
+});
+
+test("the callback names permissions Google did not grant", async () => {
+  const state = await issuedState(partial);
+  const res = await fetch(`${partial.base}/auth/google/callback?code=c&state=${encodeURIComponent(state)}`);
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.match(body, /permissions missing/);
+  assert.match(body, /Google Drive \(read-only\)/);
+  assert.match(body, /&lt;b&gt;x&lt;\/b&gt;/);
+  assert.match(body, /href="\/auth\/google"/);
+});
+
+test("missingScopes compares the granted scopes with the requested ones", () => {
+  const all = [
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+  ];
+  assert.deepEqual(missingScopes(all.join(" ")), []);
+  assert.deepEqual(missingScopes(all.slice(0, 4).join(" ")), ["Google Drive (read-only)"]);
+  // Extra scopes Google adds (openid, …) don't matter; unknown grants = nothing to report.
+  assert.deepEqual(missingScopes(`openid ${all.join(" ")}`), []);
+  assert.deepEqual(missingScopes(undefined), []);
+  assert.deepEqual(missingScopes(""), []);
 });

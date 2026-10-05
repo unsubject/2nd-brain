@@ -263,3 +263,33 @@ test("collectMessage stages nothing when an out-of-line body can't be fetched", 
   // No row: the next run sees the message as new and fetches it again.
   assert.deepEqual([...(await staging.existingSourceRefs("gmail", ["m-big"], db))], []);
 });
+
+test("collectMessage retries a quota error instead of failing the message", { skip }, async () => {
+  const { RateLimiter } = await import("../src/archive/consolidation/ratelimit");
+  const stats = gmail.emptyStats();
+  const limiter = new RateLimiter({
+    minIntervalMs: 0,
+    maxIntervalMs: 1,
+    retries: 3,
+    basePauseMs: 1,
+    maxPauseMs: 5,
+    onLimited: () => {
+      stats.rateLimitPauses += 1;
+    },
+  });
+  const msg = { id: "m-quota", threadId: "t-quota", payload: { mimeType: "text/plain", body: { data: b64("正文") } } };
+  let calls = 0;
+  const flaky = stubGmail(msg, {});
+  const realGet = flaky.users.messages.get;
+  (flaky.users.messages as any).get = async (...args: unknown[]) => {
+    if (++calls === 1) {
+      throw Object.assign(new Error("Quota exceeded for quota metric 'Total Query Cost'"), { code: 403, response: { status: 403 } });
+    }
+    return (realGet as any)(...args);
+  };
+  await gmail.collectMessage(flaky, "m-quota", new Map(), stats, limiter);
+  assert.equal(calls, 2);
+  assert.equal(stats.failed, 0);
+  assert.equal(stats.inserted, 1);
+  assert.equal(stats.rateLimitPauses, 1);
+});

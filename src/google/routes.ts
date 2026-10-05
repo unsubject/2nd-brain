@@ -73,7 +73,7 @@ function page(res: Response, status: number, title: string, body: string, formAc
 
 const form = (notice = "") =>
   `${notice ? `<p><strong>${escapeHtml(notice)}</strong></p>` : ""}` +
-  `<p>Connecting replaces the Google account that 2nd-brain syncs Tasks, Contacts, Calendar and Gmail from.</p>` +
+  `<p>Connecting replaces the Google account that 2nd-brain syncs Tasks, Contacts, Calendar and Gmail from, and reads the Drive archive folders from. Leave every permission ticked on Google's screen.</p>` +
   `<form method="post" action="/auth/google"><label>Owner secret<input type="password" name="secret" autocomplete="current-password" required autofocus></label>` +
   `<button type="submit">Continue to Google</button></form>`;
 
@@ -81,7 +81,8 @@ export type GoogleAuthRouteOptions = {
   /** OWNER_SECRET; when unset the routes refuse to start a connection. */
   secret: string | undefined;
   getAuthUrl: (state: string) => string;
-  handleCallback: (code: string) => Promise<void>;
+  /** Stores the tokens; reports requested permissions Google didn't grant. */
+  handleCallback: (code: string) => Promise<{ missingScopes?: string[] } | void>;
   now?: () => number;
   /** Origin of the URLs getAuthUrl returns (tests point it elsewhere). */
   authOrigin?: string;
@@ -134,7 +135,16 @@ export function googleAuthRoutes(opts: GoogleAuthRouteOptions): Router {
       return page(res, 400, "Missing authorization code", '<p>Start again from <a href="/auth/google">/auth/google</a>.</p>');
     }
     try {
-      await opts.handleCallback(code);
+      const missing = (await opts.handleCallback(code))?.missingScopes ?? [];
+      if (missing.length > 0) {
+        return page(
+          res,
+          200,
+          "Google account connected, with permissions missing",
+          `<p>Google did not grant: <strong>${missing.map(escapeHtml).join(", ")}</strong>.</p>` +
+            `<p>Whatever needs these will fail. <a href="/auth/google">Connect again</a> and leave every box ticked on Google's screen.</p>`
+        );
+      }
       page(res, 200, "Google account connected", "<p>You can close this tab. The next sync runs within 30 minutes.</p>");
     } catch (err) {
       console.error("Google OAuth callback error:", describeGoogleError(err));

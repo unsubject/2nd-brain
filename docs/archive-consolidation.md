@@ -76,6 +76,15 @@ All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
    curl "$BASE/archive/consolidation/status" -H "Authorization: Bearer $ARCHIVE_API_KEY"
    ```
 
+Google calls are paced and, when Google answers "quota exceeded", the whole
+run pauses (15 s, 30 s, … up to 2 min), slows down and retries the call;
+`stats.rateLimitPauses` counts the pauses. The first Gmail run, before this
+existed, lost 4,039 of 4,297 messages to Gmail's per-minute quota within 30
+seconds.
+
+The Google connection page lists any permission Google didn't grant (the
+consent screen lets you untick each one); connect again if Drive is listed.
+
 A run ends `failed` if any item failed; the run's `stats.errors` lists them.
 Failed items are picked up by the next normal run: a message whose body
 couldn't be fetched is never staged, and a staged message with a `.docx`
