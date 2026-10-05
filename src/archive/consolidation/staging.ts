@@ -90,6 +90,26 @@ export async function existingSourceRefs(
   return new Set(rows.map((r) => r.source_ref));
 }
 
+// Staged Gmail messages (among `refs`) with an expected attachment row
+// missing; the collector fetches these again even without refetch.
+export async function incompleteGmailMessages(refs: string[], db: DB = pool): Promise<Set<string>> {
+  if (refs.length === 0) return new Set();
+  const { rows } = await db.query<{ source_ref: string }>(
+    `SELECT m.source_ref
+       FROM archive_source_item m
+      WHERE m.source = 'gmail' AND m.source_ref = ANY($1)
+        AND EXISTS (
+          SELECT 1
+            FROM jsonb_array_elements_text(coalesce(m.metadata->'expectedAttachmentRefs', '[]'::jsonb)) AS r(ref)
+           WHERE NOT EXISTS (
+             SELECT 1 FROM archive_source_item a WHERE a.source = 'gmail' AND a.source_ref = r.ref
+           )
+        )`,
+    [refs]
+  );
+  return new Set(rows.map((r) => r.source_ref));
+}
+
 export class RunAlreadyActiveError extends Error {
   constructor(source: CollectorSource) {
     super(`a ${source} collection run is already in progress`);

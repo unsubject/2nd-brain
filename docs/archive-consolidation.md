@@ -77,6 +77,9 @@ All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
    ```
 
 A run ends `failed` if any item failed; the run's `stats.errors` lists them.
+Failed items are picked up by the next normal run: a message whose body
+couldn't be fetched is never staged, and a staged message with a `.docx`
+attachment row missing is fetched again (`stats.retriedIncomplete`).
 Only one run per source can be active; a run with no progress for 15
 minutes (e.g. a restart mid-run) is marked failed when the next one starts.
 Pass `"refetch": true` to re-read items that are already staged.
@@ -85,7 +88,8 @@ Pass `"refetch": true` to re-read items that are already staged.
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
   `isSent`, attachment list), plus one row per `.docx` attachment
-  (`<message id>#<part id>`) with its text.
+  (`<message id>#<part id>`) with its text. Long bodies that Gmail stores
+  out of line are fetched separately (`externalBodies` in the metadata).
 - **gdrive**: one row per Google Doc (text + HTML export) or `.docx`, with its
   folder path and Drive timestamps. Unchanged files are skipped on re-runs.
 - **wordpress**: one row per post or page (`<site host>:<post id>`), HTML as
@@ -95,3 +99,6 @@ Pass `"refetch": true` to re-read items that are already staged.
   joined with `posts.csv` (title, subtitle, date, audience, published flag).
   The export's subscriber lists are never opened: entries are filtered by
   name before anything is read.
+- If the folder holds several WordPress or Substack exports, they are read
+  oldest first (by Drive modified time), so the newest snapshot's copy of
+  each post is the one left staged.

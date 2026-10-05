@@ -18,9 +18,20 @@ export interface AttachmentRef {
   attachmentId: string;
 }
 
+// A body part Gmail stored out of line (large bodies come back with an
+// attachmentId instead of inline data); fetch it with attachments.get and
+// decode it with decodeBody(data, charset).
+export interface ExternalBody {
+  attachmentId: string;
+  charset: string | null;
+}
+
 export interface ExtractedBodies {
   text: string | null;
   html: string | null;
+  // Set instead of text/html when that body must be fetched separately.
+  textExternal: ExternalBody | null;
+  htmlExternal: ExternalBody | null;
   // Charsets that weren't recognised and fell back to UTF-8.
   unknownCharsets: string[];
   attachments: AttachmentRef[];
@@ -59,12 +70,21 @@ export function decodeBody(
   return decoder.decode(bytes);
 }
 
-// Walk the MIME tree: the first inline text/plain and text/html bodies win
+// Walk the MIME tree: the first text/plain and text/html bodies win
 // (multipart/alternative lists plain before html; forwarded messages nest
 // further down and are kept in the quoted text, not picked separately).
+// A winning body Gmail stored out of line is returned as textExternal /
+// htmlExternal for the caller to fetch; a later part never replaces it.
 // Parts with a filename are attachments, never bodies.
 export function extractBodies(payload: GmailPartLike | null | undefined): ExtractedBodies {
-  const out: ExtractedBodies = { text: null, html: null, unknownCharsets: [], attachments: [] };
+  const out: ExtractedBodies = {
+    text: null,
+    html: null,
+    textExternal: null,
+    htmlExternal: null,
+    unknownCharsets: [],
+    attachments: [],
+  };
   const walk = (part: GmailPartLike) => {
     const mime = (part.mimeType ?? "").toLowerCase();
     const filename = part.filename ?? "";
@@ -81,12 +101,22 @@ export function extractBodies(payload: GmailPartLike | null | undefined): Extrac
       return;
     }
     if (mime === "text/plain" || mime === "text/html") {
+      const isText = mime === "text/plain";
+      const claimed = isText
+        ? out.text !== null || out.textExternal !== null
+        : out.html !== null || out.htmlExternal !== null;
       const data = part.body?.data;
-      if (data) {
+      const attachmentId = part.body?.attachmentId;
+      if (!claimed && (data || attachmentId)) {
         const charset = charsetOf(header(part.headers, "content-type"));
-        const decoded = decodeBody(data, charset, out.unknownCharsets);
-        if (mime === "text/plain" && out.text === null) out.text = decoded;
-        if (mime === "text/html" && out.html === null) out.html = decoded;
+        if (data) {
+          const decoded = decodeBody(data, charset, out.unknownCharsets);
+          if (isText) out.text = decoded;
+          else out.html = decoded;
+        } else if (attachmentId) {
+          if (isText) out.textExternal = { attachmentId, charset };
+          else out.htmlExternal = { attachmentId, charset };
+        }
       }
     }
     for (const child of part.parts ?? []) walk(child);

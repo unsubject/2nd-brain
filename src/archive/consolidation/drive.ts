@@ -55,6 +55,7 @@ export function emptyDriveStats(): DriveStats {
   return {
     listed: 0,
     skippedExisting: 0,
+    retriedIncomplete: 0,
     inserted: 0,
     updated: 0,
     unchanged: 0,
@@ -297,6 +298,30 @@ async function collectSubstack(drive: Drive, f: DriveFile, stats: DriveStats): P
   }
 }
 
+type OrderedFile = Pick<DriveFile, "name" | "mimeType" | "createdTime" | "modifiedTime">;
+
+function isXmlFile(f: OrderedFile): boolean {
+  return f.mimeType === "text/xml" || f.mimeType === "application/xml" || /\.xml$/i.test(f.name);
+}
+
+function isZipFile(f: OrderedFile): boolean {
+  return f.mimeType === "application/zip" || /\.zip$/i.test(f.name);
+}
+
+// Posts from different export snapshots share source refs, so each one
+// overwrites the last. Read exports after everything else, oldest first
+// by Drive modifiedTime, so the newest snapshot is the one left staged.
+export function collectionOrder<T extends OrderedFile>(files: T[]): T[] {
+  const isExport = (f: T) => f.mimeType !== GDOC && f.mimeType !== DOCX && (isXmlFile(f) || isZipFile(f));
+  // RFC 3339 UTC strings from Drive sort correctly as plain strings.
+  const time = (f: T) => f.modifiedTime ?? f.createdTime ?? "";
+  const cmp = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+  const exports = files
+    .filter(isExport)
+    .sort((a, b) => cmp(time(a), time(b)) || cmp(a.name, b.name));
+  return [...files.filter((f) => !isExport(f)), ...exports];
+}
+
 // Drive files whose modifiedTime matches the staged copy are skipped.
 // Exports (xml/zip) fan out into many rows, so they are always re-read.
 async function stagedModifiedTimes(): Promise<Map<string, string>> {
@@ -328,10 +353,10 @@ export async function collectDrive(
   const staged = params.refetch ? new Map<string, string>() : await stagedModifiedTimes();
 
   let done = 0;
-  for (const f of files) {
+  for (const f of collectionOrder(files)) {
     try {
-      const isXml = f.mimeType === "text/xml" || f.mimeType === "application/xml" || /\.xml$/i.test(f.name);
-      const isZip = f.mimeType === "application/zip" || /\.zip$/i.test(f.name);
+      const isXml = isXmlFile(f);
+      const isZip = isZipFile(f);
       if (f.mimeType === GDOC || f.mimeType === DOCX) {
         if (f.modifiedTime && staged.get(f.id) === f.modifiedTime) {
           stats.skippedUnchanged += 1;
