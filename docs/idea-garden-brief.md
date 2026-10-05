@@ -1,5 +1,7 @@
 # Brief: The Idea Garden (Idea Parking Lot)
 
+> **Kept as Simon's original brief (2026-10-05).** 2nd-brain builds the Idea Garden by extending its existing idea tools rather than from scratch. Where this brief and [`docs/decisions/2026-10-05-refocus.md`](decisions/2026-10-05-refocus.md) differ, the decision record wins: link proposals at capture (D3), link types and their display labels (D4), the inbox marker instead of an `inbox` status (Phase 4), and the answers to §9.
+
 **For:** a vibe-coding agent building this from scratch.
 **Owner:** Simon Lee — economist, YouTuber, writer. His core creative method is **bisociation**: connecting ideas across unrelated domains to make something new.
 

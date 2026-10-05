@@ -72,7 +72,8 @@ export async function getEntryHandler(
       }>
     >`
       SELECT le.target_id, le.target_type, le.link_type, le.confidence, le.explanation,
-             COALESCE(p.full_name, c.title, t.title, em.subject, a.title, er.display_name) AS target_title
+             COALESCE(p.full_name, c.title, t.title, em.subject, a.title, er.display_name) AS target_title,
+             now() AS as_of
         FROM link_edge le
         LEFT JOIN person_ref         p  ON le.target_type='person_ref'         AND p.id  = le.target_id
         LEFT JOIN calendar_event_ref c  ON le.target_type='calendar_event_ref' AND c.id  = le.target_id

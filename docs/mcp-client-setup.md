@@ -27,7 +27,7 @@ There are two ways a client gets a credential:
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
   - Only a hash of it is stored.
 
-The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 38 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
+The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 35 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
 
 ## Claude (claude.ai web, Desktop, mobile)
 
@@ -71,7 +71,7 @@ Add this to `~/.cursor/mcp.json` (or to `.cursor/mcp.json` in a project):
 
 Cursor shows **Needs login**. Click it and approve (label `Cursor`). Cursor registers both its app callback and its Cloud Agents callback (`https://www.cursor.com/agents/mcp/oauth/callback`); both are allowed. If OAuth fails, use the PAT snippet from `/tokens`, which adds a `headers` block.
 
-Cursor allows only about 40 tools across all servers. 2nd-brain uses 38, so disable other servers' tools if you hit the limit.
+Cursor allows only about 40 tools across all servers. 2nd-brain uses 35, so disable other servers' tools if you hit the limit.
 
 ## Gemini CLI
 

@@ -64,7 +64,7 @@ Do **not** call `search_brain`:
 - For factual questions ("what is the capital of France") that have nothing to do with the user's life.
 - When the user is clearly continuing an in-conversation thread you already have full context for.
 
-Surface results as: a short paraphrase of what they wrote and the date. Don't dump raw `clean_text` unless asked. Each hit says how it matched (`semantic`, `text` or both); a text-only hit with a `processing_status` is an entry not processed yet. Let the user decide whether a hit is relevant — search is fuzzy.
+Surface results as: a short paraphrase of what they wrote and the date. Don't dump raw `clean_text` unless asked. Each hit says how it matched: `semantic`, `text` or both. An entry found both ways ranks first. Text-only hits have no `similarity`, so the thresholds below apply only to semantic hits. A hit that shows a `processing_status` has no summary or embedding: `pending` means processing hasn't finished, and `error` means it failed (the full text is still there). Let the user decide whether a hit is relevant — search is fuzzy.
 
 ### `save_session` — when to use it
 
@@ -160,7 +160,7 @@ A few hard rules:
 ### Worker boundaries
 
 - The Worker is **read-mostly + scoped-write**. Original writes were `journal_entry` and `capture_event` only. Subsequent additions: `editorial_pick` (PR #45), `goals` / `undertakings` / `undertaking_cycles` / `goal_amendments` (PR #49), the constitution split (PR #54) which added `constitution_domains` and `constitution_amendments` and repointed `goals` to the SMART layer, and the Idea Parking Lot (`idea`, `idea_source`, `idea_link`; spec in `docs/phase-idea-parking-lot-spec.md`). Any further new write target needs a deliberate decision and a doc update here.
-- **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (tags, classification, embedding) in a single place. The same rule holds for ideas: the Worker inserts `idea` rows with `embedding NULL` and the Node sweeper `src/ideas/worker.ts` embeds them (and re-embeds after the `idea_before_update` trigger clears a stale embedding).
+- **Never call `src/processor.ts` or `src/worker.ts` from the Worker.** Inserts into `journal_entry` go in with `processing_status='pending'` and the existing Node monolith's worker loop finishes the row. This keeps the processing pipeline (summary, tags, embedding) in a single place. The same rule holds for ideas: the Worker inserts `idea` rows with `embedding NULL` and the Node sweeper `src/ideas/worker.ts` embeds them (and re-embeds after the `idea_before_update` trigger clears a stale embedding).
 - The Worker should not own its own scheduled jobs in v1. If something needs to run periodically, it lives in the Node monolith's scheduler (e.g. `src/mcp/retention.ts` prunes the Worker's call log and stale auth rows daily).
 
 ### DB access
