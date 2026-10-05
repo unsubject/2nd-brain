@@ -29,7 +29,7 @@ Decisions (Simon, 2026-10-04):
 ## Steps
 
 1. **Collect** (this step). Copy every candidate verbatim into
-   `archive_source_item` (migration 021). Nothing is cleaned, matched or
+   `archive_source_item` (migration `021_archive_staging.sql`). Nothing is cleaned, matched or
    deleted; re-runs are idempotent.
 2. **Extract.** Turn each staged item into candidate essay text: for an email
    thread, the last version Simon sent, without quoted replies, notes to the

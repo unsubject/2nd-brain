@@ -73,7 +73,7 @@ function page(res: Response, status: number, title: string, body: string, formAc
 
 const form = (notice = "") =>
   `${notice ? `<p><strong>${escapeHtml(notice)}</strong></p>` : ""}` +
-  `<p>Connecting replaces the Google account that 2nd-brain syncs Tasks, Contacts, Calendar and Gmail from, and reads the Drive archive folders from. Leave every permission ticked on Google's screen.</p>` +
+  `<p>Connecting replaces the Google account that 2nd-brain syncs Tasks, Contacts and Calendar from, and reads the Gmail writing label and Drive archive folders from. Leave every permission ticked on Google's screen.</p>` +
   `<form method="post" action="/auth/google"><label>Owner secret<input type="password" name="secret" autocomplete="current-password" required autofocus></label>` +
   `<button type="submit">Continue to Google</button></form>`;
 

@@ -52,7 +52,6 @@ export async function getEntryHandler(
     }
     const e = entries[0];
 
-    // Scope filter mirrors src/db/queries.ts → getLinksForRecentEntries.
     // link_edge rows are written scope-agnostic by the linker (see file
     // header of src/google/linker.ts); reader-side enforcement lives here.
     // For a family-scope entry, only family-scope targets may be returned —

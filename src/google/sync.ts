@@ -1,7 +1,6 @@
 import { syncTasks } from "./tasks";
 import { syncContacts } from "./contacts";
 import { syncCalendar } from "./calendar";
-import { syncGmail } from "./gmail";
 import { pool } from "../db/client";
 import { describeGoogleError } from "./errors";
 
@@ -41,13 +40,6 @@ async function runSync(): Promise<void> {
     console.log("  Calendar synced");
   } catch (err) {
     console.error("  Calendar sync error:", describeGoogleError(err));
-  }
-
-  try {
-    await syncGmail();
-    console.log("  Gmail synced");
-  } catch (err) {
-    console.error("  Gmail sync error:", describeGoogleError(err));
   }
 
   console.log(`Google sync complete (${Math.round((Date.now() - start) / 1000)}s)`);
