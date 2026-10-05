@@ -1,6 +1,5 @@
-// The monolith's HTTP surface: the Telegram webhook needs Telegram's secret
-// header and survives a failing handler; the archive routes need the API key
-// whatever the path's case; /feed no longer exists.
+// The monolith's HTTP surface: the archive routes need the API key whatever
+// the path's case; the retired Telegram webhook and /feed are gone.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -10,40 +9,24 @@ import type { Server } from "node:http";
 // No database in these tests: point the pool at a closed port before the
 // app's modules load, so any handler that reaches the database fails fast.
 process.env.DATABASE_URL = "postgres://nobody:nothing@127.0.0.1:1/none_test";
-// The OpenAI client is built at import time and needs a key; nothing here calls it.
+// Clients built at import time may need a key; nothing here calls them.
 process.env.OPENAI_API_KEY ||= "sk-test-unused";
 
-const FAKE_TOKEN = "123456789:AAFakeTokenForTestsOnly_abcdefghijklm";
-const SECRET_TOKEN = "a".repeat(64);
 const ARCHIVE_KEY = "archive-key-for-tests";
-const OWNER = 111;
-const STRANGER = 222;
-
-type ApiCall = { method: string; payload: Record<string, unknown> };
 
 let server: Server;
 let base: string;
-const apiCalls: ApiCall[] = [];
+
+async function listen(app: import("express").Express): Promise<{ server: Server; base: string }> {
+  const s = await new Promise<Server>((resolve) => {
+    const x = app.listen(0, "127.0.0.1", () => resolve(x));
+  });
+  return { server: s, base: `http://127.0.0.1:${(s.address() as AddressInfo).port}` };
+}
 
 before(async () => {
-  const { createBot, createApp } = await import("../src/bot");
-  const bot = createBot(FAKE_TOKEN, new Set([String(OWNER)]));
-  // Answer every Bot API call locally; nothing goes to Telegram.
-  bot.api.config.use(async (_prev, method, payload) => {
-    apiCalls.push({ method, payload: payload as Record<string, unknown> });
-    const result =
-      method === "getMe"
-        ? { id: 1, is_bot: true, first_name: "test", username: "test_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false }
-        : method === "sendMessage"
-          ? { message_id: 1, date: 0, chat: { id: OWNER, type: "private" }, text: "" }
-          : true;
-    return { ok: true, result } as never;
-  });
-  const app = createApp(bot, { secretToken: SECRET_TOKEN, archiveApiKey: ARCHIVE_KEY, ownerSecret: undefined });
-  server = await new Promise<Server>((resolve) => {
-    const s = app.listen(0, "127.0.0.1", () => resolve(s));
-  });
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const { createApp } = await import("../src/server");
+  ({ server, base } = await listen(createApp({ archiveApiKey: ARCHIVE_KEY, ownerSecret: undefined })));
 });
 
 after(async () => {
@@ -52,80 +35,37 @@ after(async () => {
   await pool.end().catch(() => {});
 });
 
-let updateId = 1000;
-function textUpdate(fromId: number, text: string) {
-  updateId++;
-  return {
-    update_id: updateId,
-    message: {
-      message_id: updateId,
-      date: Math.floor(Date.now() / 1000),
-      chat: { id: fromId, type: "private", first_name: "T" },
-      from: { id: fromId, is_bot: false, first_name: "T" },
-      text,
-    },
+test("health answers", async () => {
+  const res = await fetch(`${base}/health`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { status: "ok" });
+});
+
+test("no source file reads a Telegram setting or imports grammY", async () => {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (p.endsWith(".ts")) files.push(p);
+    }
   };
-}
-
-const postUpdate = (update: unknown, secret: string | null = SECRET_TOKEN) =>
-  fetch(`${base}/webhook/telegram`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...(secret === null ? {} : { "x-telegram-bot-api-secret-token": secret }) },
-    body: JSON.stringify(update),
-  });
-
-test("the webhook refuses requests without Telegram's secret header", async () => {
-  const start = apiCalls.length;
-  assert.equal((await postUpdate(textUpdate(OWNER, "hello"), null)).status, 401);
-  assert.equal((await postUpdate(textUpdate(OWNER, "hello"), "b".repeat(64))).status, 401);
-  assert.deepEqual(apiCalls.slice(start).filter((c) => c.method === "sendMessage"), [], "the update never reached the bot");
+  await walk(join(__dirname, "..", "src"));
+  assert.ok(files.length > 10);
+  for (const f of files) {
+    const text = await readFile(f, "utf8");
+    assert.ok(!/TELEGRAM_BOT_TOKEN|WEBHOOK_SECRET|WEBHOOK_URL|OWNER_TELEGRAM_USER_IDS|from "grammy"/.test(text), f);
+  }
 });
 
-test("the webhook checks the secret before parsing, and answers bad bodies with a bare status", async () => {
-  const send = (body: string, secret: string | null) =>
-    fetch(`${base}/webhook/telegram`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(secret ? { "x-telegram-bot-api-secret-token": secret } : {}) },
-      body,
-    });
-  const noSecret = await send('{"unterminated', null);
-  assert.equal(noSecret.status, 401);
-  const malformed = await send('{"unterminated', SECRET_TOKEN);
-  assert.equal(malformed.status, 400);
-  const text = await malformed.text();
-  assert.ok(!/SyntaxError|node_modules|at /.test(text), "no stack trace in the response");
-  const oversized = await send(JSON.stringify({ x: "y".repeat(200_000) }), SECRET_TOKEN);
-  assert.equal(oversized.status, 413);
-});
-
-test("the old secret-in-path webhook route is gone", async () => {
-  const res = await fetch(`${base}/webhook/${SECRET_TOKEN}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(res.status, 404);
-});
-
-test("a stranger's message is dropped before any handler runs", async (t) => {
-  t.mock.method(console, "warn", () => {});
-  const start = apiCalls.length;
-  const res = await postUpdate(textUpdate(STRANGER, "/task Pay invoice to X"));
-  assert.equal(res.status, 200);
-  assert.deepEqual(apiCalls.slice(start).map((c) => c.method).filter((m) => m !== "getMe"), [], "no reply, no task, no capture");
-});
-
-test("a failing handler answers 200, tells the owner, and logs no secret", async (t) => {
-  const logged: string[] = [];
-  t.mock.method(console, "error", (...args: unknown[]) => void logged.push(args.map(String).join(" ")));
-  const start = apiCalls.length;
-  // Capture needs the database, which is unreachable here: the handler throws.
-  const res = await postUpdate(textUpdate(OWNER, "a private thought"));
-  assert.equal(res.status, 200);
-  const replies = apiCalls.slice(start).filter((c) => c.method === "sendMessage");
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].payload.chat_id, OWNER);
-  assert.match(String(replies[0].payload.text), /may not have been saved/);
-  assert.equal(logged.length, 1);
-  assert.match(logged[0], /^\[bot\] update \d+ failed: /);
-  assert.ok(!logged[0].includes(FAKE_TOKEN));
-  assert.ok(!logged[0].includes("a private thought"));
+test("the Telegram webhook routes and /feed are gone", async () => {
+  for (const path of ["/webhook/telegram", "/webhook/some-old-secret", "/family-webhook/x"]) {
+    const res = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(res.status, 404, path);
+  }
+  assert.equal((await fetch(`${base}/feed`)).status, 404);
 });
 
 test("the archive routes require the key, whatever the path's case", async () => {
@@ -153,21 +93,14 @@ test("the right key reaches the archive handlers", async (t) => {
 });
 
 test("with no archive key configured, every archive request is refused", async () => {
-  const { createBot, createApp } = await import("../src/bot");
-  const app = createApp(createBot(FAKE_TOKEN, new Set()), { secretToken: SECRET_TOKEN, archiveApiKey: undefined, ownerSecret: undefined });
-  const s = await new Promise<Server>((resolve) => {
-    const x = app.listen(0, "127.0.0.1", () => resolve(x));
-  });
+  const { createApp } = await import("../src/server");
+  const other = await listen(createApp({ archiveApiKey: undefined, ownerSecret: undefined }));
   try {
-    const url = `http://127.0.0.1:${(s.address() as AddressInfo).port}/archive/stats`;
+    const url = `${other.base}/archive/stats`;
     assert.equal((await fetch(url)).status, 401);
     assert.equal((await fetch(url, { headers: { authorization: "Bearer " } })).status, 401);
     assert.equal((await fetch(url, { headers: { authorization: "Bearer undefined" } })).status, 401);
   } finally {
-    s.close();
+    other.server.close();
   }
-});
-
-test("/feed is gone", async () => {
-  assert.equal((await fetch(`${base}/feed`)).status, 404);
 });

@@ -39,6 +39,9 @@ export async function syncTasks(): Promise<void> {
       [list.id, list.title, listType]
     );
     const projectRefId = projectRows[0].id;
+    // Linking needs only titles and status. Notes and dates are read for the
+    // "Subjects" list alone, which the idea import copies from.
+    const full = listType === "subjects";
 
     // First pass: upsert all tasks with parent_external_task_id
     let pageToken: string | undefined;
@@ -49,6 +52,9 @@ export async function syncTasks(): Promise<void> {
         showCompleted: true,
         showHidden: true,
         pageToken,
+        fields: full
+          ? "nextPageToken,items(id,title,notes,status,due,completed,parent,position)"
+          : "nextPageToken,items(id,title,status,parent,position)",
       });
 
       for (const task of data.items || []) {
@@ -75,10 +81,10 @@ export async function syncTasks(): Promise<void> {
             list.id,
             projectRefId,
             task.title,
-            task.notes || null,
+            full ? task.notes || null : null,
             task.status || "needsAction",
-            task.due ? new Date(task.due) : null,
-            task.completed ? new Date(task.completed) : null,
+            full && task.due ? new Date(task.due) : null,
+            full && task.completed ? new Date(task.completed) : null,
             task.parent || null,
             task.position || null,
             listScope,
@@ -102,78 +108,4 @@ export async function syncTasks(): Promise<void> {
       [list.id]
     );
   }
-}
-
-export interface InsertTaskResult {
-  listId: string;
-  listTitle: string;
-  externalTaskId: string;
-  taskRefId: string | null;
-}
-
-export async function insertTask(params: {
-  listName: string;
-  title: string;
-  notes?: string | null;
-  dueAt?: Date | null;
-}): Promise<InsertTaskResult> {
-  const { rows } = await pool.query(
-    `SELECT id, external_list_id, name
-     FROM project_ref
-     WHERE external_system = 'google_tasks'
-       AND LOWER(name) = LOWER($1)
-     LIMIT 1`,
-    [params.listName]
-  );
-  if (rows.length === 0) {
-    throw new Error(
-      `Task list "${params.listName}" not found. Run a sync first, or check the exact list name in Google Tasks.`
-    );
-  }
-  const projectRefId = rows[0].id as string;
-  const listId = rows[0].external_list_id as string;
-  const listTitle = rows[0].name as string;
-
-  const auth = await getAuthenticatedClient();
-  const service = google.tasks({ version: "v1", auth });
-
-  const { data } = await service.tasks.insert({
-    tasklist: listId,
-    requestBody: {
-      title: params.title,
-      notes: params.notes ?? undefined,
-      due: params.dueAt ? params.dueAt.toISOString() : undefined,
-    },
-  });
-
-  if (!data.id) {
-    throw new Error("Google Tasks returned no task id");
-  }
-
-  const scope = inferListScope(listTitle);
-
-  const { rows: inserted } = await pool.query(
-    `INSERT INTO task_ref
-       (user_id, external_system, external_task_id, external_list_id,
-        project_ref_id, title, notes, status, due_at, scope, updated_at)
-     VALUES ('default', 'google_tasks', $1, $2, $3, $4, $5, 'needsAction', $6, $7, now())
-     ON CONFLICT (external_system, external_task_id) DO NOTHING
-     RETURNING id`,
-    [
-      data.id,
-      listId,
-      projectRefId,
-      params.title,
-      params.notes ?? null,
-      params.dueAt ?? null,
-      scope,
-    ]
-  );
-
-  return {
-    listId,
-    listTitle,
-    externalTaskId: data.id,
-    taskRefId: inserted[0]?.id ?? null,
-  };
 }
