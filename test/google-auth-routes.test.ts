@@ -224,7 +224,7 @@ test("the callback names permissions Google did not grant", async () => {
 
 test("missingScopes compares the granted scopes with the requested ones", () => {
   const all = [
-    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/tasks.readonly",
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -236,4 +236,7 @@ test("missingScopes compares the granted scopes with the requested ones", () => 
   assert.deepEqual(missingScopes(`openid ${all.join(" ")}`), []);
   assert.deepEqual(missingScopes(undefined), []);
   assert.deepEqual(missingScopes(""), []);
+  // Full Tasks access (an older grant) does not satisfy the read-only scope
+  // by name, so the connect page asks for a reconnect.
+  assert.deepEqual(missingScopes(["https://www.googleapis.com/auth/tasks", ...all.slice(1)].join(" ")), ["Google Tasks (read-only)"]);
 });

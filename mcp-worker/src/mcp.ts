@@ -33,7 +33,7 @@ const MAX_BATCH = 20;
 
 // Kept under ~2,000 characters: some clients (Claude Code) truncate server
 // instructions at 2,048. Tool descriptions repeat the rules that matter.
-export const INSTRUCTIONS = `You are connected to the user's personal 2nd-brain: their journal (Telegram and AI-chat sessions), their goal system, and their Idea Parking Lot.
+export const INSTRUCTIONS = `You are connected to the user's personal 2nd-brain: their journal (AI-chat sessions; older entries came from a retired Telegram bot), their goal system, and their Idea Parking Lot.
 
 Journal: use search_brain when the user brainstorms a topic they may have thought about before, or asks "have I thought about X?"; get_entry to follow a hit; list_recent for "what have I been thinking about lately". Use save_session ONLY when the user explicitly asks ("save this", "log this"): propose a title, confirm it, and write a narrative summary, not a transcript. Similarity below ~0.3 is noise; above ~0.5 is worth attention. The journal is private: treat it with discretion.
 

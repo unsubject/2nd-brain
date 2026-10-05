@@ -2,7 +2,8 @@ import { google } from "googleapis";
 import { pool } from "../db/client";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/tasks",
+  // Read-only: tasks are only read, for linking and the idea import.
+  "https://www.googleapis.com/auth/tasks.readonly",
   "https://www.googleapis.com/auth/contacts.readonly",
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -11,7 +12,7 @@ const SCOPES = [
 ];
 
 const SCOPE_LABELS: Record<string, string> = {
-  "https://www.googleapis.com/auth/tasks": "Google Tasks",
+  "https://www.googleapis.com/auth/tasks.readonly": "Google Tasks (read-only)",
   "https://www.googleapis.com/auth/contacts.readonly": "Contacts (read-only)",
   "https://www.googleapis.com/auth/calendar.readonly": "Calendar (read-only)",
   "https://www.googleapis.com/auth/gmail.readonly": "Gmail (read-only)",

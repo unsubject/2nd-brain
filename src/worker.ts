@@ -2,7 +2,6 @@ import * as queries from "./db/queries";
 import { processEntry } from "./processor";
 import { generateEmbedding } from "./embeddings";
 import { generateLinks } from "./google/linker";
-import { maybeCreateTaskSuggestion } from "./taskSuggest";
 import { isAiFeedbackText, parseFirstLineHashtags } from "./utils";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -38,15 +37,6 @@ async function tick(): Promise<void> {
       // via the outer markProcessingError. Primary processing has
       // already succeeded by this point; downstream failures should
       // log and move on, not corrupt the row state.
-      try {
-        await maybeCreateTaskSuggestion(entry.id, result);
-      } catch (err) {
-        console.error(
-          `[worker] task suggestion failed for entry ${entry.id}:`,
-          err
-        );
-      }
-
       try {
         await generateLinks({
           id: entry.id,
