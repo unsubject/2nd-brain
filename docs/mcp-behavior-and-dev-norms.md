@@ -1,5 +1,7 @@
 # 2nd-brain MCP — Behavior & dev norms
 
+> **Refocus (2026-10-05).** 2nd-brain is now for personal thoughts, published work and the Idea Garden. The Chief-of-Staff role, content discovery and the goal system are being retired. Read [`docs/decisions/2026-10-05-refocus.md`](decisions/2026-10-05-refocus.md) first; parts of this doc describe features that are on their way out and are rewritten in that plan's Phase 3.
+
 This doc has two audiences:
 
 - **Part 1** is for the **AI client** connecting to this MCP (Claude.ai, Claude Desktop, Cursor, ChatGPT). It defines when each tool should be called and what good behavior looks like. The server surfaces a condensed version of Part 1 via the MCP `instructions` field so clients see it on connect.
