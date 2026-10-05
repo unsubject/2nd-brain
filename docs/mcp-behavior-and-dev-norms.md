@@ -259,7 +259,7 @@ All four Google syncs use one refresh token stored for user `default` in `google
 
 | Concern | Lives in |
 |---|---|
-| Telegram ingest, scheduler, morning review, family bot | `src/` (Node monolith) |
+| Telegram ingest, scheduler, morning review | `src/` (Node monolith) |
 | Entry processing (gpt-5.4-nano classification) | `src/processor.ts` (Node monolith) |
 | Pending-entry polling + embedding | `src/worker.ts` (Node monolith) |
 | Google sync (Tasks, Contacts, Calendar, Gmail) | `src/google/` (Node monolith); owner-only connect at `/auth/google` (`src/google/routes.ts`) |

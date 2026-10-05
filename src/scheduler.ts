@@ -1,7 +1,5 @@
 import { generateMorningReview } from "./review";
 
-type Deliver = (content: string) => Promise<void>;
-
 function runDailyAt(
   label: string,
   timeHHMM: string,
@@ -49,18 +47,5 @@ export function startScheduler(): void {
   const timezone = process.env.TIMEZONE || "UTC";
   runDailyAt("personal-review", reviewTime, timezone, async () => {
     await generateMorningReview();
-  });
-}
-
-export function startFamilyScheduler(deliver: Deliver): void {
-  const reviewTime = process.env.FAMILY_MORNING_REVIEW_TIME || "06:30";
-  const timezone =
-    process.env.FAMILY_TIMEZONE || "Asia/Hong_Kong";
-  runDailyAt("family-review", reviewTime, timezone, async () => {
-    await generateMorningReview({
-      scope: "family",
-      queryScopes: ["family"],
-      deliver,
-    });
   });
 }

@@ -46,6 +46,8 @@ export async function createTaskSuggestion(params: {
   return rows[0]?.id ?? null;
 }
 
+// Personal scope only: the personal bot is the sole poster. Family-scope
+// rows (left from the retired family bot) just age out via expiry.
 export async function findPostableSuggestions(
   limit: number
 ): Promise<TaskSuggestion[]> {
@@ -53,6 +55,7 @@ export async function findPostableSuggestions(
     `SELECT *
      FROM task_suggestion
      WHERE status = 'pending'
+       AND scope = 'personal'
        AND posted_at IS NULL
        AND telegram_chat_id IS NOT NULL
      ORDER BY created_at ASC

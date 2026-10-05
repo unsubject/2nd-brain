@@ -12,11 +12,6 @@ const EXPIRY_INTERVAL_MS = 5 * 60_000;
 const MAX_AGE_MS = 24 * 60 * 60_000;
 const BATCH_SIZE = 10;
 
-export interface SuggestionBots {
-  personalBot: Bot;
-  familyBot?: Bot;
-}
-
 function keyboard(id: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("\u2705 Add", `suggest:add:${id}`)
@@ -27,15 +22,10 @@ function formatPrompt(s: TaskSuggestion): string {
   return `\ud83d\udcdd Add as a task?\n\n"${s.suggested_title}"\n\u2192 ${s.suggested_list_name}`;
 }
 
-function botFor(bots: SuggestionBots, scope: string): Bot | undefined {
-  return scope === "family" ? bots.familyBot : bots.personalBot;
-}
-
-async function postBatch(bots: SuggestionBots): Promise<void> {
+async function postBatch(bot: Bot): Promise<void> {
   const suggestions = await findPostableSuggestions(BATCH_SIZE);
   for (const s of suggestions) {
-    const bot = botFor(bots, s.scope);
-    if (!bot || !s.telegram_chat_id) continue;
+    if (!s.telegram_chat_id) continue;
     try {
       const msg = await bot.api.sendMessage(
         s.telegram_chat_id,
@@ -52,13 +42,12 @@ async function postBatch(bots: SuggestionBots): Promise<void> {
   }
 }
 
-async function expireBatch(bots: SuggestionBots): Promise<void> {
+async function expireBatch(bot: Bot): Promise<void> {
   const expired = await expireStaleSuggestions(MAX_AGE_MS);
   if (expired.length === 0) return;
   for (const s of expired) {
+    if (s.scope !== "personal") continue;
     if (!s.telegram_chat_id || !s.telegram_message_id) continue;
-    const bot = botFor(bots, s.scope);
-    if (!bot) continue;
     const messageId = parseInt(s.telegram_message_id, 10);
     if (!Number.isFinite(messageId)) continue;
     try {
@@ -76,10 +65,10 @@ async function expireBatch(bots: SuggestionBots): Promise<void> {
   );
 }
 
-export function startTaskSuggestionSweeper(bots: SuggestionBots): void {
+export function startTaskSuggestionSweeper(bot: Bot): void {
   const postTick = async () => {
     try {
-      await postBatch(bots);
+      await postBatch(bot);
     } catch (err) {
       console.error("[taskSuggestSweeper] post tick error:", err);
     } finally {
@@ -88,7 +77,7 @@ export function startTaskSuggestionSweeper(bots: SuggestionBots): void {
   };
   const expireTick = async () => {
     try {
-      await expireBatch(bots);
+      await expireBatch(bot);
     } catch (err) {
       console.error("[taskSuggestSweeper] expire tick error:", err);
     } finally {

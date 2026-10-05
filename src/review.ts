@@ -56,12 +56,6 @@ interface ReviewEntry {
   channel: string;
 }
 
-export interface ReviewConfig {
-  scope: "personal" | "family";
-  queryScopes?: string[];
-  deliver?: (content: string) => Promise<void>;
-}
-
 function formatEntriesForPrompt(entries: ReviewEntry[], today: Date): string {
   const oneDayAgo = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
@@ -209,32 +203,17 @@ function formatLinksForPrompt(
     .join("\n");
 }
 
-function resolveTimezone(scope: "personal" | "family"): string {
-  if (scope === "family") {
-    return (
-      process.env.FAMILY_TIMEZONE ||
-      process.env.TIMEZONE ||
-      "UTC"
-    );
-  }
-  return process.env.TIMEZONE || "UTC";
-}
-
-export async function generateMorningReview(
-  config?: ReviewConfig
-): Promise<string | null> {
-  const reviewScope = config?.scope ?? "personal";
-  const queryScopes = config?.queryScopes;
-  const timezone = resolveTimezone(reviewScope);
+export async function generateMorningReview(): Promise<string | null> {
+  const timezone = process.env.TIMEZONE || "UTC";
   const today = new Date();
   const dateStr = today.toLocaleDateString("en-CA", { timeZone: timezone });
 
   const [entries, calendar, tasks, starred, links] = await Promise.all([
-    queries.getEntriesForReview(7, 200, queryScopes),
-    queries.getTodayCalendarEvents(timezone, queryScopes),
-    queries.getOpenTasks(7, queryScopes),
-    queries.getStarredEmails(30, queryScopes),
-    queries.getLinksForRecentEntries(7, queryScopes),
+    queries.getEntriesForReview(7, 200),
+    queries.getTodayCalendarEvents(timezone),
+    queries.getOpenTasks(7),
+    queries.getStarredEmails(30),
+    queries.getLinksForRecentEntries(7),
   ]);
 
   if (
@@ -243,7 +222,7 @@ export async function generateMorningReview(
     tasks.length === 0 &&
     starred.length === 0
   ) {
-    console.log(`[${reviewScope}-review] Nothing to review, skipping`);
+    console.log("[personal-review] Nothing to review, skipping");
     return null;
   }
 
@@ -284,22 +263,8 @@ Generate the morning review.`;
   const content = textBlock.text;
   const contentHtml = await marked.parse(content);
 
-  await queries.saveReview(
-    dateStr,
-    content,
-    contentHtml,
-    entries.length,
-    reviewScope
-  );
-  console.log(`[${reviewScope}-review] Saved for ${dateStr}`);
-
-  if (config?.deliver) {
-    try {
-      await config.deliver(content);
-    } catch (err) {
-      console.error(`[${reviewScope}-review] deliver error:`, err);
-    }
-  }
+  await queries.saveReview(dateStr, content, contentHtml, entries.length);
+  console.log(`[personal-review] Saved for ${dateStr}`);
 
   return content;
 }

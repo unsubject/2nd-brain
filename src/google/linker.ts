@@ -7,11 +7,11 @@
 //   source entry we still look at personal-scope candidates, and vice
 //   versa. The link_edge row is written regardless of target scope.
 //
-//   Reader-side visibility is enforced in src/db/queries.ts →
-//   getLinksForRecentEntries, which filters both source scope (via
-//   journal_entry.scope) and target scope (resolved per target_type).
-//   Family readers never see a link whose target is in personal scope —
-//   the title would leak. Personal readers see everything via spillover.
+//   Reader-side visibility is enforced in the MCP worker's get_entry tool
+//   (mcp-worker/src/tools/get_entry.ts): a family-scope entry never shows
+//   a link whose target is in personal scope — the title would leak.
+//   Personal readers (incl. the morning review) see everything via
+//   spillover.
 
 import { pool } from "../db/client";
 import {
