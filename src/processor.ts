@@ -59,15 +59,25 @@ export function cleanText(fullText: string): string {
     .trim();
 }
 
-// text-embedding-3-small accepts up to 8,191 tokens. Chinese text can take
-// more than one token per character, so the input is capped in characters
-// with a wide margin; the summary goes first so the whole entry is
-// represented even when its tail is cut.
-export const MAX_EMBEDDING_CHARS = 5000;
+// text-embedding-3-small rejects inputs over 8,191 tokens. Every token of
+// its tokenizer is at least one UTF-8 byte, so a byte budget keeps any text
+// under the limit whatever the language: colloquial Cantonese can run at
+// close to two tokens per character, which a character cap would not cover.
+// The cut falls between code points, and the summary goes first so the whole
+// entry is represented even when its tail is cut.
+export const MAX_EMBEDDING_BYTES = 8000;
 
 export function embeddingInput(result: Pick<ProcessingResult, "summary" | "clean_text">): string {
   const text = result.summary ? `${result.summary}\n\n${result.clean_text}` : result.clean_text;
-  return text.length > MAX_EMBEDDING_CHARS ? text.slice(0, MAX_EMBEDDING_CHARS) : text;
+  if (Buffer.byteLength(text, "utf8") <= MAX_EMBEDDING_BYTES) return text;
+  let bytes = 0;
+  let end = 0;
+  for (const ch of text) {
+    bytes += Buffer.byteLength(ch, "utf8");
+    if (bytes > MAX_EMBEDDING_BYTES) break;
+    end += ch.length;
+  }
+  return text.slice(0, end);
 }
 
 export async function processEntry(
