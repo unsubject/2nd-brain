@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
+import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import {
   cleanTags,
+  credentialLabel,
   dbError,
   errorResult,
   HandlerError,
@@ -68,6 +70,7 @@ export async function updateIdeaHandler(
   rawArgs: unknown,
   env: Env,
   ctx: ExecutionContext,
+  principal: Principal,
 ): Promise<ToolResult> {
   const parsed = inputSchema.safeParse(rawArgs);
   if (!parsed.success) {
@@ -118,12 +121,18 @@ export async function updateIdeaHandler(
       }
 
       const now = new Date().toISOString();
+      const credential = credentialLabel(principal);
       const newNotes: Note[] = [];
       if (args.status !== undefined && args.status !== before.status) {
-        newNotes.push({ at: now, by: 'system', text: `status: ${before.status} → ${args.status}` });
+        newNotes.push({ at: now, by: 'system', text: `status: ${before.status} → ${args.status}`, credential });
       }
       if (args.append_note) {
-        newNotes.push({ at: args.append_note.at ?? now, by: args.append_note.by, text: args.append_note.text });
+        newNotes.push({
+          at: args.append_note.at ?? now,
+          by: args.append_note.by,
+          text: args.append_note.text,
+          credential,
+        });
       }
 
       const omit = (k: (typeof TEXT_FIELDS)[number]) => args[k] === undefined;
@@ -143,6 +152,7 @@ export async function updateIdeaHandler(
           status = COALESCE(${args.status ?? null}::text, status),
           intent = COALESCE(${args.intent ?? null}::text, intent),
           notes = notes || ${jsonParam(tx, newNotes)},
+          edit_log = edit_log || ${jsonParam(tx, [{ at: now, credential, tool: 'update_idea', fields: touched }])},
           updated_at = now()
         WHERE id = ${args.id} AND user_id = ${env.BRAIN_USER_ID}
         RETURNING (embedding IS NOT NULL) AS embedded

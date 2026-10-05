@@ -126,6 +126,19 @@ describe.skipIf(!TEST_DB)('OAuth: registration', () => {
     expect((await workerFetch(`/authorize?${q}`)).status).toBe(400);
   });
 
+  it('echoes a known application_type', async () => {
+    const reg = (application_type?: string) =>
+      workerFetch('/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_uris: [REDIRECT], ...(application_type ? { application_type } : {}) }),
+      }).then((r) => r.json() as Promise<Record<string, unknown>>);
+    expect((await reg('native')).application_type).toBe('native');
+    expect((await reg('web')).application_type).toBe('web');
+    expect(await reg('desktop')).not.toHaveProperty('application_type');
+    expect(await reg()).not.toHaveProperty('application_type');
+  });
+
   it('refuses registrations with no allowed redirect URI', async () => {
     for (const uris of [['https://evil.example/cb'], [], ['https://evil.example/a', 'https://evil.example/b']]) {
       const res = await register(uris);

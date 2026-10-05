@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
+import { jsonParam } from './idea_shared';
 
 const inputSchema = z.object({
   cycle_id: z.string().uuid(),
@@ -20,15 +21,13 @@ export async function closeCycleHandler(
   }
   const { cycle_id, streak_summary, reformulation_notes } = parsed.data;
 
-  const summaryJson = streak_summary ? JSON.stringify(streak_summary) : null;
-
   const sql = getDb(env);
   try {
     const rows = await sql<Array<{ id: string }>>`
       UPDATE undertaking_cycles c
          SET status = 'closed',
              closed_at = now(),
-             streak_summary = COALESCE(${summaryJson}::jsonb, c.streak_summary),
+             streak_summary = COALESCE(${streak_summary ? jsonParam(sql, streak_summary) : null}::jsonb, c.streak_summary),
              reformulation_notes = COALESCE(${reformulation_notes ?? null}::text, c.reformulation_notes)
         FROM undertakings u
        WHERE c.id = ${cycle_id}
@@ -39,7 +38,7 @@ export async function closeCycleHandler(
     `;
     if (rows.length === 0) {
       const existing = await sql<Array<{ status: string }>>`
-        SELECT c.status FROM undertaking_cycles c
+        SELECT c.status, now() AS as_of FROM undertaking_cycles c
         JOIN undertakings u ON u.id = c.undertaking_id
          WHERE c.id = ${cycle_id} AND u.user_id = ${env.BRAIN_USER_ID}
       `;

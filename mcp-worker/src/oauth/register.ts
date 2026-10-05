@@ -121,6 +121,10 @@ export async function registerClient(request: Request, env: Env, ctx: ExecutionC
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
         scope: 'mcp offline_access',
+        // Echo the RFC 7591 application_type when it's one we understand.
+        ...(body.application_type === 'web' || body.application_type === 'native'
+          ? { application_type: body.application_type }
+          : {}),
       },
       201,
       CORS_HEADERS,

@@ -6,6 +6,7 @@ import { startScheduler, startFamilyScheduler } from "./scheduler";
 import { startGoogleSync } from "./google/sync";
 import { startArchiveWorker } from "./archive/worker";
 import { startIdeaEmbeddingWorker } from "./ideas/worker";
+import { startMcpRetention } from "./mcp/retention";
 import { startTaskSuggestionSweeper } from "./taskSuggestionSweeper";
 
 const TELEGRAM_MAX_CHARS = 3900;
@@ -86,6 +87,7 @@ async function main() {
   startGoogleSync();
   startArchiveWorker();
   startIdeaEmbeddingWorker();
+  startMcpRetention();
   startTaskSuggestionSweeper({ personalBot: bot, familyBot });
 
   if (familyBot && familyGroupChatId) {

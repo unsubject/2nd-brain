@@ -203,6 +203,9 @@ describe('/mcp authentication without a database', () => {
     expect(none).toContain(`resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp"`);
     expect(none).not.toContain('invalid_token');
     expect(unauthorized(req(), true).headers.get('WWW-Authenticate')).toContain('error="invalid_token"');
+    // The scope the resource needs (MCP authorization: SHOULD).
+    expect(none).toContain('scope="mcp"');
+    expect(unauthorized(req(), true).headers.get('WWW-Authenticate')).toContain('scope="mcp"');
   });
 
   it('accepts the master token unless ALLOW_MASTER_BEARER is "false"', async () => {
@@ -241,7 +244,10 @@ describe('OAuth discovery', () => {
     const root = await worker.fetch(new Request(`${BASE}/.well-known/oauth-protected-resource`), env, ctx);
     const mcp = await worker.fetch(new Request(`${BASE}/.well-known/oauth-protected-resource/mcp`), env, ctx);
     expect(((await root.json()) as { resource: string }).resource).toBe(BASE);
-    expect(((await mcp.json()) as { resource: string }).resource).toBe(`${BASE}/mcp`);
+    const prm = (await mcp.clone().json()) as { resource: string; scopes_supported: string[] };
+    expect(prm.resource).toBe(`${BASE}/mcp`);
+    // offline_access belongs to the authorization server, not the resource.
+    expect(prm.scopes_supported).toEqual(['mcp']);
     expect(mcp.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(((await protectedResourceMetadata(request, '').json()) as { authorization_servers: string[] }).authorization_servers).toEqual([BASE]);
     const pre = await worker.fetch(new Request(`${BASE}/token`, { method: 'OPTIONS' }), env, ctx);

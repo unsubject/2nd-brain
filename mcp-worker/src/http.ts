@@ -20,7 +20,7 @@ export function corsPreflight(methods: string): Response {
       ...CORS_HEADERS,
       'Access-Control-Allow-Methods': methods,
       'Access-Control-Allow-Headers':
-        'Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID',
+        'Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID',
       'Access-Control-Max-Age': '86400',
     },
   });

@@ -6,11 +6,28 @@ import { bearerFrom } from './auth/tokens';
 import { scopeAllows, type Principal } from './auth/principal';
 import { extractResultIds, recordActivity, type CallEntry } from './calllog';
 import { CORS_HEADERS, corsPreflight, withCors } from './http';
+import { RpcError } from './rpc';
+import {
+  decorateModern,
+  messageEra,
+  MODERN_PROTOCOL_VERSIONS,
+  modernClientInfo,
+  readModernHeaders,
+  validateModern,
+  type Era,
+  type ModernHeaders,
+} from './protocol';
 
 // Newest first. The client's requested version is echoed when supported,
 // otherwise we answer with the newest and let the client decide.
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
+// Every version this server speaks, newest first (server/discover, -32022).
+export const ALL_PROTOCOL_VERSIONS: readonly string[] = [...MODERN_PROTOCOL_VERSIONS, ...SUPPORTED_PROTOCOL_VERSIONS];
 const SERVER_INFO = { name: '2nd-brain', title: "Simon's 2nd-brain", version: '0.1.0' };
+const CAPABILITIES = {
+  tools: { listChanged: false },
+  resources: { listChanged: false, subscribe: false },
+};
 // JSON-RPC batching (2025-03-26) is accepted leniently, but bounded.
 const MAX_BATCH = 20;
 
@@ -26,16 +43,16 @@ Idea Parking Lot: ideas are curated raw material, not tasks. Use park_idea ONLY 
 
 If a tool returns an error, report it and ask the user; don't retry silently.`;
 
-class RpcError extends Error {
-  constructor(public code: number, message: string, public data?: unknown) {
-    super(message);
-  }
-}
+
+type Reply = { body: Record<string, unknown> | null; status: number };
 
 type RequestState = {
   principal: Principal;
   entries: CallEntry[];
   clientInfo: Record<string, unknown> | null;
+  // Modern clients send clientInfo on every request: store it only when it changed.
+  clientInfoOnlyIfChanged: boolean;
+  headers: ModernHeaders;
 };
 
 export function negotiateVersion(requested: unknown): string {
@@ -59,7 +76,13 @@ export async function handleMcpRequest(request: Request, env: Env, ctx: Executio
 
   const auth = await authenticate(request, env);
   if (!auth.ok) return auth.response;
-  const state: RequestState = { principal: auth.principal, entries: [], clientInfo: null };
+  const state: RequestState = {
+    principal: auth.principal,
+    entries: [],
+    clientInfo: null,
+    clientInfoOnlyIfChanged: false,
+    headers: readModernHeaders(request),
+  };
 
   let response: Response;
   let body: unknown;
@@ -74,24 +97,34 @@ export async function handleMcpRequest(request: Request, env: Env, ctx: Executio
     if (Array.isArray(body)) {
       if (body.length === 0 || body.length > MAX_BATCH) {
         response = rpcJson({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } });
+      } else if (body.some((m) => messageEra(m, state.headers.protocolVersion) === 'modern')) {
+        // 2026-07-28: the body must be a single request.
+        response = rpcJson(
+          { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request: batching is not supported' } },
+          400,
+        );
       } else {
         const out: unknown[] = [];
         for (const msg of body) {
           const r = await handleMessage(msg, env, ctx, state);
-          if (r) out.push(r);
+          if (r.body) out.push(r.body);
         }
         response = out.length > 0 ? rpcJson(out) : new Response(null, { status: 202 });
       }
     } else {
       const r = await handleMessage(body, env, ctx, state);
-      response = r ? rpcJson(r) : new Response(null, { status: 202 });
+      response = r.body ? rpcJson(r.body, r.status) : new Response(null, { status: 202 });
     }
   }
 
   // Attribution and last-used bookkeeping happen after the response.
   if (state.principal.credentialId || state.entries.length > 0) {
     const db = auth.db ?? authDb(env);
-    ctx.waitUntil(recordActivity(db, state.principal, state.entries, state.clientInfo));
+    ctx.waitUntil(
+      recordActivity(db, state.principal, state.entries, state.clientInfo, {
+        clientInfoOnlyIfChanged: state.clientInfoOnlyIfChanged,
+      }),
+    );
   } else if (auth.db) {
     const db = auth.db;
     ctx.waitUntil(db.end({ timeout: 5 }).catch(() => {}));
@@ -105,30 +138,53 @@ async function handleMessage(
   env: Env,
   ctx: ExecutionContext,
   state: RequestState,
-): Promise<Record<string, unknown> | null> {
+): Promise<Reply> {
+  const reply = (body: Record<string, unknown> | null, status = 200): Reply => ({ body, status });
   const m = msg as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown } | null;
   if (!m || typeof m !== 'object' || m.jsonrpc !== '2.0') {
-    return { jsonrpc: '2.0', id: (m as { id?: unknown } | null)?.id ?? null, error: { code: -32600, message: 'Invalid request' } };
+    return reply({ jsonrpc: '2.0', id: (m as { id?: unknown } | null)?.id ?? null, error: { code: -32600, message: 'Invalid request' } });
   }
   // A JSON-RPC response sent to us (e.g. to a server request) needs no reply.
   if (typeof m.method !== 'string') {
-    if ('result' in m || 'error' in m) return null;
-    return { jsonrpc: '2.0', id: m.id ?? null, error: { code: -32600, message: 'Invalid request' } };
+    if ('result' in m || 'error' in m) return reply(null);
+    return reply({ jsonrpc: '2.0', id: m.id ?? null, error: { code: -32600, message: 'Invalid request' } });
   }
   const isNotification = m.id === undefined;
+  const era = messageEra(m, state.headers.protocolVersion);
   try {
-    const result = await dispatch(m.method, (m.params ?? {}) as Record<string, any>, env, ctx, state);
-    return isNotification ? null : { jsonrpc: '2.0', id: m.id, result };
+    const params = (m.params ?? {}) as Record<string, any>;
+    if (era === 'modern') {
+      // 2026-07-28 defines no client notifications over HTTP: accept and ignore.
+      if (isNotification) return reply(null);
+      validateModern(m.method, params, state.headers, ALL_PROTOCOL_VERSIONS);
+      const ci = modernClientInfo(params);
+      if (ci) {
+        state.clientInfo = {
+          clientInfo: cleanClientInfo(ci),
+          requestedProtocolVersion: shortString(params._meta?.['io.modelcontextprotocol/protocolVersion']),
+          protocolVersion: MODERN_PROTOCOL_VERSIONS[0],
+          at: new Date().toISOString(),
+        };
+        state.clientInfoOnlyIfChanged = true;
+      }
+      const result = await dispatch(m.method, params, env, ctx, state, era);
+      return reply({ jsonrpc: '2.0', id: m.id, result: decorateModern(m.method, result, SERVER_INFO) });
+    }
+    const result = await dispatch(m.method, params, env, ctx, state, era);
+    return reply(isNotification ? null : { jsonrpc: '2.0', id: m.id, result });
   } catch (err) {
-    if (isNotification) return null;
+    if (isNotification) return reply(null);
     if (err instanceof RpcError) {
-      return { jsonrpc: '2.0', id: m.id, error: { code: err.code, message: err.message, data: err.data } };
+      return reply(
+        { jsonrpc: '2.0', id: m.id, error: { code: err.code, message: err.message, data: err.data } },
+        err.httpStatus ?? 200,
+      );
     }
     if (err instanceof ResourceNotFoundError) {
-      return { jsonrpc: '2.0', id: m.id, error: { code: -32602, message: err.message } };
+      return reply({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: err.message } });
     }
     const message = err instanceof Error ? err.message : String(err);
-    return { jsonrpc: '2.0', id: m.id, error: { code: -32603, message: `Internal: ${message}` } };
+    return reply({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: `Internal: ${message}` } });
   }
 }
 
@@ -138,8 +194,18 @@ async function dispatch(
   env: Env,
   ctx: ExecutionContext,
   state: RequestState,
+  era: Era,
 ): Promise<unknown> {
+  // 2026-07-28 answers an unknown method with HTTP 404 (Streamable HTTP).
+  const notFound = () => new RpcError(-32601, `Method not found: ${method}`, undefined, era === 'modern' ? 404 : undefined);
+  // This server never issues cursors.
+  if (era === 'modern' && typeof params?.cursor === 'string' && params.cursor !== '') {
+    throw new RpcError(-32602, 'Invalid params: unknown cursor');
+  }
   switch (method) {
+    case 'server/discover':
+      if (era !== 'modern') throw notFound();
+      return { supportedVersions: ALL_PROTOCOL_VERSIONS, capabilities: CAPABILITIES, instructions: INSTRUCTIONS };
     case 'initialize': {
       const protocolVersion = negotiateVersion(params?.protocolVersion);
       if (params?.clientInfo && typeof params.clientInfo === 'object') {
@@ -152,10 +218,7 @@ async function dispatch(
       }
       return {
         protocolVersion,
-        capabilities: {
-          tools: { listChanged: false },
-          resources: { listChanged: false, subscribe: false },
-        },
+        capabilities: CAPABILITIES,
         serverInfo: SERVER_INFO,
         instructions: INSTRUCTIONS,
       };
@@ -164,6 +227,8 @@ async function dispatch(
     case 'notifications/cancelled':
       return null;
     case 'ping':
+      // Removed in 2026-07-28.
+      if (era === 'modern') throw notFound();
       return {};
     case 'tools/list':
       return {
@@ -223,9 +288,11 @@ async function dispatch(
     case 'prompts/list':
       return { prompts: [] };
     case 'logging/setLevel':
+      // Removed in 2026-07-28 (the level travels in _meta).
+      if (era === 'modern') throw notFound();
       return {};
     default:
-      throw new RpcError(-32601, `Method not found: ${method}`);
+      throw notFound();
   }
 }
 
@@ -243,6 +310,6 @@ function cleanClientInfo(info: Record<string, unknown>): Record<string, string> 
   return out;
 }
 
-function rpcJson(body: unknown): Response {
-  return Response.json(body);
+function rpcJson(body: unknown, status = 200): Response {
+  return Response.json(body, { status });
 }

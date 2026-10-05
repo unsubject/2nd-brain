@@ -262,3 +262,141 @@ describe('mcp transport compatibility', () => {
     expect(goal.result.isError).toBeFalsy();
   });
 });
+
+const MODERN = '2026-07-28';
+
+async function modern(
+  method: string,
+  params: Record<string, unknown> = {},
+  o: { version?: string; headers?: Record<string, string>; meta?: Record<string, unknown> | null; id?: number } = {},
+) {
+  const version = o.version ?? MODERN;
+  const _meta =
+    o.meta === null
+      ? undefined
+      : {
+          'io.modelcontextprotocol/protocolVersion': version,
+          'io.modelcontextprotocol/clientCapabilities': {},
+          'io.modelcontextprotocol/clientInfo': { name: 'modern-client', version: '1.0.0' },
+          ...(o.meta ?? {}),
+        };
+  const name = typeof params.name === 'string' ? params.name : typeof params.uri === 'string' ? params.uri : undefined;
+  const res = await post(
+    { jsonrpc: '2.0', id: o.id ?? 7, method, params: { ...params, ...(_meta ? { _meta } : {}) } },
+    {
+      'MCP-Protocol-Version': version,
+      'Mcp-Method': method,
+      ...(name ? { 'Mcp-Name': name } : {}),
+      ...(o.headers ?? {}),
+    },
+  );
+  const text = await res.text();
+  return { status: res.status, body: text ? (JSON.parse(text) as any) : null };
+}
+
+describe('MCP 2026-07-28 (stateless) alongside 2025-era clients', () => {
+  it('serves server/discover', async () => {
+    const r = await modern('server/discover');
+    expect(r.status).toBe(200);
+    expect(r.body.result).toMatchObject({
+      resultType: 'complete',
+      capabilities: { tools: {}, resources: {} },
+      ttlMs: 300000,
+      cacheScope: 'private',
+    });
+    expect(r.body.result.supportedVersions[0]).toBe(MODERN);
+    expect(r.body.result.supportedVersions).toContain('2025-11-25');
+    expect(r.body.result.instructions).toContain('read_protocol');
+    expect(r.body.result._meta['io.modelcontextprotocol/serverInfo'].name).toBe('2nd-brain');
+  });
+
+  it('serves lists, reads and calls statelessly with cache hints', async () => {
+    const tl = await modern('tools/list');
+    expect(tl.status).toBe(200);
+    const legacy = await rpc('tools/list');
+    expect(tl.body.result.tools.map((t: any) => t.name)).toEqual(legacy.result.tools.map((t: any) => t.name));
+    expect(tl.body.result).toMatchObject({ resultType: 'complete', ttlMs: 300000, cacheScope: 'private' });
+    for (const m of ['resources/list', 'resources/templates/list', 'prompts/list']) {
+      expect((await modern(m)).body.result).toMatchObject({ resultType: 'complete', cacheScope: 'private' });
+    }
+    const read = await modern('resources/read', { uri: 'second-brain://protocol/idea-parking-lot' });
+    expect(read.body.result.contents[0].text).toContain('## §1');
+    expect(read.body.result.ttlMs).toBe(300000);
+    const call = await modern('tools/call', { name: 'read_protocol', arguments: { name: 'idea-parking-lot', section: '§1' } });
+    expect(call.status).toBe(200);
+    expect(call.body.result.resultType).toBe('complete');
+    expect(call.body.result.content[0].text.startsWith('## §1')).toBe(true);
+    expect(call.body.result).not.toHaveProperty('ttlMs');
+  });
+
+  it('answers 2026 errors with HTTP 400 and no version text in the message', async () => {
+    const unsupported = await modern('tools/list', {}, { version: '2099-01-01' });
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error).toMatchObject({ code: -32022, data: { requested: '2099-01-01' } });
+    expect(unsupported.body.error.data.supported).toContain(MODERN);
+    expect(unsupported.body.error.message).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+
+    const noCaps = await modern('tools/list', {}, { meta: { 'io.modelcontextprotocol/clientCapabilities': undefined } });
+    expect([noCaps.status, noCaps.body.error.code]).toEqual([400, -32602]);
+    const bare = await modern('server/discover', {}, { meta: null });
+    expect([bare.status, bare.body.error.code]).toEqual([400, -32602]);
+    expect(bare.body.error.message).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+
+    const wrongMethod = await modern('tools/list', {}, { headers: { 'Mcp-Method': 'tools/call' } });
+    expect([wrongMethod.status, wrongMethod.body.error.code]).toEqual([400, -32020]);
+    const wrongName = await modern('tools/call', { name: 'read_protocol', arguments: {} }, { headers: { 'Mcp-Name': 'get_idea' } });
+    expect([wrongName.status, wrongName.body.error.code]).toEqual([400, -32020]);
+    // A 2025 version in the 2026-only _meta key is a modern request with an
+    // unsupported version (-32022 here, as the header matches it).
+    const legacyInMeta = await modern('tools/list', {}, { version: '2025-11-25' });
+    expect([legacyInMeta.status, legacyInMeta.body.error.code]).toEqual([400, -32022]);
+    const proto = await modern('constructor');
+    expect([proto.status, proto.body.error.code]).toEqual([404, -32601]);
+    const wrongVersion = await modern('tools/list', {}, { headers: { 'MCP-Protocol-Version': '2025-11-25' } });
+    expect([wrongVersion.status, wrongVersion.body.error.code]).toEqual([400, -32020]);
+  });
+
+  it('answers removed and unknown methods with 404 / -32601', async () => {
+    for (const m of ['ping', 'logging/setLevel', 'no/such/method']) {
+      const r = await modern(m);
+      expect([r.status, r.body.error.code]).toEqual([404, -32601]);
+    }
+    const cursor = await modern('tools/list', { cursor: 'abc' });
+    expect([cursor.status, cursor.body.error.code]).toEqual([200, -32602]);
+  });
+
+  it('refuses batches that contain a 2026 message, accepts 2026 notifications', async () => {
+    const res = await post([
+      { jsonrpc: '2.0', id: 1, method: 'ping' },
+      { jsonrpc: '2.0', id: 2, method: 'server/discover', params: {} },
+    ]);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error.code).toBe(-32600);
+    const note = await post(
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': MODERN } } },
+      { 'MCP-Protocol-Version': MODERN },
+    );
+    expect(note.status).toBe(202);
+  });
+
+  it('leaves 2025-era behaviour byte-for-byte unchanged', async () => {
+    const list = await rpc('tools/list');
+    expect(Object.keys(list.result)).toEqual(['tools']);
+    const init = await rpc('initialize', { protocolVersion: MODERN, capabilities: {}, clientInfo: { name: 't', version: '1' } });
+    expect(Object.keys(init.result).sort()).toEqual(['capabilities', 'instructions', 'protocolVersion', 'serverInfo']);
+    expect(init.result.protocolVersion).toBe('2025-11-25');
+    // An unknown version header on a legacy request is not a 2026 error.
+    const res = await post({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { 'MCP-Protocol-Version': '2099-01-01' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).result.tools.length).toBeGreaterThan(0);
+    expect((await rpc('ping')).result).toEqual({});
+    expect((await rpc('no/such/method')).error?.code).toBe(-32601);
+  });
+
+  it('lets browsers send the 2026 headers', async () => {
+    const pre = await handleMcpRequest(new Request('https://test.example/mcp', { method: 'OPTIONS' }), env, ctx);
+    const allowed = pre.headers.get('Access-Control-Allow-Headers')!;
+    expect(allowed).toContain('Mcp-Method');
+    expect(allowed).toContain('Mcp-Name');
+  });
+});

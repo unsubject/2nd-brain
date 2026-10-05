@@ -42,7 +42,7 @@ export function testCtx(): { ctx: ExecutionContext; settle: () => Promise<void> 
   };
 }
 
-export type RpcOptions = { token?: string | null; env?: Env };
+export type RpcOptions = { token?: string | null; env?: Env; headers?: Record<string, string> };
 
 // Raw JSON-RPC POST to /mcp; returns the HTTP response (body unread).
 export async function rpcRaw(method: string, params: unknown, opts: RpcOptions = {}): Promise<Response> {
@@ -53,6 +53,7 @@ export async function rpcRaw(method: string, params: unknown, opts: RpcOptions =
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       'Content-Type': 'application/json',
+      ...(opts.headers ?? {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
   });
@@ -85,6 +86,61 @@ export async function ok(name: string, args: unknown): Promise<any> {
 
 export async function resetAuthData(): Promise<void> {
   await admin`TRUNCATE mcp_call_log, mcp_token, mcp_auth_code, mcp_credential, mcp_client CASCADE`;
+}
+
+export async function resetJournalData(): Promise<void> {
+  await admin`TRUNCATE journal_entry CASCADE`;
+}
+
+// A processed, embedded journal entry with synthetic text.
+export async function seedJournalEntry(o: {
+  vector: number[];
+  tags?: string[];
+  scope?: 'personal' | 'family';
+  primaryType?: string;
+  status?: string;
+  summary?: string;
+}): Promise<string> {
+  const rows = await admin<Array<{ id: string }>>`
+    INSERT INTO journal_entry (
+      user_id, channel, created_at, updated_at, stitch_window_start, stitch_window_end,
+      full_text, processing_status, clean_text, summary, tags, primary_type, embedding, scope
+    ) VALUES (
+      ${USER}, 'test', now(), now(), now(), now(),
+      'synthetic entry', ${o.status ?? 'processed'}, 'synthetic entry', ${o.summary ?? 'synthetic'},
+      ${o.tags ?? null}, ${o.primaryType ?? 'archive_only'}, ${vecLiteral(o.vector)}::vector, ${o.scope ?? 'personal'}
+    )
+    RETURNING id
+  `;
+  return rows[0].id;
+}
+
+export async function resetGoalData(): Promise<void> {
+  await admin`
+    TRUNCATE editorial_pick, undertaking_cycles, undertakings, goal_amendments, goals,
+             constitution_amendments, constitution_domains CASCADE
+  `;
+}
+
+// Synthetic constitution domain → goal → undertaking → active cycle.
+export async function seedUndertaking(): Promise<{ domainId: string; goalId: string; undertakingId: string; cycleId: string }> {
+  const [d] = await admin<Array<{ id: string }>>`
+    INSERT INTO constitution_domains (user_id, label, statement, crisis_origin)
+    VALUES (${USER}, 'Domain', 'Synthetic statement', 'Synthetic origin') RETURNING id
+  `;
+  const [g] = await admin<Array<{ id: string }>>`
+    INSERT INTO goals (user_id, constitution_domain_id, statement, specific, measurable, achievable, relevant, time_bound, outcome_metric)
+    VALUES (${USER}, ${d.id}, 'Goal', 's', 'm', 'a', 'r', 't', 'metric') RETURNING id
+  `;
+  const [u] = await admin<Array<{ id: string }>>`
+    INSERT INTO undertakings (user_id, name, purpose, output_target, test_criteria, primary_goal_id, kind)
+    VALUES (${USER}, 'Undertaking', 'p', 'o', 'c', ${g.id}, 'habit_forming') RETURNING id
+  `;
+  const [c] = await admin<Array<{ id: string }>>`
+    INSERT INTO undertaking_cycles (undertaking_id, cycle_number, start_date, end_date)
+    VALUES (${u.id}, 1, '2026-01-01', '2026-01-31') RETURNING id
+  `;
+  return { domainId: d.id, goalId: g.id, undertakingId: u.id, cycleId: c.id };
 }
 
 export async function resetIdeaData(): Promise<void> {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
+import { jsonParam } from './idea_shared';
 
 const candidateSchema = z.object({
   headline: z.string().min(1).max(500),
@@ -41,9 +42,9 @@ export async function recordPickHandler(
         ${candidate.headline},
         ${candidate.context ?? null},
         ${candidate.domain ?? null},
-        ${candidate.keywords ? JSON.stringify(candidate.keywords) : null}::jsonb,
-        ${candidate.tags ? JSON.stringify(candidate.tags) : null}::jsonb,
-        ${candidate.urls ? JSON.stringify(candidate.urls) : null}::jsonb
+        ${candidate.keywords ? jsonParam(sql, candidate.keywords) : null}::jsonb,
+        ${candidate.tags ? jsonParam(sql, candidate.tags) : null}::jsonb,
+        ${candidate.urls ? jsonParam(sql, candidate.urls) : null}::jsonb
       )
       RETURNING id
     `;

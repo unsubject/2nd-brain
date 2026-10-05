@@ -27,7 +27,7 @@ There are two ways a client gets a credential:
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
   - Only a hash of it is stored.
 
-Every client sees the same 38 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
+The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 38 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
 
 ## Claude (claude.ai web, Desktop, mobile)
 
@@ -155,6 +155,7 @@ BRAIN_TOKEN=brain_pat_… npm run smoke                  # discovery, initialize
 BRAIN_TOKEN=brain_pat_… npm run smoke -- --write       # + parks and composts a "[smoke] …" idea
 BRAIN_TOKEN=brain_pat_… npm run smoke -- --expect-401  # after revoking: must be refused
 npm run smoke -- --oauth --write --revoke              # whole OAuth flow on a loopback redirect
+BRAIN_TOKEN=brain_pat_… npm run smoke -- --modern      # + the MCP 2026-07-28 (stateless) path
 ```
 
 `BRAIN_MCP_URL` overrides the server URL, for example `http://127.0.0.1:8787/mcp` under `wrangler dev`.

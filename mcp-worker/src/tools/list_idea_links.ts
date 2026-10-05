@@ -10,6 +10,7 @@ import {
   linkStatusSchema,
   linkTypeSchema,
   ok,
+  parseJsonb,
   textArray,
   toIso,
   toIsoOrNull,
@@ -51,6 +52,8 @@ export async function listIdeaLinksHandler(
         rationale: string;
         similarity: number | null;
         proposed_by: string;
+        proposed_via: unknown;
+        decided_via: unknown;
         proposed_at: Date;
         decided_at: Date | null;
         decision_note: string | null;
@@ -74,7 +77,7 @@ export async function listIdeaLinksHandler(
       }>
     >`
       SELECT l.id, l.link_type, l.status, l.rationale, l.similarity, l.proposed_by,
-             l.proposed_at, l.decided_at, l.decision_note,
+             l.proposed_via, l.proposed_at, l.decided_at, l.decided_via, l.decision_note,
              s.id AS s_id, s.title AS s_title, s.kind AS s_kind, s.status AS s_status,
              left(COALESCE(s.framing, s.why_interesting, s.thoughts, s.source_excerpt), 600) AS s_snip,
              t.id AS t_id, t.title AS t_title, t.kind AS t_kind, t.status AS t_status,
@@ -109,8 +112,10 @@ export async function listIdeaLinksHandler(
         rationale: r.rationale,
         similarity: r.similarity,
         proposed_by: r.proposed_by,
+        proposed_via: parseJsonb<Record<string, unknown> | null>(r.proposed_via, null),
         proposed_at: toIso(r.proposed_at),
         decided_at: toIsoOrNull(r.decided_at),
+        decided_via: parseJsonb<Record<string, unknown> | null>(r.decided_via, null),
         decision_note: r.decision_note,
         source: { id: r.s_id, title: r.s_title, kind: r.s_kind, status: r.s_status, snippet: snippet(r.s_snip, 240) },
         ...(r.a_id

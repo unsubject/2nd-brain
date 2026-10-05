@@ -44,6 +44,7 @@ export async function recordActivity(
   principal: Principal,
   entries: CallEntry[],
   clientInfo: Record<string, unknown> | null,
+  opts: { clientInfoOnlyIfChanged?: boolean } = {},
 ): Promise<void> {
   // Each step on its own: one failure must not drop the rest.
   const step = async (what: string, run: () => Promise<unknown>) => {
@@ -62,9 +63,14 @@ export async function recordActivity(
            AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
       `);
       if (clientInfo) {
+        const unchanged = opts.clientInfoOnlyIfChanged
+          ? db`AND (last_client_info IS NULL
+                    OR last_client_info->'clientInfo' IS DISTINCT FROM ${db.json((clientInfo.clientInfo ?? null) as never)}
+                    OR last_client_info->>'protocolVersion' IS DISTINCT FROM ${String(clientInfo.protocolVersion ?? '')})`
+          : db``;
         await step('last_client_info', () => db`
           UPDATE mcp_credential SET last_client_info = ${db.json(clientInfo as never)}
-           WHERE id = ${id}
+           WHERE id = ${id} ${unchanged}
         `);
       }
     }

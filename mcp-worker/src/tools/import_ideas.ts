@@ -177,7 +177,8 @@ async function importOne(
         const parts = [`[Merged from ${SOURCE_LABEL[sourceSystem]}] ${item.title ?? ''}`.trimEnd()];
         if (item.thoughts && item.thoughts.trim()) parts.push(item.thoughts);
         if (item.notes_raw && item.notes_raw.trim()) parts.push(item.notes_raw);
-        const note: Note = { at: capturedAt ?? nowIso, by: noteBy, text: parts.join('\n\n') };
+        const credential = capturedVia.credential as string;
+        const note: Note = { at: capturedAt ?? nowIso, by: noteBy, text: parts.join('\n\n'), credential };
 
         await tx`
           UPDATE idea SET
@@ -187,6 +188,7 @@ async function importOne(
             END,
             tags = ${textArray(tx, mergedTags)},
             notes = notes || ${jsonParam(tx, [note])},
+            edit_log = edit_log || ${jsonParam(tx, [{ at: new Date().toISOString(), credential, tool: 'import_ideas' }])},
             updated_at = now()
           WHERE id = ${target}
         `;
@@ -202,7 +204,11 @@ async function importOne(
     if (!title) throw new HandlerError('invalid', 'title is required unless merge_into_idea_id is given');
 
     const notes: Note[] = item.notes_raw
-      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({ ...n, by: noteBy }))
+      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({
+          ...n,
+          by: noteBy,
+          credential: capturedVia.credential as string,
+        }))
       : [];
     const blankToNull = (s: string | undefined) => (s !== undefined && s.trim() !== '' ? s : null);
 
