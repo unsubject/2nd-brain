@@ -1,5 +1,5 @@
 import * as queries from "./db/queries";
-import { processEntry } from "./processor";
+import { embeddingInput, processEntry } from "./processor";
 import { generateEmbedding } from "./embeddings";
 import { generateLinks } from "./google/linker";
 import { isAiFeedbackText, parseFirstLineHashtags } from "./utils";
@@ -16,7 +16,9 @@ async function tick(): Promise<void> {
     try {
       if (isAiFeedbackText(entry.full_text)) {
         const tags = parseFirstLineHashtags(entry.full_text);
-        const embedding = await generateEmbedding(entry.full_text);
+        const embedding = await generateEmbedding(
+          embeddingInput({ summary: "", clean_text: entry.full_text })
+        );
         await queries.saveAiFeedbackResult(
           entry.id,
           entry.full_text,
@@ -28,7 +30,7 @@ async function tick(): Promise<void> {
       }
 
       const result = await processEntry(entry.full_text);
-      const embedding = await generateEmbedding(result.clean_text);
+      const embedding = await generateEmbedding(embeddingInput(result));
       await queries.saveProcessingResult(entry.id, result, embedding);
       console.log(`Processed entry ${entry.id}`);
 
@@ -42,7 +44,9 @@ async function tick(): Promise<void> {
           id: entry.id,
           full_text: entry.full_text,
           tags: result.tags,
-          created_at: new Date(),
+          // The entry's own date: an entry processed late (re-queued after
+          // an error) links to the events of the day it was written.
+          created_at: entry.created_at,
           embedding,
         });
         console.log(`Links generated for entry ${entry.id}`);

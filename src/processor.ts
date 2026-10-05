@@ -7,21 +7,12 @@ export interface ProcessingResult {
   summary: string;
   language: string;
   tags: string[];
-  primary_type:
-    | "task_candidate"
-    | "goal_candidate"
-    | "knowledge_candidate"
-    | "archive_only";
-  primary_type_confidence: number;
-  suggested_actions: SuggestedAction[];
 }
 
-interface SuggestedAction {
-  kind: "task" | "goal" | "knowledge";
-  reason: string;
-  confidence: number;
-}
-
+// The model returns only metadata. It used to return the whole entry back
+// as clean_text as well, which made any long saved session overflow the
+// output budget and fail as unparseable JSON; the text is now normalised
+// in code instead.
 const PROCESSING_SCHEMA = {
   name: "save_processing_result",
   strict: true,
@@ -29,11 +20,6 @@ const PROCESSING_SCHEMA = {
     type: "object",
     additionalProperties: false,
     properties: {
-      clean_text: {
-        type: "string",
-        description:
-          "The normalized text: strip any markup, normalize whitespace, fix obvious encoding issues. Preserve the original meaning and voice exactly.",
-      },
       summary: {
         type: "string",
         description:
@@ -41,86 +27,65 @@ const PROCESSING_SCHEMA = {
       },
       language: {
         type: "string",
-        description: "ISO 639-1 language code (e.g. 'en', 'es', 'fr').",
+        description: "ISO 639-1 code of the entry's main language (e.g. 'en', 'zh', 'ja').",
       },
       tags: {
         type: "array",
         items: { type: "string" },
         description:
-          "3-10 lowercase tags spanning: topics (e.g. content, macro, family, craft, health), recognizable projects, named people or organizations, time horizon or actionability if obvious.",
-      },
-      primary_type: {
-        type: "string",
-        enum: [
-          "task_candidate",
-          "goal_candidate",
-          "knowledge_candidate",
-          "archive_only",
-        ],
-        description:
-          "The primary classification. task_candidate = contains a concrete next action. goal_candidate = expresses a longer-term aspiration. knowledge_candidate = contains a reusable insight or concept. archive_only = pure vent, log, or ephemeral thought.",
-      },
-      primary_type_confidence: {
-        type: "number",
-        description: "Confidence in the primary_type classification, 0.0 to 1.0.",
-      },
-      suggested_actions: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            kind: {
-              type: "string",
-              enum: ["task", "goal", "knowledge"],
-              description:
-                "task = concrete next step. goal = longer-horizon commitment. knowledge = evergreen note candidate.",
-            },
-            reason: {
-              type: "string",
-              description: "Short natural-language rationale for this suggestion.",
-            },
-            confidence: {
-              type: "number",
-              description: "Confidence 0.0 to 1.0.",
-            },
-          },
-          required: ["kind", "reason", "confidence"],
-        },
-        description:
-          "Up to 2 suggested actions derived from the entry. Only include if genuinely warranted — do not force suggestions on trivial entries.",
+          "3-10 lowercase tags spanning: topics (e.g. economics, content, craft, health), recognizable projects, named people or organizations.",
       },
     },
-    required: [
-      "clean_text",
-      "summary",
-      "language",
-      "tags",
-      "primary_type",
-      "primary_type_confidence",
-      "suggested_actions",
-    ],
+    required: ["summary", "language", "tags"],
   },
 } as const;
 
-const SYSTEM_PROMPT = `You are a background processor for a private journal system. You analyze raw streams of consciousness captured from a messaging app.
+const SYSTEM_PROMPT = `You are a background processor for a private journal. Entries are Simon's own notes and the summaries of conversations he saves from his AI chat sessions, in English or Chinese.
 
-Your job is to extract structured metadata from each entry. Be precise and honest in your classifications:
+Your job is to extract structured metadata from each entry:
 
-- Summaries should capture substance, not just rephrase the opening.
+- Summaries should capture substance, not just rephrase the opening. Write the summary in the entry's main language.
 - Tags should be specific and useful for retrieval — avoid generic filler tags.
-- Classification should reflect what the entry actually contains, not what you wish it contained.
-- Suggested actions should only be included when the text genuinely implies them. An entry that is purely reflective should have zero suggested actions.
-- Confidence scores should be calibrated: use low scores when the text is ambiguous.
 
-The journal owner uses this system to offload fragmented thoughts. Respect the raw, unfiltered nature of the input.`;
+Respect the raw, unfiltered nature of the input.`;
+
+/** Whitespace and control-character normalisation; the wording is untouched. */
+export function cleanText(fullText: string): string {
+  return fullText
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// text-embedding-3-small rejects inputs over 8,191 tokens. Every token of
+// its tokenizer is at least one UTF-8 byte, so a byte budget keeps any text
+// under the limit whatever the language: colloquial Cantonese can run at
+// close to two tokens per character, which a character cap would not cover.
+// The cut falls between code points, and the summary goes first so the whole
+// entry is represented even when its tail is cut.
+export const MAX_EMBEDDING_BYTES = 8000;
+
+export function embeddingInput(result: Pick<ProcessingResult, "summary" | "clean_text">): string {
+  const text = result.summary ? `${result.summary}\n\n${result.clean_text}` : result.clean_text;
+  if (Buffer.byteLength(text, "utf8") <= MAX_EMBEDDING_BYTES) return text;
+  let bytes = 0;
+  let end = 0;
+  for (const ch of text) {
+    bytes += Buffer.byteLength(ch, "utf8");
+    if (bytes > MAX_EMBEDDING_BYTES) break;
+    end += ch.length;
+  }
+  return text.slice(0, end);
+}
 
 export async function processEntry(
   fullText: string
 ): Promise<ProcessingResult> {
   const response = await openai.chat.completions.create({
     model: "gpt-5.4-nano",
-    max_completion_tokens: 1024,
+    max_completion_tokens: 2048,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -138,10 +103,15 @@ export async function processEntry(
     `[journal] tokens: in=${response.usage?.prompt_tokens} out=${response.usage?.completion_tokens}`
   );
 
-  const content = response.choices[0]?.message?.content;
+  const choice = response.choices[0];
+  if (choice?.finish_reason === "length") {
+    throw new Error("Processing response was cut off at the output limit");
+  }
+  const content = choice?.message?.content;
   if (!content) {
     throw new Error("No content in processing response");
   }
 
-  return JSON.parse(content) as ProcessingResult;
+  const meta = JSON.parse(content) as Omit<ProcessingResult, "clean_text">;
+  return { ...meta, clean_text: cleanText(fullText) };
 }

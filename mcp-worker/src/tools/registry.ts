@@ -3,10 +3,7 @@ import { searchBrainHandler } from './search_brain';
 import { getEntryHandler } from './get_entry';
 import { listRecentHandler } from './list_recent';
 import { saveSessionHandler } from './save_session';
-import { archiveSearchHandler } from './archive_search';
 import { archiveSearchTextHandler } from './archive_search_text';
-import { recordPickHandler } from './record_pick';
-import { recordEpisodeLinkHandler } from './record_episode_link';
 import { listConstitutionDomainsHandler } from './list_constitution_domains';
 import { getConstitutionDomainHandler } from './get_constitution_domain';
 import { proposeConstitutionAmendmentHandler } from './propose_constitution_amendment';
@@ -40,7 +37,6 @@ import { LINK_TYPES, LINK_STATUSES } from '../ideas/linkTypes';
 import { readProtocolHandler } from './read_protocol';
 import { TOOL_META, type ToolAnnotations } from './tool_meta';
 import type { Principal } from '../auth/principal';
-import { EMBEDDING_DIMENSIONS } from '../embeddings';
 
 export type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -64,19 +60,15 @@ const definitions: ToolDefinition[] = [
   {
     name: 'search_brain',
     description:
-      "Semantic search over the user's 2nd-brain journal. Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries by vector similarity, optionally filtered by date range, tags, or entry type.",
+      "Search the user's 2nd-brain journal by meaning and by exact text (the text match covers Chinese phrases, names, and entries still being processed). Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries, each with match ['semantic'|'text'] (an entry found both ways ranks first), optionally filtered by date range, tags or scope.",
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query embedded for vector search' },
+        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all must appear; English terms match from the start of a word, and terms of 1–3 letters only as whole words)' },
         limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
         since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on created_at' },
         until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on created_at' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Entries must contain ALL given tags' },
-        primary_type: {
-          type: 'string',
-          enum: ['task_candidate', 'goal_candidate', 'knowledge_candidate', 'archive_only'],
-        },
         scope: { type: 'string', enum: ['personal', 'family', 'all'], default: 'personal' },
       },
       required: ['query'],
@@ -112,7 +104,6 @@ const definitions: ToolDefinition[] = [
       properties: {
         days: { type: 'integer', minimum: 1, maximum: 365, default: 7 },
         scope: { type: 'string', enum: ['personal', 'family', 'all'], default: 'personal' },
-        primary_type: { type: 'string' },
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
       },
     },
@@ -121,7 +112,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'save_session',
     description:
-      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript. Returns an entry_id; processing (tags, classification, embedding) is async and completes within ~30–60s.",
+      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript. Returns an entry_id; processing (summary, tags, embedding) is async and completes within ~30–60s; until then search_brain finds the entry by text.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -141,29 +132,9 @@ const definitions: ToolDefinition[] = [
     handler: saveSessionHandler,
   },
   {
-    name: 'archive_search',
-    description:
-      "Vector similarity search over Simon's published archive of essays and YouTube episodes. Caller supplies a pre-computed text-embedding-3-small embedding (1536 dims) — saves a round-trip when the caller already has one (e.g. socialisn2 candidate scoring). Returns top-K hits with {id, title, url, published_at, similarity, type: 'essay'|'episode'}. For text queries without a pre-computed embedding, use archive_search_text instead.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query_embedding: {
-          type: 'array',
-          items: { type: 'number' },
-          minItems: EMBEDDING_DIMENSIONS,
-          maxItems: EMBEDDING_DIMENSIONS,
-          description: `Pre-computed embedding from text-embedding-3-small (${EMBEDDING_DIMENSIONS} floats)`,
-        },
-        top_k: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
-      },
-      required: ['query_embedding'],
-    },
-    handler: archiveSearchHandler,
-  },
-  {
     name: 'archive_search_text',
     description:
-      "Text-query variant of archive_search: the worker embeds the query server-side via text-embedding-3-small, then runs the same vector similarity over Simon's published essays and YouTube episodes. Use this when the caller doesn't already have an embedding handy.",
+      "Search Simon's published essays and YouTube episodes by meaning: the query is embedded server-side (text-embedding-3-small) and matched against each piece's summary embedding. Returns top-K hits with {id, title, url, published_at, similarity, type: 'essay'|'episode'}. Matches summaries only and returns no body text.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -173,46 +144,6 @@ const definitions: ToolDefinition[] = [
       required: ['query'],
     },
     handler: archiveSearchTextHandler,
-  },
-  {
-    name: 'record_pick',
-    description:
-      "ONLY call when the user states a pick/pass/defer decision on an editorial candidate (or their editorial pipeline records one for them). Record Simon's pick/pass/defer decision on an editorial candidate as training signal. Writes one row to editorial_pick with a denormalized snapshot of the candidate (so the signal survives after the upstream candidate is garbage-collected). Returns {ok, pick_id} — store pick_id if the candidate may later ship as an episode (see record_episode_link).",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        candidate: {
-          type: 'object',
-          properties: {
-            headline: { type: 'string', description: 'Candidate headline / one-line summary' },
-            context: { type: 'string', description: 'Optional fuller context / excerpt' },
-            domain: { type: 'string', description: 'Source domain, e.g. nytimes.com' },
-            keywords: { type: 'array', items: { type: 'string' } },
-            tags: { type: 'array', items: { type: 'string' } },
-            urls: { type: 'array', items: { type: 'string' } },
-          },
-          required: ['headline'],
-        },
-        decision: { type: 'string', enum: ['pick', 'pass', 'defer'] },
-        reason: { type: 'string', description: 'Optional rationale, especially for pass/defer' },
-      },
-      required: ['candidate', 'decision'],
-    },
-    handler: recordPickHandler,
-  },
-  {
-    name: 'record_episode_link',
-    description:
-      'ONLY call when the user says a picked candidate shipped as an episode and gives or confirms its URL. Attach a published episode URL to a previously-recorded editorial_pick row, closing the loop from candidate decision to shipped episode. Sets episode_url + episode_linked_at on the row. candidate_id is the pick_id returned by record_pick.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        candidate_id: { type: 'string', format: 'uuid', description: 'pick_id returned by record_pick' },
-        episode_url: { type: 'string', format: 'uri', description: 'URL of the shipped episode' },
-      },
-      required: ['candidate_id', 'episode_url'],
-    },
-    handler: recordEpisodeLinkHandler,
   },
 
   // ── Constitution (5 north-star domains) ───────────────────

@@ -92,23 +92,28 @@ export async function resetJournalData(): Promise<void> {
   await admin`TRUNCATE journal_entry CASCADE`;
 }
 
-// A processed, embedded journal entry with synthetic text.
+// A journal entry with synthetic text: processed and embedded unless a
+// status / null vector says otherwise.
 export async function seedJournalEntry(o: {
-  vector: number[];
+  vector: number[] | null;
   tags?: string[];
   scope?: 'personal' | 'family';
   primaryType?: string;
   status?: string;
   summary?: string;
+  fullText?: string;
+  createdAt?: string;
 }): Promise<string> {
   const rows = await admin<Array<{ id: string }>>`
     INSERT INTO journal_entry (
       user_id, channel, created_at, updated_at, stitch_window_start, stitch_window_end,
       full_text, processing_status, clean_text, summary, tags, primary_type, embedding, scope
     ) VALUES (
-      ${USER}, 'test', now(), now(), now(), now(),
-      'synthetic entry', ${o.status ?? 'processed'}, 'synthetic entry', ${o.summary ?? 'synthetic'},
-      ${o.tags ?? null}, ${o.primaryType ?? 'archive_only'}, ${vecLiteral(o.vector)}::vector, ${o.scope ?? 'personal'}
+      ${USER}, 'test', COALESCE(${o.createdAt ?? null}::timestamptz, now()), now(), now(), now(),
+      ${o.fullText ?? 'synthetic entry'}, ${o.status ?? 'processed'},
+      ${o.status && o.status !== 'processed' ? null : (o.fullText ?? 'synthetic entry')},
+      ${o.status && o.status !== 'processed' ? null : (o.summary ?? 'synthetic')},
+      ${o.tags ?? null}, ${o.primaryType ?? null}, ${o.vector ? vecLiteral(o.vector) : null}::vector, ${o.scope ?? 'personal'}
     )
     RETURNING id
   `;

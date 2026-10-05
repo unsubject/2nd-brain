@@ -32,18 +32,6 @@ describe.skipIf(!TEST_DB)('goal-system jsonb', () => {
     expect(u.past_cycles[0]).not.toHaveProperty('as_of');
   });
 
-  it('record_pick stores keywords/tags/urls as arrays', async () => {
-    const r = await ok('record_pick', {
-      candidate: { headline: 'Synthetic headline', keywords: [], tags: ['x'] },
-      decision: 'pick',
-    });
-    const [row] = await admin`
-      SELECT jsonb_typeof(keywords) AS k, jsonb_typeof(tags) AS t, urls, keywords, tags
-        FROM editorial_pick WHERE id = ${r.pick_id}
-    `;
-    expect(row).toMatchObject({ k: 'array', t: 'array', urls: null, keywords: [], tags: ['x'] });
-  });
-
   it('unwraps legacy string-wrapped rows on read', async () => {
     const { undertakingId, cycleId } = await seedUndertaking();
     await admin`

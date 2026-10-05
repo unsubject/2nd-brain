@@ -81,7 +81,7 @@ export async function saveSessionHandler(
               status: 'queued_for_processing',
               channel: 'ai_chat',
               scope,
-              note: 'Tags, classification, and embedding run async (~30–60s). The entry will be searchable via search_brain shortly.',
+              note: 'Summary, tags and embedding run async (~30–60s); until then search_brain finds the entry by text.',
             },
             null,
             2,
