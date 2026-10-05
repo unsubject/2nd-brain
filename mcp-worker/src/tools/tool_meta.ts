@@ -24,10 +24,7 @@ export const TOOL_META: Record<string, { title: string; annotations: ToolAnnotat
   get_entry: { title: 'Get journal entry', annotations: READ },
   list_recent: { title: 'List recent journal entries', annotations: READ },
   save_session: { title: 'Save session to journal', annotations: WRITE },
-  archive_search: { title: 'Search published archive (embedding)', annotations: READ },
   archive_search_text: { title: 'Search published archive', annotations: READ },
-  record_pick: { title: 'Record editorial pick', annotations: WRITE },
-  record_episode_link: { title: 'Link episode to pick', annotations: WRITE_DESTRUCTIVE_IDEMPOTENT },
   // Constitution & goals
   list_constitution_domains: { title: 'List constitution domains', annotations: READ },
   get_constitution_domain: { title: 'Get constitution domain', annotations: READ },

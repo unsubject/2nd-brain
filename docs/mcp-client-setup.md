@@ -144,9 +144,9 @@ If you created a `Meta Muse` personal access token earlier, revoke it in `/token
 
 **"The provider rejected the automatic app registration"** means `/register` refused Muse's callback, for example because Meta changed it. Workers Logs show the refused callback in a `[register] refused` line; see Troubleshooting.
 
-## Scripts and automation (e.g. socialisn2)
+## Scripts and automation
 
-Create a PAT per script (e.g. `socialisn2`) and send `Authorization: Bearer brain_pat_…`. Anything still using the master token shows up in the console's **master token** banner. Move each one to a PAT, then set `ALLOW_MASTER_BEARER` to `"false"`.
+Create a PAT per script and send `Authorization: Bearer brain_pat_…`. Anything still using the master token shows up in the console's **master token** banner. Move each one to a PAT, then set `ALLOW_MASTER_BEARER` to `"false"`.
 
 ## Smoke test
 
