@@ -10,6 +10,24 @@ const SCOPES = [
   "https://www.googleapis.com/auth/drive.readonly",
 ];
 
+const SCOPE_LABELS: Record<string, string> = {
+  "https://www.googleapis.com/auth/tasks": "Google Tasks",
+  "https://www.googleapis.com/auth/contacts.readonly": "Contacts (read-only)",
+  "https://www.googleapis.com/auth/calendar.readonly": "Calendar (read-only)",
+  "https://www.googleapis.com/auth/gmail.readonly": "Gmail (read-only)",
+  "https://www.googleapis.com/auth/drive.readonly": "Google Drive (read-only)",
+};
+
+// Google's consent screen lets the owner untick individual permissions, so
+// the token can carry fewer scopes than requested. Returns the labels of
+// requested scopes missing from the granted list (none when Google didn't
+// report the granted scopes).
+export function missingScopes(granted: string | null | undefined): string[] {
+  const have = new Set((granted ?? "").split(/\s+/).filter(Boolean));
+  if (have.size === 0) return [];
+  return SCOPES.filter((s) => !have.has(s)).map((s) => SCOPE_LABELS[s] ?? s);
+}
+
 function createOAuth2Client() {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -28,7 +46,7 @@ export function getAuthUrl(state: string): string {
   });
 }
 
-export async function handleCallback(code: string): Promise<void> {
+export async function handleCallback(code: string): Promise<{ missingScopes: string[] }> {
   const oauth2Client = createOAuth2Client();
   const { tokens } = await oauth2Client.getToken(code);
 
@@ -50,10 +68,12 @@ export async function handleCallback(code: string): Promise<void> {
       tokens.access_token,
       tokens.refresh_token,
       tokens.token_type || "Bearer",
-      SCOPES.join(" "),
+      // What Google actually granted, not what was asked for.
+      tokens.scope || SCOPES.join(" "),
       new Date(tokens.expiry_date || Date.now() + 3600 * 1000),
     ]
   );
+  return { missingScopes: missingScopes(tokens.scope) };
 }
 
 export async function getAuthenticatedClient() {

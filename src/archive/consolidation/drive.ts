@@ -16,6 +16,7 @@ import mammoth from "mammoth";
 import { pool } from "../../db/client";
 import { getAuthenticatedClient } from "../../google/auth";
 import { count, recordError, type CollectStats } from "./gmail";
+import { RateLimiter } from "./ratelimit";
 import { upsertSourceItem } from "./staging";
 import { buildSubstackExport, isWantedSubstackEntry, readZipEntries } from "./substack";
 import { parseWxr } from "./wxr";
@@ -60,6 +61,7 @@ export function emptyDriveStats(): DriveStats {
     updated: 0,
     unchanged: 0,
     attachmentsExtracted: 0,
+    rateLimitPauses: 0,
     failed: 0,
     errors: [],
     files: 0,
@@ -338,10 +340,24 @@ export async function collectDrive(
 ): Promise<void> {
   const auth = await getAuthenticatedClient();
   const drive = google.drive({ version: "v3", auth });
+  // Files are read one at a time, so no pacing until Drive reports a limit;
+  // then the file is retried after a pause (an export file is re-read whole,
+  // which is safe: every write is an idempotent upsert).
+  const limiter = new RateLimiter({
+    minIntervalMs: 0,
+    maxIntervalMs: 1_000,
+    retries: 6,
+    basePauseMs: 15_000,
+    maxPauseMs: 120_000,
+    onLimited: () => {
+      stats.rateLimitPauses += 1;
+      void onProgress();
+    },
+  });
 
   let files: DriveFile[];
   try {
-    files = await listTree(drive, params.folderIds);
+    files = await limiter.run(() => listTree(drive, params.folderIds));
   } catch (err) {
     if (isScopeError(err)) {
       throw new Error("Google Drive access not granted yet: re-authorise once at /auth/google");
@@ -361,17 +377,17 @@ export async function collectDrive(
         if (f.modifiedTime && staged.get(f.id) === f.modifiedTime) {
           stats.skippedUnchanged += 1;
         } else if (f.mimeType === GDOC) {
-          await collectGoogleDoc(drive, f, stats);
+          await limiter.run(() => collectGoogleDoc(drive, f, stats));
         } else {
-          await collectDocx(drive, f, stats);
+          await limiter.run(() => collectDocx(drive, f, stats));
         }
       } else if (isXml) {
-        if (!(await collectWordPress(drive, f, stats))) {
+        if (!(await limiter.run(() => collectWordPress(drive, f, stats)))) {
           stats.skippedByType["xml (not a WordPress export)"] =
             (stats.skippedByType["xml (not a WordPress export)"] ?? 0) + 1;
         }
       } else if (isZip) {
-        if (!(await collectSubstack(drive, f, stats))) {
+        if (!(await limiter.run(() => collectSubstack(drive, f, stats)))) {
           stats.skippedByType["zip (not a Substack export)"] =
             (stats.skippedByType["zip (not a Substack export)"] ?? 0) + 1;
         }
