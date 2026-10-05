@@ -64,11 +64,20 @@ async function tick(): Promise<void> {
   }
 }
 
+// The next poll is scheduled only after the previous one finishes, like the
+// idea sweeper. With setInterval, a tick that worked through a backlog for
+// more than 30 s overlapped the next one, and both processed the same
+// pending entries (seen when migration 026 re-queued the failed entries).
 export function startWorker(): void {
   console.log("Background processor started (polling every 30s)");
-  const run = () => {
-    tick().catch((err) => console.error("Worker tick error:", err));
+  const scheduleNext = () => {
+    setTimeout(() => {
+      tick()
+        .catch((err) => console.error("Worker tick error:", err))
+        .finally(scheduleNext);
+    }, POLL_INTERVAL_MS);
   };
-  run();
-  setInterval(run, POLL_INTERVAL_MS);
+  tick()
+    .catch((err) => console.error("Worker tick error:", err))
+    .finally(scheduleNext);
 }
