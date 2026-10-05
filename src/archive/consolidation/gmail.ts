@@ -260,7 +260,8 @@ export async function collectMessage(
 export async function collectGmail(
   params: GmailCollectParams,
   stats: CollectStats,
-  onProgress: () => Promise<void>
+  onProgress: () => Promise<void>,
+  shouldStop: () => boolean = () => false
 ): Promise<void> {
   const auth = await getAuthenticatedClient();
   const gmail = google.gmail({ version: "v1", auth });
@@ -289,7 +290,7 @@ export async function collectGmail(
   let next = 0;
   let done = 0;
   const worker = async () => {
-    while (next < todo.length) {
+    while (next < todo.length && !shouldStop()) {
       const id = todo[next++];
       try {
         await collectMessage(gmail, id, names, stats, limiter);

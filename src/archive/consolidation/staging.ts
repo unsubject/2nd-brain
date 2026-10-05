@@ -17,8 +17,9 @@ export interface SourceItem {
 
 export type UpsertResult = "inserted" | "updated" | "unchanged";
 
-// A run with no progress for this long is treated as abandoned.
-const STALE_RUN_MINUTES = 15;
+// A live run heartbeats every 30 s (runner.ts) whatever its progress, so a
+// 'running' row silent for this long belongs to a process that is gone.
+export const STALE_RUN_SECONDS = 120;
 
 export function contentHash(rawText: string | null, rawHtml: string | null): string {
   return createHash("sha256")
@@ -123,10 +124,10 @@ export async function startRun(
 ): Promise<string> {
   await db.query(
     `UPDATE archive_collect_run
-        SET status = 'failed', error = 'abandoned: no progress for ${STALE_RUN_MINUTES} minutes (server restart?)',
+        SET status = 'failed', error = 'abandoned: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)',
             finished_at = now()
       WHERE source = $1 AND status = 'running'
-        AND heartbeat_at < now() - interval '${STALE_RUN_MINUTES} minutes'`,
+        AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
     [source]
   );
   try {
@@ -141,15 +142,19 @@ export async function startRun(
   }
 }
 
+// False when the row is no longer 'running' (another process declared the
+// run interrupted and took it over): the caller should stop.
 export async function heartbeatRun(
   runId: string,
   stats: Record<string, unknown>,
   db: DB = pool
-): Promise<void> {
-  await db.query(
-    `UPDATE archive_collect_run SET stats = $2::jsonb, heartbeat_at = now() WHERE id = $1`,
+): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE archive_collect_run SET stats = $2::jsonb, heartbeat_at = now()
+      WHERE id = $1 AND status = 'running'`,
     [runId, JSON.stringify(stats)]
   );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function finishRun(
@@ -159,12 +164,35 @@ export async function finishRun(
   error: string | null,
   db: DB = pool
 ): Promise<void> {
+  // Only a run still marked running: a run taken over as interrupted keeps
+  // that outcome even if its old process finishes later.
   await db.query(
     `UPDATE archive_collect_run
         SET status = $2, stats = $3::jsonb, error = $4, finished_at = now(), heartbeat_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 AND status = 'running'`,
     [runId, status, JSON.stringify(stats), error ? error.slice(0, 2000) : null]
   );
+}
+
+export interface InterruptedRun {
+  id: string;
+  source: CollectorSource;
+  params: Record<string, unknown>;
+}
+
+// Mark runs whose process is gone (no heartbeat for STALE_RUN_SECONDS) as
+// failed and return them for resuming. Each row is claimed by exactly one
+// caller: a concurrent claim re-checks status after the first commits.
+export async function claimInterruptedRuns(db: DB = pool): Promise<InterruptedRun[]> {
+  const { rows } = await db.query<InterruptedRun>(
+    `UPDATE archive_collect_run
+        SET status = 'failed', finished_at = now(),
+            error = 'interrupted: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)'
+      WHERE status = 'running'
+        AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})
+      RETURNING id, source, params`
+  );
+  return rows;
 }
 
 export async function getStagingStatus(db: DB = pool): Promise<{
