@@ -2,7 +2,8 @@ import { createHash } from "crypto";
 import { pool, type DB } from "../../db/client";
 
 export type ArchiveSource = "gmail" | "gdrive" | "wordpress" | "substack";
-export type CollectorSource = "gmail" | "gdrive";
+// "extract" is step 2 (extraction), tracked like a collector.
+export type CollectorSource = "gmail" | "gdrive" | "extract";
 
 export interface SourceItem {
   source: ArchiveSource;

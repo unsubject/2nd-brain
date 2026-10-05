@@ -309,6 +309,14 @@ test("resumeRequest continues a run without refetching, up to MAX_RESUMES times"
   });
   assert.deepEqual(drive, { source: "gdrive", folderIds: folders, refetch: false, resumedFrom: "run-2", resumeCount: 3 });
 
+  // Extraction rewrites every candidate, so running it again is the resume.
+  assert.deepEqual(resumeRequest({ id: "run-3", source: "extract", params: {} }), {
+    source: "extract",
+    resumedFrom: "run-3",
+    resumeCount: 1,
+  });
+  assert.equal(resumeRequest({ id: "r", source: "extract", params: { resumeCount: MAX_RESUMES } }), null);
+
   // Resumed too often, or params that don't describe a run: left alone.
   assert.equal(resumeRequest({ id: "r", source: "gmail", params: { label: "Writing", resumeCount: MAX_RESUMES } }), null);
   assert.equal(resumeRequest({ id: "r", source: "gmail", params: {} }), null);
