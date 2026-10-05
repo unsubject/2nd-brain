@@ -6,10 +6,15 @@ import { google } from "googleapis";
 import mammoth from "mammoth";
 import { getAuthenticatedClient } from "../../google/auth";
 import { describeGoogleError } from "../../google/errors";
-import { extractBodies, header, isDocxAttachment, splitAddresses } from "./mime";
-import { existingSourceRefs, upsertSourceItem, type UpsertResult } from "./staging";
+import { decodeBody, extractBodies, header, isDocxAttachment, splitAddresses, type ExternalBody } from "./mime";
+import {
+  existingSourceRefs,
+  incompleteGmailMessages,
+  upsertSourceItem,
+  type UpsertResult,
+} from "./staging";
 
-type Gmail = ReturnType<typeof google.gmail>;
+export type Gmail = ReturnType<typeof google.gmail>;
 
 export interface GmailCollectParams {
   label: string;
@@ -20,6 +25,8 @@ export interface CollectStats {
   [key: string]: unknown;
   listed: number;
   skippedExisting: number;
+  // Staged messages fetched again because an attachment row is missing.
+  retriedIncomplete: number;
   inserted: number;
   updated: number;
   unchanged: number;
@@ -35,6 +42,7 @@ export function emptyStats(): CollectStats {
   return {
     listed: 0,
     skippedExisting: 0,
+    retriedIncomplete: 0,
     inserted: 0,
     updated: 0,
     unchanged: 0,
@@ -86,7 +94,23 @@ async function listMessageIds(gmail: Gmail, labelId: string): Promise<string[]> 
   return ids;
 }
 
-async function collectMessage(
+// Large bodies come back as an attachment id instead of inline data.
+async function fetchExternalBody(
+  gmail: Gmail,
+  messageId: string,
+  ext: ExternalBody,
+  unknownCharsets: string[]
+): Promise<string> {
+  const { data } = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: ext.attachmentId,
+  });
+  if (!data.data) throw new Error("empty message body attachment");
+  return decodeBody(data.data, ext.charset, unknownCharsets);
+}
+
+export async function collectMessage(
   gmail: Gmail,
   id: string,
   labelNames: Map<string, string>,
@@ -95,6 +119,19 @@ async function collectMessage(
   const { data: msg } = await gmail.users.messages.get({ userId: "me", id, format: "full" });
   const headers = msg.payload?.headers;
   const bodies = extractBodies(msg.payload);
+  // Fetched before the row is written: if this fails the message stays
+  // unstaged, so the next run retries it instead of keeping an empty body.
+  const text = bodies.textExternal
+    ? await fetchExternalBody(gmail, id, bodies.textExternal, bodies.unknownCharsets)
+    : bodies.text;
+  const html = bodies.htmlExternal
+    ? await fetchExternalBody(gmail, id, bodies.htmlExternal, bodies.unknownCharsets)
+    : bodies.html;
+  const externalBodies = [
+    ...(bodies.textExternal ? ["text/plain"] : []),
+    ...(bodies.htmlExternal ? ["text/html"] : []),
+  ];
+  const docxAttachments = bodies.attachments.filter(isDocxAttachment);
   const labelIds = msg.labelIds ?? [];
   const subject = header(headers, "subject");
   const authoredAt = msg.internalDate ? new Date(Number(msg.internalDate)) : null;
@@ -118,8 +155,12 @@ async function collectMessage(
       mimeType,
       size,
     })),
+    // The attachment rows this message should have; a run that finds one
+    // missing fetches the message again (staging.incompleteGmailMessages).
+    expectedAttachmentRefs: docxAttachments.map((a) => `${id}#${a.partId}`),
+    ...(externalBodies.length > 0 ? { externalBodies } : {}),
     ...(bodies.unknownCharsets.length > 0 ? { unknownCharsets: bodies.unknownCharsets } : {}),
-    ...(bodies.text === null && bodies.html === null ? { emptyBody: true } : {}),
+    ...(text === null && html === null ? { emptyBody: true } : {}),
   };
 
   count(
@@ -131,15 +172,15 @@ async function collectMessage(
       title: subject,
       authoredAt,
       // Attachment-only messages still get a row so the thread is complete.
-      rawText: bodies.text ?? (bodies.html === null ? "" : null),
-      rawHtml: bodies.html,
+      rawText: text ?? (html === null ? "" : null),
+      rawHtml: html,
       metadata,
     })
   );
 
   // Column drafts were sometimes sent as Word attachments: stage their text
   // as candidate copies too, keyed by the (stable) MIME part id.
-  for (const att of bodies.attachments.filter(isDocxAttachment)) {
+  for (const att of docxAttachments) {
     const ref = `${id}#${att.partId}`;
     try {
       const { data } = await gmail.users.messages.attachments.get({
@@ -196,11 +237,17 @@ export async function collectGmail(
 
   let todo = ids;
   if (!params.refetch) {
+    // Staged messages are skipped unless one of their attachment rows is
+    // missing (a fetch failed, or the run stopped between the two writes).
     const existing = new Set<string>();
+    const incomplete = new Set<string>();
     for (let i = 0; i < ids.length; i += 1000) {
-      for (const r of await existingSourceRefs("gmail", ids.slice(i, i + 1000))) existing.add(r);
+      const chunk = ids.slice(i, i + 1000);
+      for (const r of await existingSourceRefs("gmail", chunk)) existing.add(r);
+      for (const r of await incompleteGmailMessages(chunk)) incomplete.add(r);
     }
-    todo = ids.filter((id) => !existing.has(id));
+    todo = ids.filter((id) => !existing.has(id) || incomplete.has(id));
+    stats.retriedIncomplete = incomplete.size;
     stats.skippedExisting = ids.length - todo.length;
   }
 

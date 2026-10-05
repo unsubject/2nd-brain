@@ -18,6 +18,7 @@ import {
   readZipEntries,
 } from "../src/archive/consolidation/substack";
 import { contentHash } from "../src/archive/consolidation/staging";
+import { collectionOrder } from "../src/archive/consolidation/drive";
 
 const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64url");
 
@@ -83,6 +84,47 @@ test("extractBodies handles a single-part message and missing payloads", () => {
   const empty = extractBodies(undefined);
   assert.equal(empty.text, null);
   assert.equal(empty.html, null);
+});
+
+test("extractBodies returns out-of-line bodies for fetching and keeps them over later parts", () => {
+  const payload = {
+    mimeType: "multipart/mixed",
+    parts: [
+      {
+        mimeType: "multipart/alternative",
+        parts: [
+          {
+            partId: "0.0",
+            mimeType: "text/plain",
+            headers: [{ name: "Content-Type", value: 'text/plain; charset="big5"' }],
+            body: { attachmentId: "BODY_TEXT", size: 120000 },
+          },
+          {
+            partId: "0.1",
+            mimeType: "text/html",
+            headers: [{ name: "Content-Type", value: "text/html; charset=UTF-8" }],
+            body: { attachmentId: "BODY_HTML", size: 240000 },
+          },
+        ],
+      },
+      {
+        // A later inline body (e.g. a forwarded copy) must not win.
+        partId: "1",
+        mimeType: "message/rfc822",
+        parts: [
+          { partId: "1.0", mimeType: "text/plain", body: { data: b64("forwarded") } },
+          { partId: "1.1", mimeType: "text/html", body: { data: b64("<p>forwarded</p>") } },
+        ],
+      },
+    ],
+  };
+  const out = extractBodies(payload);
+  assert.equal(out.text, null);
+  assert.equal(out.html, null);
+  assert.deepEqual(out.textExternal, { attachmentId: "BODY_TEXT", charset: "big5" });
+  assert.deepEqual(out.htmlExternal, { attachmentId: "BODY_HTML", charset: "utf-8" });
+  // Body parts are not attachments: they have no filename.
+  assert.deepEqual(out.attachments, []);
 });
 
 test("splitAddresses keeps commas inside quoted display names", () => {
@@ -207,6 +249,36 @@ test("buildSubstackExport rejects a zip without posts.csv", () => {
 test("contentHash distinguishes text from html", () => {
   assert.notEqual(contentHash("a", null), contentHash(null, "a"));
   assert.equal(contentHash("a", "b"), contentHash("a", "b"));
+});
+
+test("collectionOrder reads export snapshots last, oldest to newest", () => {
+  const f = (name: string, mimeType: string, modifiedTime: string | null, createdTime: string | null = null) => ({
+    name,
+    mimeType,
+    modifiedTime,
+    createdTime,
+  });
+  const files = [
+    f("wordpress-2024.xml", "text/xml", "2024-06-01T00:00:00.000Z"),
+    f("利字當頭 2019", "application/vnd.google-apps.document", "2019-07-30T00:00:00.000Z"),
+    f("substack-new.zip", "application/zip", "2026-10-04T10:00:00.000Z"),
+    f("wordpress-2021.xml", "application/xml", "2021-01-01T00:00:00.000Z"),
+    f("substack-old.zip", "application/zip", null, "2025-01-01T00:00:00.000Z"),
+    f("notes.pdf", "application/pdf", "2026-01-01T00:00:00.000Z"),
+  ];
+  assert.deepEqual(
+    collectionOrder(files).map((x) => x.name),
+    [
+      "利字當頭 2019",
+      "notes.pdf",
+      "wordpress-2021.xml",
+      "wordpress-2024.xml",
+      "substack-old.zip",
+      "substack-new.zip",
+    ]
+  );
+  // The input order is left alone.
+  assert.equal(files[0].name, "wordpress-2024.xml");
 });
 
 test("parseCollectRequest validates sources, labels and Drive ids", async () => {

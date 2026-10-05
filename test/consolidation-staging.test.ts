@@ -4,6 +4,8 @@
 
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { Pool } from "pg";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -11,10 +13,11 @@ const skip = !url ? "TEST_DATABASE_URL not set" : false;
 
 let db: Pool;
 let staging: typeof import("../src/archive/consolidation/staging");
+let gmail: typeof import("../src/archive/consolidation/gmail");
+let appPool: import("pg").Pool | undefined;
 
 before(async () => {
   if (!url) return;
-  staging = await import("../src/archive/consolidation/staging");
   db = new Pool({ connectionString: url, max: 2 });
   const { rows } = await db.query("SELECT current_database() AS db, host(inet_server_addr()) AS addr");
   const addr: string | null = rows[0].addr;
@@ -27,9 +30,16 @@ before(async () => {
     await db.end();
     throw new Error(`Refusing to run against ${rows[0].db}@${addr}: needs a local *_test database`);
   }
+  // The collectors write through the app's shared pool, which reads
+  // DATABASE_URL when first imported: point it at the checked database.
+  process.env.DATABASE_URL = url;
+  staging = await import("../src/archive/consolidation/staging");
+  gmail = await import("../src/archive/consolidation/gmail");
+  appPool = (await import("../src/db/client")).pool;
 });
 
 after(async () => {
+  await appPool?.end();
   await db?.end();
 });
 
@@ -124,4 +134,132 @@ test("one running run per source; stale runs are reclaimed", { skip }, async () 
   assert.equal(status.runs.length, 3);
   // Finished runs free the slot.
   await staging.startRun("gmail", {}, db);
+});
+
+test("incompleteGmailMessages finds staged messages missing an expected attachment row", { skip }, async () => {
+  await staging.upsertSourceItem(item({ sourceRef: "m-done", metadata: { expectedAttachmentRefs: ["m-done#1"] } }), db);
+  await staging.upsertSourceItem(item({ sourceRef: "m-done#1", metadata: { kind: "attachment" } }), db);
+  await staging.upsertSourceItem(item({ sourceRef: "m-partial", metadata: { expectedAttachmentRefs: ["m-partial#1", "m-partial#2"] } }), db);
+  await staging.upsertSourceItem(item({ sourceRef: "m-partial#1", metadata: { kind: "attachment" } }), db);
+  await staging.upsertSourceItem(item({ sourceRef: "m-none", metadata: { expectedAttachmentRefs: [] } }), db);
+  await staging.upsertSourceItem(item({ sourceRef: "m-old", metadata: {} }), db);
+  // The same ref under another source doesn't count as the attachment.
+  await staging.upsertSourceItem(item({ sourceRef: "m-other", metadata: { expectedAttachmentRefs: ["m-other#1"] } }), db);
+  await staging.upsertSourceItem(item({ source: "gdrive", sourceRef: "m-other#1" }), db);
+
+  const got = await staging.incompleteGmailMessages(["m-done", "m-partial", "m-none", "m-old", "m-other", "m-unstaged"], db);
+  assert.deepEqual([...got].sort(), ["m-other", "m-partial"]);
+  assert.deepEqual([...(await staging.incompleteGmailMessages(["m-done"], db))], []);
+  assert.deepEqual([...(await staging.incompleteGmailMessages([], db))], []);
+});
+
+// A users.messages.get + attachments.get stand-in; attachment values that
+// are Errors are thrown, so a test can fail one fetch and then retry it.
+function stubGmail(msg: Record<string, unknown>, attachments: Record<string, string | Error>) {
+  return {
+    users: {
+      messages: {
+        get: async () => ({ data: msg }),
+        attachments: {
+          get: async ({ id }: { id: string }) => {
+            const v = attachments[id];
+            if (v instanceof Error) throw v;
+            return { data: { data: v } };
+          },
+        },
+      },
+    },
+  } as unknown as import("../src/archive/consolidation/gmail").Gmail;
+}
+
+const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64url");
+
+test("collectMessage fetches out-of-line bodies and retries a failed attachment", { skip }, async () => {
+  const big5 = Buffer.from([0xa7, 0x51, 0xa5, 0x40, 0xa5, 0xc1]); // 利世民
+  const msg = {
+    id: "m-long",
+    threadId: "t-long",
+    internalDate: String(Date.parse("2019-07-30T04:00:00Z")),
+    labelIds: ["SENT", "Label_1"],
+    payload: {
+      mimeType: "multipart/mixed",
+      headers: [{ name: "Subject", value: "利字當頭 20190730" }],
+      parts: [
+        {
+          mimeType: "multipart/alternative",
+          parts: [
+            {
+              partId: "0.0",
+              mimeType: "text/plain",
+              headers: [{ name: "Content-Type", value: "text/plain; charset=big5" }],
+              body: { attachmentId: "BODY_TEXT", size: 6 },
+            },
+            {
+              partId: "0.1",
+              mimeType: "text/html",
+              headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
+              body: { data: b64("<p>利世民</p>") },
+            },
+          ],
+        },
+        {
+          partId: "1",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          filename: "利字當頭 20190730.docx",
+          body: { attachmentId: "DOCX", size: 986 },
+        },
+      ],
+    },
+  };
+  const docx = b64(readFileSync(join(__dirname, "fixtures", "column-sample.docx")));
+  const labels = new Map([["Label_1", "Writing"]]);
+
+  // First run: the body is fetched, the attachment fetch fails.
+  const first = gmail.emptyStats();
+  await gmail.collectMessage(
+    stubGmail(msg, { BODY_TEXT: b64(big5), DOCX: new Error("backend error") }),
+    "m-long",
+    labels,
+    first
+  );
+  assert.equal(first.inserted, 1);
+  assert.equal(first.failed, 1);
+  assert.equal(first.errors[0].ref, "m-long#1");
+  const { rows } = await db.query(
+    "SELECT raw_text, raw_html, metadata FROM archive_source_item WHERE source = 'gmail' AND source_ref = 'm-long'"
+  );
+  assert.equal(rows[0].raw_text, "利世民");
+  assert.equal(rows[0].raw_html, "<p>利世民</p>");
+  assert.deepEqual(rows[0].metadata.expectedAttachmentRefs, ["m-long#1"]);
+  assert.deepEqual(rows[0].metadata.externalBodies, ["text/plain"]);
+  assert.equal(rows[0].metadata.emptyBody, undefined);
+  assert.deepEqual([...(await staging.incompleteGmailMessages(["m-long"], db))], ["m-long"]);
+
+  // Retry: the message is unchanged, the attachment is now staged.
+  const second = gmail.emptyStats();
+  await gmail.collectMessage(stubGmail(msg, { BODY_TEXT: b64(big5), DOCX: docx }), "m-long", labels, second);
+  assert.equal(second.failed, 0);
+  assert.equal(second.unchanged, 1);
+  assert.equal(second.attachmentsExtracted, 1);
+  const att = await db.query(
+    "SELECT raw_text, metadata FROM archive_source_item WHERE source = 'gmail' AND source_ref = 'm-long#1'"
+  );
+  assert.match(att.rows[0].raw_text, /利字當頭：科目三/);
+  assert.equal(att.rows[0].metadata.parentMessageId, "m-long");
+  assert.deepEqual([...(await staging.incompleteGmailMessages(["m-long"], db))], []);
+});
+
+test("collectMessage stages nothing when an out-of-line body can't be fetched", { skip }, async () => {
+  const msg = {
+    id: "m-big",
+    threadId: "t-big",
+    payload: { mimeType: "text/html", body: { attachmentId: "BODY_HTML", size: 300000 } },
+  };
+  const stats = gmail.emptyStats();
+  await assert.rejects(
+    gmail.collectMessage(stubGmail(msg, { BODY_HTML: new Error("rate limited") }), "m-big", new Map(), stats),
+    /rate limited/
+  );
+  // No row: the next run sees the message as new and fetches it again.
+  assert.deepEqual([...(await staging.existingSourceRefs("gmail", ["m-big"], db))], []);
 });
