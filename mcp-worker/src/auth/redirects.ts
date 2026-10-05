@@ -4,13 +4,14 @@
 // owner consent on every authorization, is what keeps codes from being
 // delivered to an attacker's site.
 
-export type ClientFamily = 'claude' | 'chatgpt' | 'cursor' | 'google' | 'loopback' | 'custom';
+export type ClientFamily = 'claude' | 'chatgpt' | 'cursor' | 'google' | 'meta' | 'loopback' | 'custom';
 
 export const FAMILY_NAMES: Record<ClientFamily, string> = {
   claude: 'Claude',
   chatgpt: 'ChatGPT',
   cursor: 'Cursor',
   google: 'Google (Gemini Spark)',
+  meta: 'Meta (Muse)',
   loopback: 'Local app (Claude Code, Gemini CLI, MCP Inspector…)',
   custom: 'Custom (allowed by OAUTH_EXTRA_REDIRECT_PREFIXES)',
 };
@@ -33,6 +34,8 @@ const RULES: Rule[] = [
   // that id (project ids can't contain "_"), so a bare /r/ prefix would let
   // any project pose as "Google (Gemini Spark)".
   { family: 'google', origin: 'https://oauth-redirect.googleusercontent.com', pathPrefix: '/r/user_bound_custom-mcp-' },
+  // Meta Muse custom connectors (OAuth + dynamic registration, 2026).
+  { family: 'meta', exact: 'https://agent.meta.ai/api/hatch/oauth/callback' },
 ];
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);

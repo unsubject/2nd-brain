@@ -12,7 +12,7 @@ Setup guide for each client: [`mcp-client-setup.md`](mcp-client-setup.md).
 - Cursor
 - Gemini CLI
 - **Gemini Spark** (Google's agent; custom apps over OAuth only)
-- **Meta Muse** (Meta's agent; connectors are built in chat and use a static bearer token from its Secure Credentials Store)
+- **Meta Muse** (Meta's agent; connectors are built in chat and sign in with OAuth and dynamic registration via `https://agent.meta.ai/api/hatch/oauth/callback`; a PAT from its Secure Credentials Store is the fallback)
 
 Before this phase, every client ended up with the master `BRAIN_MCP_TOKEN`. The OAuth flow simply handed it out as the access token, accepted any redirect URI, and could not revoke anyone.
 
@@ -75,6 +75,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
     | ChatGPT | `https://chatgpt.com/connector_platform_oauth_redirect` (exact) or the `https://chatgpt.com/connector/oauth/` prefix |
     | Cursor | `cursor://anysphere.cursor-mcp/oauth/callback`, `https://www.cursor.com/agents/mcp/oauth/callback` (Cloud Agents) |
     | Google | the `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-` prefix (Gemini Spark's per-user, per-connector callback). Other `/r/<project-id>` paths on that relay deliver to arbitrary Google Cloud projects, whose ids can't contain `_`, so they are refused. |
+    | Meta | `https://agent.meta.ai/api/hatch/oauth/callback` (exact; Meta Muse custom connectors) |
     | Native apps | RFC 8252 loopback (`http://localhost`, `127.0.0.1`, `[::1]`); the port may differ from the registered one |
     | Custom | any `https://` prefix listed in `OAUTH_EXTRA_REDIRECT_PREFIXES`, matched at a `/` boundary |
 
