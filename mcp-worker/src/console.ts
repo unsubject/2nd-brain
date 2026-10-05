@@ -1,6 +1,6 @@
 // Owner console at /tokens: see every connected agent, when it last
 // called, what it did; mint personal access tokens (PATs) for clients
-// that take a static bearer (Meta Muse, scripts); revoke anything.
+// that take a static bearer (scripts, config-file clients); revoke anything.
 //
 // Login is the owner secret (OWNER_SECRET, else BRAIN_MCP_TOKEN) → a signed, HttpOnly,
 // SameSite=Strict __Host- cookie (30 min). Every POST also needs a
@@ -257,11 +257,11 @@ ${
     : '<p class="muted">No agents connected yet.</p>'
 }
 <h2>New personal access token</h2>
-<p class="muted">For clients that take a static bearer token (Meta Muse, scripts, Cursor/Gemini CLI without OAuth). OAuth clients (Claude, ChatGPT, Gemini Spark) connect themselves and show up above.</p>
+<p class="muted">For clients that take a static bearer token (scripts, Cursor/Gemini CLI without OAuth, or Meta Muse if it asks for a header instead of signing in). OAuth clients (Claude, ChatGPT, Gemini Spark, Meta Muse) connect themselves and show up above.</p>
 <form method="post" action="/tokens/create">
   <input type="hidden" name="csrf" value="${e(s.csrf)}">
   <label for="label">Name (shown here and recorded on everything it writes)</label>
-  <input id="label" type="text" name="label" maxlength="80" required placeholder="e.g. Meta Muse">
+  <input id="label" type="text" name="label" maxlength="80" required placeholder="e.g. Cursor (laptop)">
   <button type="submit">Create token</button>
 </form>
 ${
@@ -298,7 +298,7 @@ async function createPat(request: Request, env: Env, db: AuthDb, s: Session, for
   const body = `${header(s, 'Token created')}
 <div class="ok">Created <strong>${e(label)}</strong>. Copy the token now — it is shown only once and stored only as a hash.</div>
 <pre>${e(token)}</pre>
-<h2>Meta Muse (Custom Connector)</h2>
+<h2>Meta Muse (only if it asks for a header instead of signing in)</h2>
 <p>Store the token in Muse's Secure Credentials Store (never paste it into the chat), then ask Muse to create a custom connector:
 MCP server URL <code>${e(url)}</code>, header <code>Authorization: Bearer &lt;the stored credential&gt;</code>. Full prompt: docs/mcp-client-setup.md.</p>
 <h2>Claude Code</h2>

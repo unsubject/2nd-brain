@@ -90,7 +90,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
   - The consent page shows the client family and redirect host. Both are derived from the redirect URI, so they can be trusted. The client's self-declared name is shown and marked *unverified*.
   - The owner names the connection and types the owner secret to approve.
     - The page doesn't look up existing labels, because it is unauthenticated. A clashing label gets " (2)" at `/token`.
-    - A **Replace** checkbox revokes the owner's existing OAuth connection with exactly that label, so a reconnect keeps its name. It is ticked by default for Claude, ChatGPT and Google, whose vendors hold one connection per account.
+    - A **Replace** checkbox revokes the owner's existing OAuth connection with exactly that label, so a reconnect keeps its name. It is ticked by default for Claude, ChatGPT, Google and Meta, whose vendors hold one connection per account. It never revokes an access token (PAT) with the same label; a live PAT keeps the name, and the new connection gets " (2)".
     - The page cannot be framed, is never cached, and loads no third-party resources.
   - Legacy `mcp-client-<uuid>` ids issued by the old stateless flow are adopted on approval, provided the redirect URI they present passes the allow-list.
 - **Token**
@@ -167,11 +167,11 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
 
 0. Set the `OWNER_SECRET` Worker secret (`openssl rand -hex 32`).
 1. Apply the migrations, then merge. The Worker deploys from CI on its own while the Node monolith applies migrations only when it boots, and the Worker code needs migration 022's columns.
-   - Recommended: first count the string-typed rows 021 will repair (`SELECT count(*) FROM <table> WHERE jsonb_typeof(<column>) = 'string'` for each column it lists), then run `npm run migrate` against production from the branch, then merge; the monolith's boot then skips them. 020 and 022 are additive; 021 rewrites string-wrapped jsonb in place, which every reader already accepts; all three are idempotent.
+   - Recommended: first count the string-typed rows `021_repair_double_encoded_jsonb.sql` will repair (`SELECT count(*) FROM <table> WHERE jsonb_typeof(<column>) = 'string'` for each column it lists), then run `npm run migrate` against production from the branch, then merge; the monolith's boot then skips them. 020 and 022 are additive; 021 rewrites string-wrapped jsonb in place, which every reader already accepts; all three are idempotent.
    - A database that ran 022 from an earlier revision of the branch (it added `idea.updated_via`) still gets today's file, which has a different name; it drops `updated_via` and converges.
    - Rolling the Worker back to a build without 022's columns is safe: the `decided_via` CHECK only checks its shape, so the older reopen (which clears `decided_at` alone) still works. Links it reopens keep a stale `decided_via` until they are decided again.
    - Otherwise, until the monolith has booted: OAuth and the console return errors, and `get_idea`, `list_idea_links`, `update_idea`, `decide_idea_links`, `propose_idea_links` (reopen), `create_synthesis` and the `import_ideas` merge path fail with a missing-column error, even with the master token. Re-run the deploy workflow if the Worker went live first and something stays broken.
-   - Rows the old `close_cycle`/`record_pick` write between the migration and the Worker deploy stay string-wrapped; readers unwrap them, and re-running 021's `DO` block by hand (idempotent) repairs them.
+   - Rows the old `close_cycle`/`record_pick` write between the migration and the Worker deploy stay string-wrapped; readers unwrap them, and re-running that migration's `DO` block by hand (idempotent) repairs them.
    - Optionally set `MCP_CALL_LOG_RETENTION_DAYS` on the Railway service (default 90).
 2. Run `npm run smoke` with the master token. Then create a PAT and run `--write`, and after revoking it run `--expect-401`.
 3. Reconnect each client following the setup guide, so that each one gets its own label.

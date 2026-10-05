@@ -20,7 +20,7 @@ There are two ways a client gets a credential:
 - **OAuth.** The client opens a 2nd-brain consent page and you approve it there. Used by Claude, ChatGPT, Cursor, Gemini CLI, Claude Code, Gemini Spark and Meta Muse.
   - The page tells you which client family is asking and where you will be sent back to.
   - You name the connection, type the owner secret, and press **Approve**.
-  - When reconnecting a client you already had, tick **Replace** (ticked by default for Claude, ChatGPT and Gemini Spark). The old connection with that exact name is revoked and the new one keeps the name. Otherwise it becomes e.g. `Claude (2)`.
+  - When reconnecting a client you already had, tick **Replace** (ticked by default for Claude, ChatGPT, Gemini Spark and Meta Muse). The old OAuth connection with that exact name is revoked and the new one keeps the name. Otherwise it becomes e.g. `Claude (2)`. **Replace** never revokes a personal access token: if a PAT has the same name, revoke it in `/tokens` first, or it stays live and the new connection is named e.g. `Meta Muse (2)`.
   - The client then receives an access token that lasts 1 hour, plus a refresh token that rotates on every use.
   - Removing or disconnecting a connector inside a client may not tell 2nd-brain. Revoke it in `/tokens` too; otherwise its refresh token stays valid until 90 days after it was last used.
 - **Personal access token (PAT).** You create it in `/tokens` → **New personal access token**. Used by scripts, clients set up from a config file, and Meta Muse if it asks for a header instead of signing in.
@@ -126,6 +126,8 @@ These notes come from third-party field reports (July–September 2026), not fro
 ## Meta Muse (Meta's agent)
 
 You set up Muse by asking it in chat to build a **Custom Connector**. Availability depends on your region; it is US-only as of October 2026. Muse connects with OAuth and registers itself, like Claude; its callback is `https://agent.meta.ai/api/hatch/oauth/callback`.
+
+If you created a `Meta Muse` personal access token earlier, revoke it in `/tokens` first. **Replace** only revokes OAuth connections, so the token would stay usable and the new connection would be named `Meta Muse (2)`.
 
 1. Send Muse this prompt:
 

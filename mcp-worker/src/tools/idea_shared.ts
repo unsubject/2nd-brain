@@ -116,7 +116,7 @@ export function parseJsonb<T>(v: unknown, fallback: T): T {
 
 // Unwrap a jsonb value that an older writer stored as a JSON *string*
 // (`${JSON.stringify(x)}::jsonb`, fixed in close_cycle/record_pick and
-// repaired by migration 021). Returns anything else unchanged; never throws.
+// repaired by migration 021_repair_double_encoded_jsonb.sql). Returns anything else unchanged; never throws.
 export function unwrapJsonb(v: unknown): unknown {
   let cur: unknown = v;
   for (let i = 0; i < 3 && typeof cur === 'string'; i++) {
