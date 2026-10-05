@@ -293,3 +293,64 @@ test("collectMessage retries a quota error instead of failing the message", { sk
   assert.equal(stats.inserted, 1);
   assert.equal(stats.rateLimitPauses, 1);
 });
+
+test("heartbeat and finish leave alone a run that is no longer running", { skip }, async () => {
+  const id = await staging.startRun("gmail", { label: "Writing" }, db);
+  assert.equal(await staging.heartbeatRun(id, { inserted: 1 }, db), true);
+  await db.query(`UPDATE archive_collect_run SET status = 'failed', error = 'interrupted: test' WHERE id = $1`, [id]);
+  assert.equal(await staging.heartbeatRun(id, { inserted: 2 }, db), false);
+  await staging.finishRun(id, "succeeded", { inserted: 3 }, null, db);
+  const { rows } = await db.query("SELECT status, error, stats FROM archive_collect_run WHERE id = $1", [id]);
+  assert.deepEqual(rows[0], { status: "failed", error: "interrupted: test", stats: { inserted: 1 } });
+});
+
+test("claimInterruptedRuns takes only silent runs, each exactly once", { skip }, async () => {
+  const silent = await staging.startRun("gmail", { label: "Writing" }, db);
+  const live = await staging.startRun("gdrive", { folderIds: ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl"] }, db);
+  await db.query(
+    `UPDATE archive_collect_run SET heartbeat_at = now() - make_interval(secs => $2) WHERE id = $1`,
+    [silent, staging.STALE_RUN_SECONDS + 5]
+  );
+  const [first, second] = await Promise.all([staging.claimInterruptedRuns(db), staging.claimInterruptedRuns(db)]);
+  const claimed = [...first, ...second];
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].id, silent);
+  assert.equal(claimed[0].source, "gmail");
+  assert.deepEqual(claimed[0].params, { label: "Writing" });
+  const { rows } = await db.query("SELECT id, status, error FROM archive_collect_run ORDER BY started_at");
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(byId[silent].status, "failed");
+  assert.match(byId[silent].error, /^interrupted/);
+  assert.equal(byId[live].status, "running");
+});
+
+test("resumeInterruptedRuns starts the continuation of an interrupted run", { skip }, async () => {
+  const { resumeInterruptedRuns } = await import("../src/archive/consolidation/resume");
+  const old = await staging.startRun("gmail", { label: "Writing", refetch: true }, db);
+  const tooOften = await staging.startRun(
+    "gdrive",
+    { folderIds: ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl"], resumeCount: 3 },
+    db
+  );
+  await db.query(`UPDATE archive_collect_run SET heartbeat_at = now() - interval '10 minutes'`);
+  const requests: unknown[] = [];
+  const started = await resumeInterruptedRuns(
+    async (req) => {
+      requests.push(req);
+      // Stand in for startCollection: record the new run the way it does.
+      const { source, ...params } = req;
+      return staging.startRun(source, params, db);
+    },
+    () => staging.claimInterruptedRuns(db)
+  );
+  assert.deepEqual(requests, [{ source: "gmail", label: "Writing", refetch: false, resumedFrom: old, resumeCount: 1 }]);
+  assert.equal(started.length, 1);
+  const { rows } = await db.query("SELECT id, source, status, params FROM archive_collect_run");
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(byId[old].status, "failed");
+  assert.equal(byId[tooOften].status, "failed");
+  assert.equal(byId[started[0]].status, "running");
+  assert.equal(byId[started[0]].params.resumedFrom, old);
+  // Nothing left to resume.
+  assert.deepEqual(await resumeInterruptedRuns(async () => "x", () => staging.claimInterruptedRuns(db)), []);
+});

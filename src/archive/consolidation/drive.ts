@@ -336,7 +336,8 @@ async function stagedModifiedTimes(): Promise<Map<string, string>> {
 export async function collectDrive(
   params: DriveCollectParams,
   stats: DriveStats,
-  onProgress: () => Promise<void>
+  onProgress: () => Promise<void>,
+  shouldStop: () => boolean = () => false
 ): Promise<void> {
   const auth = await getAuthenticatedClient();
   const drive = google.drive({ version: "v3", auth });
@@ -370,6 +371,7 @@ export async function collectDrive(
 
   let done = 0;
   for (const f of collectionOrder(files)) {
+    if (shouldStop()) break;
     try {
       const isXml = isXmlFile(f);
       const isZip = isZipFile(f);

@@ -19,6 +19,7 @@ import {
 } from "../src/archive/consolidation/substack";
 import { contentHash } from "../src/archive/consolidation/staging";
 import { collectionOrder } from "../src/archive/consolidation/drive";
+import { MAX_RESUMES, resumeRequest } from "../src/archive/consolidation/resume";
 
 const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64url");
 
@@ -294,4 +295,23 @@ test("parseCollectRequest validates sources, labels and Drive ids", async () => 
   assert.equal(typeof parseCollectRequest({ source: "gdrive", folderIds: [] }), "string");
   assert.equal(typeof parseCollectRequest({ source: "gmail", label: "" }), "string");
   assert.equal(typeof parseCollectRequest({ source: "notion" }), "string");
+});
+
+test("resumeRequest continues a run without refetching, up to MAX_RESUMES times", () => {
+  const gmail = resumeRequest({ id: "run-1", source: "gmail", params: { label: "Writing", refetch: true } });
+  assert.deepEqual(gmail, { source: "gmail", label: "Writing", refetch: false, resumedFrom: "run-1", resumeCount: 1 });
+
+  const folders = ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl", "19xMNprsamGSLdZw6EgRd2uCeppKS2gzZ"];
+  const drive = resumeRequest({
+    id: "run-2",
+    source: "gdrive",
+    params: { folderIds: folders, refetch: false, resumedFrom: "run-0", resumeCount: 2 },
+  });
+  assert.deepEqual(drive, { source: "gdrive", folderIds: folders, refetch: false, resumedFrom: "run-2", resumeCount: 3 });
+
+  // Resumed too often, or params that don't describe a run: left alone.
+  assert.equal(resumeRequest({ id: "r", source: "gmail", params: { label: "Writing", resumeCount: MAX_RESUMES } }), null);
+  assert.equal(resumeRequest({ id: "r", source: "gmail", params: {} }), null);
+  assert.equal(resumeRequest({ id: "r", source: "gdrive", params: { folderIds: ["x' or name contains '"] } }), null);
+  assert.equal(resumeRequest({ id: "r", source: "gdrive", params: { folderIds: [] } }), null);
 });
