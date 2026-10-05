@@ -1,6 +1,6 @@
 // Journal-entry link generation: finds candidate matches across Google
-// integrations (contacts, calendar, tasks, email) and the public artifact
-// archive, writes one row per match to link_edge.
+// integrations (contacts, calendar, tasks) and the public artifact archive,
+// writes one row per match to link_edge.
 //
 // Scope-aware visibility invariant:
 //   Generation here is intentionally scope-agnostic. For a family-scope
@@ -10,8 +10,7 @@
 //   Reader-side visibility is enforced in the MCP worker's get_entry tool
 //   (mcp-worker/src/tools/get_entry.ts): a family-scope entry never shows
 //   a link whose target is in personal scope — the title would leak.
-//   Personal readers (incl. the morning review) see everything via
-//   spillover.
+//   Personal readers see everything via spillover.
 
 import { pool } from "../db/client";
 import {
@@ -314,41 +313,6 @@ async function linkRelatedTasks(entry: LinkableEntry): Promise<LinkRow[]> {
   return links;
 }
 
-async function linkRelatedEmails(entry: LinkableEntry): Promise<LinkRow[]> {
-  if (!entry.embedding || entry.embedding.length === 0) return [];
-
-  const vectorStr = `[${entry.embedding.join(",")}]`;
-
-  // Find emails with embeddings that are similar to this entry
-  const { rows: emails } = await pool.query(
-    `SELECT id, subject, 1 - (embedding <=> $1::vector) AS similarity
-     FROM email_ref
-     WHERE user_id = 'default'
-       AND embedding IS NOT NULL
-     ORDER BY embedding <=> $1::vector
-     LIMIT 3`,
-    [vectorStr]
-  );
-
-  const links: LinkRow[] = [];
-  for (const email of emails) {
-    const similarity = parseFloat(email.similarity);
-    if (similarity >= 0.5) {
-      links.push({
-        sourceType: "journal_entry",
-        sourceId: entry.id,
-        targetType: "email_ref",
-        targetId: email.id,
-        linkType: "relates_to_email",
-        confidence: similarity,
-        explanation: `Entry is semantically similar to email "${email.subject || "(no subject)"}"`,
-      });
-    }
-  }
-
-  return links;
-}
-
 async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
   if (!entry.embedding || entry.embedding.length === 0) return [];
 
@@ -431,7 +395,6 @@ export async function generateLinksStrict(entry: LinkableEntry): Promise<void> {
     linkNearbyCalendarEvents(entry, entities),
     linkMentionedEntities(entry, entities),
     linkRelatedTasks(entry),
-    linkRelatedEmails(entry),
     linkRelatedArtifacts(entry),
   ]);
   const links = results.flat();

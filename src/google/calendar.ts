@@ -42,6 +42,8 @@ export async function syncCalendar(): Promise<void> {
         singleEvents: true,
         orderBy: "startTime",
         pageToken,
+        // Linking uses only an event's title and time; don't fetch the rest.
+        fields: "nextPageToken,items(id,summary,start,end,status)",
       });
 
       for (const event of data.items || []) {
@@ -51,25 +53,16 @@ export async function syncCalendar(): Promise<void> {
         const endAt = event.end?.dateTime || event.end?.date;
         if (!startAt || !endAt) continue;
 
-        const attendees = event.attendees?.map((a) => ({
-          email: a.email,
-          name: a.displayName || null,
-          response: a.responseStatus || null,
-        }));
-
         await pool.query(
           `INSERT INTO calendar_event_ref
              (user_id, external_system, external_event_id, calendar_id,
-              title, description, start_at, end_at, attendees, location, status, scope, updated_at)
-           VALUES ('default', 'google_calendar', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+              title, start_at, end_at, status, scope, updated_at)
+           VALUES ('default', 'google_calendar', $1, $2, $3, $4, $5, $6, $7, now())
            ON CONFLICT (external_system, external_event_id) DO UPDATE
              SET calendar_id = EXCLUDED.calendar_id,
                  title = EXCLUDED.title,
-                 description = EXCLUDED.description,
                  start_at = EXCLUDED.start_at,
                  end_at = EXCLUDED.end_at,
-                 attendees = EXCLUDED.attendees,
-                 location = EXCLUDED.location,
                  status = EXCLUDED.status,
                  scope = EXCLUDED.scope,
                  updated_at = now()`,
@@ -77,11 +70,8 @@ export async function syncCalendar(): Promise<void> {
             event.id,
             source.id,
             event.summary,
-            event.description || null,
             new Date(startAt),
             new Date(endAt),
-            attendees ? JSON.stringify(attendees) : null,
-            event.location || null,
             event.status || null,
             source.scope,
           ]
