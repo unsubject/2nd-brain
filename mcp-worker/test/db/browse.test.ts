@@ -208,8 +208,46 @@ describe.skipIf(!TEST_DB)('search_brain', () => {
     expect(byId.get(pending)).toMatchObject({ match: ['text'], similarity: null, processing_status: 'pending', summary: null });
     expect(byId.get(pending).preview).toContain('貨幣政策');
     expect(r.hits).toHaveLength(3);
-    // Scores: exact semantic match 1.0, summary text match 0.8, body-only text match 0.6.
-    expect(r.hits.map((h: any) => h.id)).toEqual([near, zh, pending]);
+    // Found by both legs first; then the top semantic hit ties the top text
+    // hit and wins on similarity.
+    expect(r.hits.map((h: any) => h.id)).toEqual([zh, near, pending]);
+  });
+
+  it('matches short Latin terms as whole words, also next to Chinese', async () => {
+    stubEmbeddings('fail');
+    await seedJournalEntry({ vector: null, status: 'pending', fullText: 'He said it again, aiming high' });
+    const zh = await seedJournalEntry({ vector: null, status: 'pending', fullText: '我覺得AI會改變教育' });
+    const dash = await seedJournalEntry({ vector: null, status: 'pending', fullText: 'Notes on AI-driven tutoring' });
+    const prefix = await seedJournalEntry({ vector: null, status: 'pending', fullText: 'Central bank policymakers met' });
+
+    const ids = (r: any) => (r.hits as Array<{ id: string }>).map((h) => h.id).sort();
+    expect(ids(await ok('search_brain', { query: 'AI' }))).toEqual([zh, dash].sort());
+    // Longer terms match at the start of a word.
+    expect(ids(await ok('search_brain', { query: 'policy' }))).toEqual([prefix]);
+    expect(ids(await ok('search_brain', { query: 'olicy' }))).toEqual([]);
+    // Regex characters in a term are literal.
+    expect(ids(await ok('search_brain', { query: 'C++ (a.b) [x] \\' }))).toEqual([]);
+  });
+
+  it('keeps semantic hits when many newer entries match by text', async () => {
+    stubEmbeddings(axis(0));
+    // Older, and its summary matches: it leads the text leg despite its age.
+    const old = await seedJournalEntry({
+      vector: axis(1),
+      summary: 'Moving back to Hong Kong',
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    const sem = await seedJournalEntry({ vector: mix(0, 1, 0.5), summary: 'Thoughts on schooling abroad' });
+    for (let i = 0; i < 8; i++) {
+      await seedJournalEntry({ vector: null, status: 'pending', fullText: `Kong mention ${i}` });
+    }
+
+    const r = await ok('search_brain', { query: 'Kong', limit: 5 });
+    const ids = (r.hits as Array<{ id: string }>).map((h) => h.id);
+    expect(ids).toHaveLength(5);
+    expect(ids.slice(0, 2)).toEqual([old, sem]);
+    expect(r.hits[0].match).toEqual(['semantic', 'text']);
+    expect(r.hits.slice(2).every((h: any) => h.match[0] === 'text')).toBe(true);
   });
 
   it('falls back to text when the embedding call fails', async () => {

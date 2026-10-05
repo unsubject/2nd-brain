@@ -4,7 +4,7 @@ import type { ToolResult } from './registry';
 import { embed, vectorLiteral } from '../embeddings';
 import { getDb } from '../db';
 import { textArray } from './idea_shared';
-import { escapeLike, searchTerms } from '../ideas/text';
+import { searchTerms } from '../ideas/text';
 
 // primary_type is no longer a filter (the classification was retired with
 // the Chief-of-Staff role); a client that still sends it gets it ignored.
@@ -26,8 +26,8 @@ type Row = {
   created_at: Date | string;
 };
 
-// Hybrid search: vector similarity over processed entries, plus an ILIKE
-// text leg over every entry's summary, text and tags. The text leg finds
+// Hybrid search: vector similarity over processed entries, plus a text leg
+// over every entry's summary, text and tags. The text leg finds
 // Chinese phrases and names the embedding misses, and entries that are not
 // processed yet (or failed processing), which have no embedding.
 export async function searchBrainHandler(
@@ -76,10 +76,11 @@ export async function searchBrainHandler(
         `
       : [];
 
-    const termConds = terms.reduce(
-      (acc, t) => sql`${acc} AND x.hay ILIKE ${`%${escapeLike(t)}%`}`,
-      sql`TRUE`,
-    );
+    // A text hit whose summary matches every term ranks above one that
+    // matches only in the body; newer entries first after that.
+    const patterns = terms.map(termPattern);
+    const matchAll = (col: typeof common) =>
+      patterns.reduce((acc, p) => sql`${acc} AND ${col} ~* ${p}`, sql`TRUE`);
     const textual =
       terms.length > 0
         ? await sql<Array<Row>>`
@@ -95,34 +96,33 @@ export async function searchBrainHandler(
                  WHERE je.processing_status <> 'cancelled'
                    AND ${common}
               ) x
-             WHERE ${termConds}
-             ORDER BY x.created_at DESC
+             WHERE ${matchAll(sql`x.hay`)}
+             ORDER BY (${matchAll(sql`COALESCE(x.summary, '')`)}) DESC, x.created_at DESC
              LIMIT ${limit}
           `
         : [];
 
+    // Reciprocal-rank fusion: each leg contributes by rank, not by score,
+    // so neither leg can crowd the other out, and an entry both legs found
+    // ranks first. Ties go to the higher similarity.
     type Hit = Row & { similarity: number | null; match: string[]; score: number };
     const byId = new Map<string, Hit>();
-    for (const r of semantic) {
+    semantic.forEach((r, i) => {
       const sim = roundTo(Number(r.similarity), 4);
-      byId.set(r.id, { ...r, similarity: sim, match: ['semantic'], score: sim });
-    }
-    const lowerTerms = terms.map((t) => t.toLowerCase());
-    for (const r of textual) {
-      // A match in the summary ranks above one only in the body.
-      const summary = (r.summary ?? '').toLowerCase();
-      const textScore = lowerTerms.every((t) => summary.includes(t)) ? 0.8 : 0.6;
+      byId.set(r.id, { ...r, similarity: sim, match: ['semantic'], score: rrf(i) });
+    });
+    textual.forEach((r, i) => {
       const prev = byId.get(r.id);
       if (prev) {
         prev.match.push('text');
-        prev.score = Math.max(prev.score, textScore);
+        prev.score += rrf(i);
       } else {
-        byId.set(r.id, { ...r, similarity: null, match: ['text'], score: textScore });
+        byId.set(r.id, { ...r, similarity: null, match: ['text'], score: rrf(i) });
       }
-    }
+    });
 
     const hits = [...byId.values()]
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.score - a.score || (b.similarity ?? -1) - (a.similarity ?? -1))
       .slice(0, limit)
       .map((r) => ({
         id: r.id,
@@ -148,6 +148,25 @@ export async function searchBrainHandler(
   } finally {
     ctx.waitUntil(sql.end({ timeout: 5 }));
   }
+}
+
+const RRF_K = 60;
+function rrf(rank: number): number {
+  return 1 / (RRF_K + rank + 1);
+}
+
+// A case-insensitive regex for one search term. Latin terms match at the
+// start of a word, and terms of up to three characters only as whole words,
+// so 'AI' finds "AI-driven" and "我覺得AI會" but not "said", "again" or
+// "aim". A word boundary here is any character that is not an ASCII letter
+// or digit, so Latin words run into Chinese text still match. Other terms
+// (Chinese has no spaces) match anywhere.
+export function termPattern(term: string): string {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!/^[A-Za-z0-9]/.test(term)) return escaped;
+  const start = '(^|[^A-Za-z0-9])';
+  const end = /^[A-Za-z0-9]{1,3}$/.test(term) ? '($|[^A-Za-z0-9])' : '';
+  return `${start}${escaped}${end}`;
 }
 
 function roundTo(n: number, digits: number): number {

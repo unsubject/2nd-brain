@@ -60,11 +60,11 @@ const definitions: ToolDefinition[] = [
   {
     name: 'search_brain',
     description:
-      "Search the user's 2nd-brain journal by meaning and by exact text (the text match covers Chinese phrases, names, and entries still being processed). Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries, each with match ['semantic'|'text'], optionally filtered by date range, tags or scope.",
+      "Search the user's 2nd-brain journal by meaning and by exact text (the text match covers Chinese phrases, names, and entries still being processed). Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries, each with match ['semantic'|'text'] (an entry found both ways ranks first), optionally filtered by date range, tags or scope.",
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all must appear)' },
+        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all must appear; English terms match from the start of a word, and terms of 1–3 letters only as whole words)' },
         limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
         since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on created_at' },
         until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on created_at' },
