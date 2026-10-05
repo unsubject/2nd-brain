@@ -236,7 +236,7 @@ test("missingScopes compares the granted scopes with the requested ones", () => 
   assert.deepEqual(missingScopes(`openid ${all.join(" ")}`), []);
   assert.deepEqual(missingScopes(undefined), []);
   assert.deepEqual(missingScopes(""), []);
-  // Full Tasks access (an older grant) does not satisfy the read-only scope
-  // by name, so the connect page asks for a reconnect.
+  // A grant that names full Tasks access instead of the read-only scope is
+  // reported, so the callback page asks for a reconnect.
   assert.deepEqual(missingScopes(["https://www.googleapis.com/auth/tasks", ...all.slice(1)].join(" ")), ["Google Tasks (read-only)"]);
 });

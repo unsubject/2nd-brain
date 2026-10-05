@@ -39,7 +39,7 @@
 
   <h2 id="google-data">Google data it uses, and why</h2>
   <ul>
-    <li><strong>Google Tasks</strong> (read-only): reads task titles to link journal entries to the tasks they mention. When Simon imports his ideas, the titles and notes of his “Subjects” task list are read as well.</li>
+    <li><strong>Google Tasks</strong> (read-only): reads the titles and status of tasks in all lists, to link journal entries to the open tasks they mention. For his “Subjects” list it also reads notes and due and completion dates, which his idea import copies from.</li>
     <li><strong>Google Calendar</strong> (read-only): reads the titles and times of events from 30 days back to 30 days ahead, to link journal entries to events.</li>
     <li><strong>Google Contacts</strong> (read-only): reads contact names, to recognize the people a journal entry mentions.</li>
     <li><strong>Gmail</strong> (read-only): reads the emails, of any age, under the label Simon keeps for his writing, including attached Word documents, to rebuild the archive of his published columns and essays. It never sends, deletes or changes email.</li>
@@ -49,7 +49,8 @@
   <h2 id="handling">How the data is handled</h2>
   <ul>
     <li>Google data is stored in a private database that only the owner can reach.</li>
-    <li>Google data is not sent to AI model providers. AI assistants that Simon connects to his journal, such as Claude or ChatGPT, receive the names of the tasks, events and people linked to his entries, and during an idea import the titles and notes of his “Subjects” task list, only when he asks them to.</li>
+    <li>Ideas Simon imports from his “Subjects” task list, with their titles and notes, are sent to OpenAI’s API to index his ideas for search; its terms don’t let it train models on this data. No other Google data is sent to AI model providers.</li>
+    <li>AI assistants that Simon connects to his journal, such as Claude or ChatGPT, receive the names of the tasks, events and people linked to his entries, and during an idea import the titles and notes of his “Subjects” task list, only when he asks them to.</li>
     <li>The data is never sold, never used for advertising, and never used to train AI models.</li>
     <li>workflow’s use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Details are in <a href="/privacy#google">Section 3 of the Privacy Statement</a>.</li>
   </ul>

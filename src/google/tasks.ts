@@ -39,6 +39,9 @@ export async function syncTasks(): Promise<void> {
       [list.id, list.title, listType]
     );
     const projectRefId = projectRows[0].id;
+    // Linking needs only titles and status. Notes and dates are read for the
+    // "Subjects" list alone, which the idea import copies from.
+    const full = listType === "subjects";
 
     // First pass: upsert all tasks with parent_external_task_id
     let pageToken: string | undefined;
@@ -49,6 +52,9 @@ export async function syncTasks(): Promise<void> {
         showCompleted: true,
         showHidden: true,
         pageToken,
+        fields: full
+          ? "nextPageToken,items(id,title,notes,status,due,completed,parent,position)"
+          : "nextPageToken,items(id,title,status,parent,position)",
       });
 
       for (const task of data.items || []) {
@@ -75,10 +81,10 @@ export async function syncTasks(): Promise<void> {
             list.id,
             projectRefId,
             task.title,
-            task.notes || null,
+            full ? task.notes || null : null,
             task.status || "needsAction",
-            task.due ? new Date(task.due) : null,
-            task.completed ? new Date(task.completed) : null,
+            full && task.due ? new Date(task.due) : null,
+            full && task.completed ? new Date(task.completed) : null,
             task.parent || null,
             task.position || null,
             listScope,

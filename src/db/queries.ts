@@ -1,4 +1,4 @@
-import { pool, DB } from "./client";
+import { pool } from "./client";
 import { ProcessingResult } from "../processor";
 
 export async function findPendingEntry(
