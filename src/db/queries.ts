@@ -29,10 +29,7 @@ export async function saveProcessingResult(
          summary = $3,
          language = $4,
          tags = $5,
-         primary_type = $6,
-         primary_type_confidence = $7,
-         suggested_actions = $8,
-         embedding = $9::vector,
+         embedding = $6::vector,
          processing_status = 'processed',
          last_error = NULL,
          updated_at = now()
@@ -43,9 +40,6 @@ export async function saveProcessingResult(
       result.summary,
       result.language,
       result.tags,
-      result.primary_type,
-      result.primary_type_confidence,
-      JSON.stringify(result.suggested_actions),
       vectorStr,
     ]
   );
