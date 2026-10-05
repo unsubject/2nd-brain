@@ -81,6 +81,23 @@ test("the webhook refuses requests without Telegram's secret header", async () =
   assert.deepEqual(apiCalls.slice(start).filter((c) => c.method === "sendMessage"), [], "the update never reached the bot");
 });
 
+test("the webhook checks the secret before parsing, and answers bad bodies with a bare status", async () => {
+  const send = (body: string, secret: string | null) =>
+    fetch(`${base}/webhook/telegram`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(secret ? { "x-telegram-bot-api-secret-token": secret } : {}) },
+      body,
+    });
+  const noSecret = await send('{"unterminated', null);
+  assert.equal(noSecret.status, 401);
+  const malformed = await send('{"unterminated', SECRET_TOKEN);
+  assert.equal(malformed.status, 400);
+  const text = await malformed.text();
+  assert.ok(!/SyntaxError|node_modules|at /.test(text), "no stack trace in the response");
+  const oversized = await send(JSON.stringify({ x: "y".repeat(200_000) }), SECRET_TOKEN);
+  assert.equal(oversized.status, 413);
+});
+
 test("the old secret-in-path webhook route is gone", async () => {
   const res = await fetch(`${base}/webhook/${SECRET_TOKEN}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(res.status, 404);
@@ -104,7 +121,7 @@ test("a failing handler answers 200, tells the owner, and logs no secret", async
   const replies = apiCalls.slice(start).filter((c) => c.method === "sendMessage");
   assert.equal(replies.length, 1);
   assert.equal(replies[0].payload.chat_id, OWNER);
-  assert.match(String(replies[0].payload.text), /something went wrong/);
+  assert.match(String(replies[0].payload.text), /may not have been saved/);
   assert.equal(logged.length, 1);
   assert.match(logged[0], /^\[bot\] update \d+ failed: /);
   assert.ok(!logged[0].includes(FAKE_TOKEN));

@@ -1,5 +1,5 @@
-import { Bot, webhookCallback } from "grammy";
-import express, { type Express } from "express";
+import { Bot, GrammyError, HttpError, webhookCallback } from "grammy";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { handleMessage } from "./capture";
 import { getAuthUrl, handleCallback } from "./google/auth";
 import { googleAuthRoutes, secretMatches } from "./google/routes";
@@ -19,13 +19,15 @@ export function createBot(token: string, owners: Set<string>): Bot {
   // the rejection unhandled (the process exits), and Telegram would then
   // redeliver the same update after the restart. Log a line without the
   // token or message text, tell the sender, and answer Telegram normally.
+  // When Telegram itself failed (often the reply after a successful
+  // capture), another reply would most likely fail too, so none is sent.
   bot.use(async (ctx, next) => {
     try {
       await next();
     } catch (err) {
       console.error(`[bot] update ${ctx.update.update_id} failed: ${describeError(err)}`);
-      if (ctx.chat) {
-        await ctx.reply("Sorry, something went wrong with that. Please send it again.").catch(() => {});
+      if (ctx.chat && !(err instanceof GrammyError || err instanceof HttpError)) {
+        await ctx.reply("Sorry, something went wrong, so that may not have been saved. Please check and send it again.").catch(() => {});
       }
     }
   });
@@ -109,10 +111,19 @@ export function createApp(bot: Bot, opts: AppOptions): Express {
     res.json({ status: "ok" });
   });
 
-  // onTimeout "return": a slow handler (e.g. /ask) keeps running, but
-  // Telegram gets its answer before its own timeout and does not redeliver.
+  // The secret header is checked before the body is parsed, so the public
+  // path never runs the JSON parser for anyone but Telegram. onTimeout
+  // "return": a slow handler (e.g. /ask) keeps running, but Telegram gets
+  // its answer before its own timeout and does not redeliver.
   app.post(
     WEBHOOK_PATH,
+    (req: Request, res: Response, next: NextFunction) => {
+      if (!secretMatches(req.header("X-Telegram-Bot-Api-Secret-Token"), opts.secretToken)) {
+        res.sendStatus(401);
+        return;
+      }
+      next();
+    },
     express.json(),
     webhookCallback(bot, "express", {
       secretToken: opts.secretToken,
@@ -120,6 +131,14 @@ export function createApp(bot: Bot, opts: AppOptions): Express {
       timeoutMilliseconds: 9_000,
     })
   );
+  // A malformed or oversized body gets a bare status, not Express's
+  // default error page and logged stack trace.
+  app.use(WEBHOOK_PATH, (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const status = (err as { status?: unknown })?.status;
+    const code = typeof status === "number" && status >= 400 && status < 500 ? status : 500;
+    if (code === 500) console.error(`[bot] webhook request failed: ${describeError(err)}`);
+    res.sendStatus(code);
+  });
 
   app.use(
     googleAuthRoutes({
