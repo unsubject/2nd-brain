@@ -22,6 +22,10 @@ export function resumeRequest(run: InterruptedRun): CollectRequest | null {
   const p = run.params ?? {};
   const count = typeof p.resumeCount === "number" ? p.resumeCount : 0;
   if (count >= MAX_RESUMES) return null;
+  if (run.source === "extract") {
+    // Extraction rewrites every candidate, so running it again is the resume.
+    return { source: "extract", resumedFrom: run.id, resumeCount: count + 1 };
+  }
   const resume = { refetch: false, resumedFrom: run.id, resumeCount: count + 1 };
   if (run.source === "gmail") {
     if (typeof p.label !== "string" || p.label.trim() === "") return null;

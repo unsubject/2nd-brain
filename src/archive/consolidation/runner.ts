@@ -1,6 +1,7 @@
 import { collectDrive, emptyDriveStats, type DriveCollectParams } from "./drive";
 import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
 import { describeGoogleError } from "../../google/errors";
+import { emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
 import { finishRun, heartbeatRun, startRun } from "./staging";
 
 // Set on runs started by the resume sweeper (resume.ts); stored in params.
@@ -11,7 +12,8 @@ export interface ResumeInfo {
 
 export type CollectRequest =
   | ({ source: "gmail" } & GmailCollectParams & ResumeInfo)
-  | ({ source: "gdrive" } & DriveCollectParams & ResumeInfo);
+  | ({ source: "gdrive" } & DriveCollectParams & ResumeInfo)
+  | ({ source: "extract" } & ResumeInfo);
 
 // Independent of progress, so a long rate-limit pause never looks like a
 // dead process (staging.STALE_RUN_SECONDS is the other side of this).
@@ -24,7 +26,7 @@ const HEARTBEAT_MS = 30_000;
 export async function startCollection(req: CollectRequest): Promise<string> {
   const { source, ...params } = req;
   const runId = await startRun(source, params);
-  const stats = source === "gmail" ? emptyStats() : emptyDriveStats();
+  const stats = source === "gmail" ? emptyStats() : source === "gdrive" ? emptyDriveStats() : emptyExtractStats();
   // Set when the row stops being 'running' under us (taken over as
   // interrupted); the collector then stops at its next item.
   let takenOver = false;
@@ -45,12 +47,14 @@ export async function startCollection(req: CollectRequest): Promise<string> {
   const job =
     req.source === "gmail"
       ? collectGmail({ label: req.label, refetch: req.refetch }, stats, progress, shouldStop)
-      : collectDrive(
-          { folderIds: req.folderIds, refetch: req.refetch },
-          stats as ReturnType<typeof emptyDriveStats>,
-          progress,
-          shouldStop
-        );
+      : req.source === "gdrive"
+        ? collectDrive(
+            { folderIds: req.folderIds, refetch: req.refetch },
+            stats as ReturnType<typeof emptyDriveStats>,
+            progress,
+            shouldStop
+          )
+        : runExtraction(stats as ExtractStats, progress, shouldStop);
 
   job
     .then(() => {

@@ -45,7 +45,7 @@ after(async () => {
 
 beforeEach(async () => {
   if (!url) return;
-  await db.query("TRUNCATE archive_source_item, archive_collect_run");
+  await db.query("TRUNCATE archive_source_item, archive_collect_run CASCADE");
 });
 
 const item = (over: Record<string, unknown> = {}) => ({
@@ -353,4 +353,147 @@ test("resumeInterruptedRuns starts the continuation of an interrupted run", { sk
   assert.equal(byId[started[0]].params.resumedFrom, old);
   // Nothing left to resume.
   assert.deepEqual(await resumeInterruptedRuns(async () => "x", () => staging.claimInterruptedRuns(db)), []);
+});
+
+// Step 2 (extract) against the database. Here rather than in its own file:
+// test files run in parallel and both use archive_source_item.
+const ESSAY = [1, 2, 3, 4].map((n) => `第${n}段：${"香港經濟的問題不在於短期的周期，而在於制度的信任。".repeat(4)}`).join("\n\n");
+
+async function stageForExtraction(): Promise<void> {
+  await staging.upsertSourceItem(
+    item({
+      sourceRef: "sub",
+      title: "Apple Daily Forum 20200624",
+      authoredAt: new Date("2020-06-22T09:00:00Z"),
+      rawText: `蘋果論壇：自由市場的代價\n\n${ESSAY}`,
+      metadata: { kind: "message", from: "simoncf@gmail.com", to: ["forum@appledaily.com"], isSent: true },
+    }),
+    db
+  );
+  // One newsletter issue, received at two addresses.
+  for (const [ref, at] of [["nl-b", "2021-03-01T01:00:05Z"], ["nl-a", "2021-03-01T01:00:00Z"]]) {
+    await staging.upsertSourceItem(
+      item({
+        sourceRef: ref,
+        title: "通脹的真相",
+        authoredAt: new Date(at),
+        rawText: `View online →\n\n通脹的真相\n\n${ESSAY}\n\nUnsubscribe`,
+        metadata: { kind: "message", from: "newsletter@unsubject.me", to: ["simoncf@gmail.com"], isSent: false },
+      }),
+      db
+    );
+  }
+  await staging.upsertSourceItem(
+    item({ sourceRef: "ack", title: "Re: 稿件", rawText: "收到", metadata: { from: "jane@appledaily.com", isSent: false } }),
+    db
+  );
+  await staging.upsertSourceItem(
+    item({
+      source: "wordpress",
+      sourceRef: "leesimon.me:42",
+      title: "利字當頭：科目三",
+      rawText: null,
+      rawHtml: ESSAY,
+      metadata: { status: "publish", postType: "post", site: "https://leesimon.me" },
+    }),
+    db
+  );
+}
+
+test("runExtraction writes one candidate per item and keeps one copy of each newsletter issue", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  await stageForExtraction();
+
+  const stopped = run.emptyExtractStats();
+  await run.runExtraction(stopped, async () => {}, () => true, db);
+  assert.equal(stopped.written, 0);
+
+  const stats = run.emptyExtractStats();
+  let progress = 0;
+  await run.runExtraction(stats, async () => void progress++, () => false, db);
+  assert.equal(progress, 1);
+  assert.deepEqual(
+    { listed: stats.listed, scanned: stats.scanned, inserted: stats.inserted, duplicates: stats.duplicates, failed: stats.failed },
+    { listed: 5, scanned: 5, inserted: 5, duplicates: 1, failed: 0 }
+  );
+  assert.deepEqual(stats.byKind, { submission: 1, newsletter: 1, duplicate: 1, received: 1, post: 1 });
+  assert.deepEqual(stats.byStatus, { keep: 3, drop: 2 });
+
+  const rows = async () =>
+    Object.fromEntries(
+      (
+        await db.query(
+          `SELECT s.source_ref, c.id, c.kind, c.status, c.reasons, c.title, c.outlet, c.extractor_version
+             FROM archive_candidate c JOIN archive_source_item s ON s.id = c.source_item_id`
+        )
+      ).rows.map((r) => [r.source_ref, r])
+    );
+  const first = await rows();
+  assert.equal(first["sub"].kind, "submission");
+  assert.equal(first["sub"].title, "自由市場的代價");
+  assert.equal(first["sub"].outlet, "蘋果日報");
+  assert.equal(first["nl-a"].kind, "newsletter");
+  assert.equal(first["nl-b"].kind, "duplicate");
+  assert.equal(first["nl-b"].status, "drop");
+  assert.deepEqual(first["nl-b"].reasons, [`duplicate-of:${first["nl-a"].id}`]);
+
+  // A second run rewrites in place; the duplicate mark doesn't pile up.
+  const again = run.emptyExtractStats();
+  await run.runExtraction(again, async () => {}, () => false, db);
+  assert.deepEqual([again.inserted, again.updated, again.duplicates], [0, 5, 1]);
+  const second = await rows();
+  assert.equal(Object.keys(second).length, 5);
+  assert.equal(second["nl-b"].id, first["nl-b"].id);
+  assert.deepEqual(second["nl-b"].reasons, [`duplicate-of:${first["nl-a"].id}`]);
+
+  const summary = await run.candidateSummary(db);
+  assert.ok(summary.some((r) => r.source === "gmail" && r.kind === "duplicate" && r.status === "drop" && r.n === 1));
+});
+
+test("candidate list, detail and review sample", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  const review = await import("../src/archive/consolidation/extract/review");
+  await stageForExtraction();
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+
+  const list = await review.listCandidates({ source: "gmail", status: "keep", limit: 10, offset: 0 }, db);
+  assert.equal(list.total, 2);
+  assert.deepEqual(list.candidates.map((c) => c.kind).sort(), ["newsletter", "submission"]);
+  assert.ok(String(list.candidates[0].snippet).startsWith("第1段"));
+  const page = await review.listCandidates({ limit: 2, offset: 4 }, db);
+  assert.equal(page.total, 5);
+  assert.equal(page.candidates.length, 1);
+
+  const sub = list.candidates.find((c) => c.kind === "submission")!;
+  const detail = await review.getCandidate(String(sub.id), db);
+  assert.equal(detail?.candidate.body_text, ESSAY);
+  assert.equal(detail?.source.sourceRef, "sub");
+  assert.ok(detail?.source.rawText?.startsWith("蘋果論壇：自由市場的代價"));
+  assert.equal(await review.getCandidate("00000000-0000-0000-0000-000000000000", db), null);
+
+  // One per (source, kind), in review order: Gmail submissions first.
+  const sample = await review.sampleCandidates({ size: 3, seed: "x" }, db);
+  assert.deepEqual(
+    sample.map((d) => d.candidate.kind),
+    ["submission", "newsletter", "post"]
+  );
+  const onlyDrops = await review.sampleCandidates({ status: "drop", size: 10, seed: "x" }, db);
+  assert.deepEqual(onlyDrops.map((d) => d.candidate.kind).sort(), ["duplicate", "received"]);
+  assert.ok(review.renderReviewPage(sample, { size: 3, seed: "x" }).includes("自由市場的代價"));
+});
+
+test("an extraction run is tracked like a collection run", { skip }, async () => {
+  const { startCollection } = await import("../src/archive/consolidation/runner");
+  await stageForExtraction();
+  const runId = await startCollection({ source: "extract" });
+  await assert.rejects(startCollection({ source: "extract" }), staging.RunAlreadyActiveError);
+  let row: { status: string; stats: Record<string, unknown> } | undefined;
+  for (let i = 0; i < 100; i++) {
+    row = (await db.query("SELECT status, stats FROM archive_collect_run WHERE id = $1", [runId])).rows[0];
+    if (row?.status !== "running") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(row?.status, "succeeded");
+  assert.equal(row?.stats.written, 5);
+  assert.equal(row?.stats.duplicates, 1);
 });

@@ -25,17 +25,18 @@ Decisions (Simon, 2026-10-04):
 - **Every past platform counts as published**: 蘋果論壇, 利字當頭 (all
   outlets), Revue, unsubject.me, Patreon, WordPress, Substack.
 - Only the "Article Archive" folder and the exports folder are read from Drive.
+- PDFs in those folders are skipped (2026-10-05).
 
 ## Steps
 
-1. **Collect** (this step). Copy every candidate verbatim into
+1. **Collect** (done 2026-10-05). Copy every candidate verbatim into
    `archive_source_item` (migration `021_archive_staging.sql`). Nothing is cleaned, matched or
    deleted; re-runs are idempotent.
-2. **Extract.** Turn each staged item into candidate essay text: for an email
-   thread, the last version Simon sent, without quoted replies, notes to the
-   editor or signatures; reader replies and duplicate newsletter copies
-   dropped; HTML converted to text. Rule-based first, with uncertain items
-   sent to review.
+2. **Extract.** Turn each staged item into a candidate in `archive_candidate`
+   (migration `027_archive_candidates.sql`): for an email, the version Simon
+   sent, without quoted replies, notes to the editor or signatures; reader
+   replies and duplicate newsletter copies dropped; HTML converted to text.
+   Rule-based, with uncertain items marked `review`. See "Running step 2".
 3. **Match.** Group candidates of the same piece across sources into works
    (title + date + text similarity). Canonical text, in order: final emailed
    version → Substack / WordPress as published → Drive doc → old row.
@@ -102,6 +103,64 @@ A run is resumed at most 3 times in a row, so one that keeps crashing the
 app stops and has to be started again by hand. If a run's row is taken over
 while its old process is still alive, that process stops at its next item
 and cannot overwrite the outcome.
+
+## Running step 2
+
+Extraction reads only the database (no Google calls) and takes a minute or
+two. Every run rewrites every candidate, so a rule change applies to all of
+it on the next run; `archive_source_item` is never changed.
+
+```sh
+curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"
+curl "$BASE/archive/consolidation/status" -H "Authorization: Bearer $ARCHIVE_API_KEY"   # candidates: counts by source, kind, status
+```
+
+To check the rules by eye, fetch a before/after page and open it locally.
+It shows one candidate from each kind first, Gmail submissions before
+anything else; the same `seed` gives the same sample, so a rule change can
+be compared on the same items. `source`, `kind` and `status` narrow it.
+
+```sh
+curl "$BASE/archive/consolidation/review?sample=12" -H "Authorization: Bearer $ARCHIVE_API_KEY" -o review.html
+curl "$BASE/archive/consolidation/review?source=gmail&status=review&sample=30&seed=b" -H "Authorization: Bearer $ARCHIVE_API_KEY" -o review.html
+```
+
+`GET /archive/consolidation/candidates?source=&kind=&status=&limit=&offset=`
+lists candidates with a snippet; `GET /archive/consolidation/candidates/<id>`
+returns one with the staged item it came from.
+
+Each candidate has a `kind`, a `status` (`keep` an essay, `review` probably
+one but a rule was unsure, `drop` not one) and the `reasons` behind them:
+
+| Source | Kind | Status | Rule |
+|---|---|---|---|
+| gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. |
+| gmail | `attachment` | keep | His `.docx` attachment; title from the file name. |
+| gmail | `self_draft` | review | Sent only to his own addresses (note@leesimon.me, …): a draft, not necessarily published. |
+| gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
+| gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
+| gmail | `received` | drop | From anyone else: editors, readers, acknowledgements. |
+| gmail | `newsletter` | keep | A Revue (newsletter@leesimon.me), unsubject.me or Patreon issue as mailed, platform header and footer removed. |
+| gmail | `duplicate` | drop | A later copy of the same issue (same platform, title and day); the earliest is kept. |
+| gmail | `platform_copy` | drop | A Substack email: the Substack export has the post. |
+| wordpress | `post` / `page` | keep / review | Published posts kept; pages and private posts to review; drafts dropped. |
+| substack | `post` | keep | Published posts, any audience (`audience-only_paid` noted); drafts dropped. |
+| gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date. |
+
+Cleaning an email, in order: cut everything from the first quote header
+("On … wrote:", "… 於 2020年6月1日 … 寫道：", "2016-03-01 10:22 GMT+08:00 …:",
+Outlook "From: / Sent:", "Original message") or a trailing block of `>`
+lines; cut the signature (`-- `, "Sent from my iPhone", a sign-off name such
+as 利世民 or Simon in the last lines with at most a short tag after it);
+rejoin hard-wrapped lines (no space between Chinese characters); then, when
+a title line (`*title*`, `【利字當頭】title`, `蘋果論壇：title`, or the
+subject's title) appears in the first paragraphs, the text before it is the
+note to the editor (kept in `note`) and the essay starts after it.
+
+The publication date is the column date in the subject when there is one
+("留稿：12月30日見報", "利字當頭 2020 06 30", within 45 days of sending),
+else the send date (`date_source`). The outlet follows the column (蘋果論壇 →
+蘋果日報, 壹擋專政 → 壹週刊, 金融一條針 → 爽報), else the recipients' domain.
 
 ## What is stored
 

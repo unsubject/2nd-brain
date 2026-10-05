@@ -5,10 +5,20 @@ import * as archiveQueries from "./queries";
 import { auditPublicArtifacts } from "./consolidation/audit";
 import { startCollection, type CollectRequest } from "./consolidation/runner";
 import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
+import { candidateSummary } from "./consolidation/extract/run";
+import {
+  getCandidate,
+  listCandidates,
+  parseListQuery,
+  parseSampleQuery,
+  renderReviewPage,
+  sampleCandidates,
+} from "./consolidation/extract/review";
 import { describeGoogleError } from "../google/errors";
 
 // Drive ids go into a Drive search query, so accept only id characters.
 const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parseCollectRequest(body: unknown): CollectRequest | string {
   const b = (body ?? {}) as Record<string, unknown>;
@@ -115,11 +125,79 @@ export function archiveRoutes(): Router {
 
   router.get("/archive/consolidation/status", async (_req, res) => {
     try {
-      const [staging, audit] = await Promise.all([getStagingStatus(), auditPublicArtifacts()]);
-      res.json({ staging, publicArtifactAudit: audit });
+      const [staging, candidates, audit] = await Promise.all([
+        getStagingStatus(),
+        candidateSummary(),
+        auditPublicArtifacts(),
+      ]);
+      res.json({ staging, candidates, publicArtifactAudit: audit });
     } catch (err) {
       console.error("[consolidation] status error:", describeGoogleError(err));
       res.status(500).json({ error: "Failed to get consolidation status" });
+    }
+  });
+
+  // Step 2: turn every staged item into a candidate (runs in the background,
+  // tracked in archive_collect_run like a collection).
+  router.post("/archive/consolidation/extract", async (_req, res) => {
+    try {
+      const runId = await startCollection({ source: "extract" });
+      res.status(202).json({ runId, status: "running" });
+    } catch (err) {
+      if (err instanceof RunAlreadyActiveError) {
+        res.status(409).json({ error: "an extraction run is already in progress" });
+        return;
+      }
+      console.error("[consolidation] extract error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to start extraction" });
+    }
+  });
+
+  router.get("/archive/consolidation/candidates", async (req, res) => {
+    const q = parseListQuery(req.query);
+    if (typeof q === "string") {
+      res.status(400).json({ error: q });
+      return;
+    }
+    try {
+      res.json(await listCandidates(q));
+    } catch (err) {
+      console.error("[consolidation] candidates error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to list candidates" });
+    }
+  });
+
+  router.get("/archive/consolidation/candidates/:id", async (req, res) => {
+    if (!UUID.test(req.params.id)) {
+      res.status(400).json({ error: "id must be a candidate id" });
+      return;
+    }
+    try {
+      const detail = await getCandidate(req.params.id);
+      if (!detail) {
+        res.status(404).json({ error: "no such candidate" });
+        return;
+      }
+      res.json(detail);
+    } catch (err) {
+      console.error("[consolidation] candidate error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to get candidate" });
+    }
+  });
+
+  // A before/after page of a sample, to fetch with curl and open locally.
+  router.get("/archive/consolidation/review", async (req, res) => {
+    const q = parseSampleQuery(req.query);
+    if (typeof q === "string") {
+      res.status(400).json({ error: q });
+      return;
+    }
+    try {
+      const page = renderReviewPage(await sampleCandidates(q), q);
+      res.type("html").set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'").send(page);
+    } catch (err) {
+      console.error("[consolidation] review error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to render review" });
     }
   });
 
