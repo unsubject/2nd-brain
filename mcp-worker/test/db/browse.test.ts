@@ -183,15 +183,40 @@ describe.skipIf(!TEST_DB)('search_brain', () => {
     expect(titles(await ok('search_brain', { query: 'q' }))).toEqual(['A', 'B', 'C']);
   });
 
-  it('keeps scope, primary type and processing filters', async () => {
+  it('keeps the scope filter; the retired primary_type filter is ignored', async () => {
     stubEmbeddings(axis(0));
     await seedJournalEntry({ vector: axis(0), summary: 'P', primaryType: 'task_candidate' });
     await seedJournalEntry({ vector: axis(0), summary: 'F', scope: 'family' });
-    await seedJournalEntry({ vector: axis(0), summary: 'U', status: 'pending' });
+    await seedJournalEntry({ vector: null, summary: 'U', status: 'pending' });
 
     expect(titles(await ok('search_brain', { query: 'q' }))).toEqual(['P']);
     expect(titles(await ok('search_brain', { query: 'q', scope: 'all' }))).toEqual(['F', 'P']);
-    expect(titles(await ok('search_brain', { query: 'q', primary_type: 'knowledge_candidate' }))).toEqual([]);
-    expect(titles(await ok('search_brain', { query: 'q', primary_type: 'task_candidate' }))).toEqual(['P']);
+    expect(titles(await ok('search_brain', { query: 'q', primary_type: 'knowledge_candidate' }))).toEqual(['P']);
+  });
+
+  it('finds Chinese phrases and unprocessed entries by text', async () => {
+    stubEmbeddings(axis(0));
+    const near = await seedJournalEntry({ vector: axis(0), summary: 'Unrelated but semantically near' });
+    const zh = await seedJournalEntry({ vector: axis(1), summary: '關於貨幣政策的筆記', fullText: '今天想到貨幣政策與通脹預期的關係' });
+    const pending = await seedJournalEntry({ vector: null, status: 'pending', fullText: '一段很長的對話總結，提到貨幣政策' });
+    await seedJournalEntry({ vector: null, status: 'cancelled', fullText: '貨幣政策 (cancelled draft)' });
+
+    const r = await ok('search_brain', { query: '貨幣政策', limit: 10 });
+    const byId = new Map((r.hits as Array<any>).map((h) => [h.id, h]));
+    expect(byId.get(near).match).toEqual(['semantic']);
+    expect(byId.get(zh).match).toEqual(['semantic', 'text']);
+    expect(byId.get(pending)).toMatchObject({ match: ['text'], similarity: null, processing_status: 'pending', summary: null });
+    expect(byId.get(pending).preview).toContain('貨幣政策');
+    expect(r.hits).toHaveLength(3);
+    // Scores: exact semantic match 1.0, summary text match 0.8, body-only text match 0.6.
+    expect(r.hits.map((h: any) => h.id)).toEqual([near, zh, pending]);
+  });
+
+  it('falls back to text when the embedding call fails', async () => {
+    stubEmbeddings('fail');
+    const id = await seedJournalEntry({ vector: axis(0), summary: 'Notes on the gold standard' });
+    const r = await ok('search_brain', { query: 'gold standard' });
+    expect(r.hits.map((h: any) => h.id)).toEqual([id]);
+    expect(r.warnings[0]).toMatch(/Semantic search unavailable/);
   });
 });

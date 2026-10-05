@@ -60,19 +60,15 @@ const definitions: ToolDefinition[] = [
   {
     name: 'search_brain',
     description:
-      "Semantic search over the user's 2nd-brain journal. Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries by vector similarity, optionally filtered by date range, tags, or entry type.",
+      "Search the user's 2nd-brain journal by meaning and by exact text (the text match covers Chinese phrases, names, and entries still being processed). Use proactively when the user starts brainstorming a topic they may have thought about before, or when they ask 'have I thought about X?'. Returns top-N entries, each with match ['semantic'|'text'], optionally filtered by date range, tags or scope.",
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query embedded for vector search' },
+        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all must appear)' },
         limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
         since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on created_at' },
         until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on created_at' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Entries must contain ALL given tags' },
-        primary_type: {
-          type: 'string',
-          enum: ['task_candidate', 'goal_candidate', 'knowledge_candidate', 'archive_only'],
-        },
         scope: { type: 'string', enum: ['personal', 'family', 'all'], default: 'personal' },
       },
       required: ['query'],
@@ -108,7 +104,6 @@ const definitions: ToolDefinition[] = [
       properties: {
         days: { type: 'integer', minimum: 1, maximum: 365, default: 7 },
         scope: { type: 'string', enum: ['personal', 'family', 'all'], default: 'personal' },
-        primary_type: { type: 'string' },
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
       },
     },
@@ -117,7 +112,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'save_session',
     description:
-      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript. Returns an entry_id; processing (tags, classification, embedding) is async and completes within ~30–60s.",
+      "Save an AI brainstorm session as a journal_entry on channel 'ai_chat'. ONLY call when the user explicitly asks ('save this', 'log this', 'save to my brain'). Never autonomously. Propose a title and confirm with the user before calling. Write the summary as a narrative (what we discussed, key insights, decisions, open questions) — not a transcript. Returns an entry_id; processing (summary, tags, embedding) is async and completes within ~30–60s; until then search_brain finds the entry by text.",
     inputSchema: {
       type: 'object',
       properties: {

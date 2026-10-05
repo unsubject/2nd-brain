@@ -64,7 +64,7 @@ Do **not** call `search_brain`:
 - For factual questions ("what is the capital of France") that have nothing to do with the user's life.
 - When the user is clearly continuing an in-conversation thread you already have full context for.
 
-Surface results as: a short paraphrase of what they wrote, the date, and the `primary_type`. Don't dump raw `clean_text` unless asked. Let the user decide whether a hit is relevant — search is fuzzy.
+Surface results as: a short paraphrase of what they wrote and the date. Don't dump raw `clean_text` unless asked. Each hit says how it matched (`semantic`, `text` or both); a text-only hit with a `processing_status` is an entry not processed yet. Let the user decide whether a hit is relevant — search is fuzzy.
 
 ### `save_session` — when to use it
 
@@ -91,7 +91,7 @@ When you do save:
 3. The summary is narrative, not a transcript. Skip pleasantries, re-prompts, and dead-end branches. Aim for the shape a thoughtful person would write in their notebook after a conversation, not a chat log.
 4. Pass `source: { client, model }` when known (e.g. `claude.ai` + the active model ID) so the user can later filter by where a session came from.
 
-After saving, report the `entry_id` to the user and note that processing (tags, classification, embedding) runs asynchronously and the entry becomes searchable within ~30–60s.
+After saving, report the `entry_id` to the user and note that processing (summary, tags, embedding) runs asynchronously within ~30–60s; until then `search_brain` finds the entry by text only.
 
 ### `get_entry` — when to use it
 
@@ -263,7 +263,7 @@ The Google syncs (Tasks, Contacts, Calendar) and the archive collectors (Gmail w
 | Concern | Lives in |
 |---|---|
 | HTTP server: owner-only Google connect, archive API (the Telegram bot, task suggestions and `/feed` are retired) | `src/server.ts` (Node monolith) |
-| Entry processing (gpt-5.4-nano classification) | `src/processor.ts` (Node monolith) |
+| Entry processing (gpt-5.4-nano: summary, language, tags; the text itself is normalised in code) | `src/processor.ts` (Node monolith) |
 | Pending-entry polling + embedding | `src/worker.ts` (Node monolith) |
 | Google sync (Tasks; Contacts names; Calendar titles and times; the 30-day Gmail sync was retired with the morning briefing) | `src/google/` (Node monolith); owner-only connect at `/auth/google` (`src/google/routes.ts`) |
 | Cross-record link generation | `src/google/linker.ts` (Node monolith) |

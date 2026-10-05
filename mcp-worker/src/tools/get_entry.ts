@@ -30,9 +30,6 @@ export async function getEntryHandler(
         clean_text: string | null;
         summary: string | null;
         tags: string[] | null;
-        primary_type: string | null;
-        primary_type_confidence: number | null;
-        suggested_actions: unknown;
         processing_status: string;
         scope: string;
         created_at: Date | string;
@@ -41,9 +38,8 @@ export async function getEntryHandler(
     >`
       SELECT id, channel, full_text, clean_text, summary,
              to_jsonb(tags) AS tags,
-             primary_type, primary_type_confidence,
-             suggested_actions, processing_status, scope,
-             created_at, updated_at
+             processing_status, scope,
+             created_at, updated_at, now() AS as_of
       FROM journal_entry
       WHERE id = ${entry_id}
     `;
@@ -110,15 +106,12 @@ export async function getEntryHandler(
       channel: e.channel,
       scope: e.scope,
       processing_status: e.processing_status,
-      primary_type: e.primary_type,
-      primary_type_confidence: e.primary_type_confidence,
       created_at: toIso(e.created_at),
       updated_at: toIso(e.updated_at),
       tags: Array.isArray(e.tags) ? e.tags : [],
       summary: e.summary,
       clean_text: e.clean_text,
       full_text: e.full_text,
-      suggested_actions: e.suggested_actions,
       links,
     };
 
