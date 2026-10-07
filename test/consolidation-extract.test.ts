@@ -191,10 +191,27 @@ test("forwards, received mail and drafts to himself", () => {
   const own = extractGmail(message({}, { from: "Simon <simon@leesimon.me>", isSent: false }));
   assert.equal(own.kind, "submission");
 
-  const self = extractGmail(message({}, { to: ["note@leesimon.me"] }));
-  assert.equal(self.kind, "self_draft");
-  assert.equal(self.status, "review");
-  assert.equal(self.isPublished, false);
+  // Nothing sent to note@leesimon.me was published; other self-sends are unclear.
+  const note = extractGmail(message({}, { to: ["Notes <note@leesimon.me>"], cc: ["simoncf@gmail.com"] }));
+  assert.deepEqual([note.kind, note.status, note.isPublished], ["self_draft", "drop", false]);
+  assert.deepEqual(note.reasons, ["note-to-self"]);
+  const self = extractGmail(message({}, { to: ["simon@unsubject.com"] }));
+  assert.deepEqual([self.kind, self.status, self.isPublished], ["self_draft", "review", false]);
+  // Sent to an editor with a copy to the notes address: a submission.
+  const copied = extractGmail(message({}, { cc: ["note@leesimon.me"] }));
+  assert.equal(copied.kind, "submission");
+});
+
+test("an occasional piece outside the known columns is kept, with no column", () => {
+  const c = extractGmail(
+    message({ title: "投稿：樓市的下一步", rawText: `樓市的下一步\n\n${ESSAY}` }, { to: ["editor@example-weekly.com"] })
+  );
+  assert.deepEqual([c.kind, c.status, c.column, c.outlet], ["submission", "keep", null, null]);
+  assert.equal(c.title, "樓市的下一步");
+  assert.equal(c.dateSource, "sent");
+  assert.equal(c.bodyText, ESSAY);
+  // Without a title line, the subject gives the title, minus "投稿".
+  assert.equal(extractGmail(message({ title: "投稿：樓市的下一步" }, { to: ["editor@example-weekly.com"] })).title, "樓市的下一步");
 });
 
 test("subjectDate reads 留稿 dates across the new year, and ignores far-off dates", () => {

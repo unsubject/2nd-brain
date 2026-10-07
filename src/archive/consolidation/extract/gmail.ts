@@ -11,6 +11,8 @@ import { htmlToText, normalizeText, paragraphs, textLength, unwrapSoftBreaks } f
 // the SENT label (copies that arrived through forwarding).
 const OWN_DOMAINS = ["leesimon.me", "simoncf.com", "unsubject.com", "unsubject.me"];
 const OWN_ADDRESSES = new Set(["simoncf@gmail.com", "simon.lee@advb.com.hk"]);
+// Notes to self; nothing sent here was published (Simon, 2026-10-06).
+const NOTE_ADDRESS = "note@leesimon.me";
 
 export function emailAddress(s: string): string {
   const m = s.match(/<([^<>\s]+@[^<>\s]+)>/);
@@ -100,7 +102,7 @@ export function bareTitle(s: string | null): string {
   t = t.replace(COLUMN_PREFIX, "").trim();
   t = t.replace(/^[（(]?\s*\d{4}[\s\-./]?\d{1,2}[\s\-./]?\d{1,2}\s*[）)]?/, "").trim();
   t = t.replace(/^[:：\-–—|·．]+/, "").trim();
-  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(/^投稿$/, "");
+  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(/^投稿\s*[:：\-–—]?\s*/, "");
   t = t.trim();
   return /^[\d\s\-./]*$/.test(t) ? "" : t;
 }
@@ -381,8 +383,13 @@ export function extractGmail(item: StagedItem): Candidate {
     return candidate({ ...base, kind: "reply", status: "drop", reasons: [...reasons, "short-message"] });
   }
   if (recipients.length > 0 && recipients.every(isOwnAddress)) {
+    if (recipients.some((r) => emailAddress(r) === NOTE_ADDRESS)) {
+      return candidate({ ...base, kind: "self_draft", status: "drop", isPublished: false, reasons: [...reasons, "note-to-self"] });
+    }
     return candidate({ ...base, kind: "self_draft", status: "review", isPublished: false, reasons: [...reasons, "sent-only-to-own-addresses"] });
   }
+  // A piece for an outlet or column not listed above (an occasional
+  // contribution) is still a submission, just with no column.
   const uncertain = reasons.some((r) => r === "possible-note-removed" || r === "long-text-before-title");
   return candidate({ ...base, kind: "submission", status: uncertain ? "review" : "keep", isPublished: true, reasons });
 }
