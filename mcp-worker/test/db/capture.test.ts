@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { admin, callTool, ok, resetIdeaData, seedIdea, setEmbedding, axis, TEST_DB, USER } from './helpers';
 
-const MIGRATION_028 = readFileSync(new URL('../../../migrations/028_idea_garden_v2.sql', import.meta.url), 'utf8');
+const MIGRATION_028 = readFileSync(
+  fileURLToPath(new URL('../../../migrations/028_idea_garden_v2.sql', import.meta.url).href),
+  'utf8',
+);
 
 afterAll(() => admin.end({ timeout: 5 }));
 
