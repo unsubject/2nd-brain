@@ -33,6 +33,7 @@ import { listIdeaLinksHandler } from './list_idea_links';
 import { decideIdeaLinksHandler } from './decide_idea_links';
 import { createSynthesisHandler } from './create_synthesis';
 import { exportIdeaMapHandler } from './export_idea_map';
+import { exploreTopicHandler } from './explore_topic';
 import { LINK_TYPES, LINK_STATUSES } from '../ideas/linkTypes';
 import { readProtocolHandler } from './read_protocol';
 import { TOOL_META, type ToolAnnotations } from './tool_meta';
@@ -488,16 +489,18 @@ const definitions: ToolDefinition[] = [
   },
 
   // ── Idea Parking Lot ──────────────────────────────────────
-  // Curated raw material, one stage before work — NOT tasks. Capture is
-  // one-way (park_idea); associations exist only through gardening
-  // sessions the user starts (garden_ideas → propose_idea_links → the
-  // user decides → decide_idea_links). Pull-only: never surface ideas
+  // Curated raw material, one stage before work — NOT tasks. park_idea
+  // returns the nearest existing ideas, and the assistant may propose up
+  // to 3 links right after the receipt (propose_idea_links, origin
+  // 'capture'); everything else is linked in gardening sessions the user
+  // starts (garden_ideas → propose_idea_links). Nothing is linked until
+  // the user says yes (decide_idea_links). Pull-only: never surface ideas
   // unprompted. Protocol: docs/idea-parking-lot-protocol.md, served as
   // second-brain://protocol/idea-parking-lot.
   {
     name: 'park_idea',
     description:
-      "Librarian capture: file ONE idea into the user's Idea Parking Lot. ONLY call when the user explicitly asks to park/file an idea ('park this', 'add to my parking lot', 'file this idea'). Propose a short title and get the user's confirmation first. `thoughts` must be the user's own words copied verbatim — never paraphrase, summarize, translate or tidy them. Only add tags the user states. Capture is one-way: reply with the receipt only and do NOT search for, suggest or mention related ideas, links, hubs or neighbours — associations happen only in gardening sessions the user starts. Ideas are not tasks (no due dates or priorities). 'Save this session' means save_session, not this tool. read_protocol('idea-parking-lot') §1.",
+      "Librarian capture: file ONE idea into the user's Idea Parking Lot. ONLY call when the user explicitly asks to park/file an idea ('park this', 'add to my parking lot', 'file this idea'). Propose a short title and get the user's confirmation first. `thoughts` must be the user's own words copied verbatim — never paraphrase, summarize, translate or tidy them. Only add tags the user states. In your reply the receipt comes first. The result also lists up to 5 link_candidates (the nearest existing ideas): where one genuinely connects, draft up to 3 typed proposals with one-line glosses, save them with propose_idea_links (origin 'capture') and show them after the receipt in the same reply. NEVER search for more yourself; nothing is linked until the user says yes (decide_idea_links). Ideas are not tasks (no due dates or priorities). 'Save this session' means save_session, not this tool. read_protocol('idea-parking-lot') §1.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -605,7 +608,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'update_idea',
     description:
-      "Edit a parked idea: fields (null clears), tags (replace, or add_tags/remove_tags), status (parked | exploring | used | composted — status changes are logged as a note), a synthesis's intent, or append a dated note. ONLY call on the user's explicit request, or to record a decision they just made in a gardening session. Only replace `thoughts` with words the user dictates; prefer append_note (by: 'simon' for their words, 'agent' for yours). Composting keeps the idea; there is no delete. read_protocol('idea-parking-lot') §2/§5.",
+      "Edit an idea: fields (null clears), tags (replace, or add_tags/remove_tags), status (parked | exploring | used | composted — status changes are logged as a note), a synthesis's intent, or append a dated note. ONLY call on the user's explicit request, or to record a decision they just made in a gardening session or garden review. reviewed: true takes the idea out of the inbox, false puts it back (for many ideas at once use decide_idea_links mark_reviewed). promoted records that the user promoted the idea to their Google Tasks 'Subjects' list ({title: the task title, at?: when, default now}); null clears it. Simon or Muse writes the task: 2nd-brain never writes Google Tasks, this only records it. Recording a promotion also marks the idea reviewed and moves a parked or composted idea to exploring (an explicit status in the same call wins). Composting withdraws the idea's pending link proposals (accepted links stay); it keeps the idea, there is no delete. Only replace `thoughts` with words the user dictates; prefer append_note (by: 'simon' for their words, 'agent' for yours). read_protocol('idea-parking-lot') §2/§5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -623,6 +626,22 @@ const definitions: ToolDefinition[] = [
         remove_tags: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 60 }, maxItems: 20 },
         status: { type: 'string', enum: ['parked', 'exploring', 'used', 'composted'] },
         intent: { type: 'string', enum: ['episode', 'essay', 'series', 'learning', 'undecided'] },
+        reviewed: { type: 'boolean', description: 'true: a garden review handled it (leaves the inbox); false: back to the inbox' },
+        promoted: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                title: { type: 'string', minLength: 1, maxLength: 500, description: 'The Subjects task title used' },
+                at: { type: 'string', format: 'date-time', description: 'When it was promoted, if not now (never in the future)' },
+              },
+              required: ['title'],
+              additionalProperties: false,
+            },
+            { type: 'null' },
+          ],
+          description: "Record a promotion to Google Tasks 'Subjects' (null clears it)",
+        },
         append_note: {
           type: 'object',
           properties: {
@@ -642,7 +661,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'get_idea',
     description:
-      'Fetch one idea with all fields, notes, provenance sources, accepted links in both directions (with rationale), pending-proposal count, parts (for a synthesis) / syntheses it is part of, and territory (territory = became an output, adjacent = revisits one, frontier = no output yet). Read-only. Use when the user asks about a specific idea or during gardening.',
+      'Fetch one idea with all fields, notes, provenance sources, accepted links in both directions (link_type, its display label and the rationale), pending-proposal count, parts (for a synthesis) / syntheses it is part of, and territory (territory = became an output, adjacent = revisits one, frontier = no output yet). Read-only. Use when the user asks about a specific idea or during gardening.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -658,7 +677,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'list_ideas',
     description:
-      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), territory ('frontier' = no output link, 'adjacent' = only revisits an output, 'territory' = became an output), has_output. Read-only. read_protocol('idea-parking-lot') §5.",
+      "Browse the Idea Parking Lot (pull-only — only when the user asks). Defaults to all statuses except composted, newest captured first. Filters: kind, tags (all must match), source_system, since/until (captured_at), unlinked (orphans: no accepted links), territory ('frontier' = no output link, 'adjacent' = only revisits an output, 'territory' = became an output), has_output, inbox (true = no garden review has handled it yet; composted ideas never wait in the inbox), promoted (a promotion to Google Tasks 'Subjects' is recorded). Each row says inbox and promoted ({at, title} or null). Read-only. read_protocol('idea-parking-lot') §5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -674,6 +693,8 @@ const definitions: ToolDefinition[] = [
         until: { type: 'string', format: 'date-time' },
         unlinked: { type: 'boolean' },
         has_output: { type: 'boolean' },
+        inbox: { type: 'boolean' },
+        promoted: { type: 'boolean' },
         territory: { type: 'string', enum: ['frontier', 'adjacent', 'territory'] },
         sort: { type: 'string', enum: ['captured_at', 'updated_at'], default: 'captured_at' },
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
@@ -686,7 +707,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'search_ideas',
     description:
-      "Search the Idea Parking Lot (pull-only — when the user asks 'anything parked about X?'). Hybrid: semantic similarity over embedded ideas plus text matching across all fields (works for Chinese and for ideas filed seconds ago). Includes composted ideas by default. Do NOT use at capture time to suggest links or check duplicates for the user. Read-only. read_protocol('idea-parking-lot') §5.",
+      "Search the Idea Parking Lot (pull-only — when the user asks 'anything parked about X?'). Hybrid: semantic similarity over embedded ideas plus text matching across all fields (works for Chinese and for ideas filed seconds ago). Returns a flat list of hits; for the ideas WITH their linked clusters and glosses use explore_topic. Includes composted ideas by default. Do NOT use at capture time to suggest links or check duplicates for the user. Read-only. read_protocol('idea-parking-lot') §5.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -714,15 +735,15 @@ const definitions: ToolDefinition[] = [
   {
     name: 'garden_ideas',
     description:
-      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session the user explicitly started ('let's garden', 'tend my parking lot') — never at capture time. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours; newest first, paged), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?; 40 ideas per page). Global near/band passes cover the most recently updated ideas; focus_idea_id reaches any idea. Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. read_protocol('idea-parking-lot') §2.",
+      "Gardening step 1: pull CANDIDATE pairs to judge. ONLY call inside a gardening session or garden review the user explicitly started ('let's garden', 'weekly review', 'tend my garden'); never on your own initiative. Modes: near (similar ideas, ≥0.50; ≥0.90 flagged possible_duplicate), band (0.30–0.45, the analogy zone for same_mechanism links), orphans (ideas with no accepted links + their nearest neighbours; newest first, paged), outputs (ideas vs the user's own published essays/episodes, ≥0.45, hinted became?/revisits?; 40 ideas per page), inbox (the garden review queue: ideas no review has handled yet, oldest captured first, 8 per page, each with its nearest neighbours — none until it is embedded, flagged embedded:false — and its pending proposals, capture ones included (none with a composted idea), for the user to decide; mark handled ideas with decide_idea_links mark_reviewed). Global near/band passes cover the most recently updated ideas; focus_idea_id reaches any idea. Excludes pairs already proposed, accepted, rejected or retracted. Candidates are NOT links. Read-only. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['near', 'band', 'orphans', 'outputs'] },
+        mode: { type: 'string', enum: ['near', 'band', 'orphans', 'outputs', 'inbox'] },
         focus_idea_id: { type: 'string', format: 'uuid' },
         min_similarity: { type: 'number', minimum: -1, maximum: 1 },
         max_similarity: { type: 'number', minimum: -1, maximum: 1 },
-        limit: { type: 'integer', minimum: 1, maximum: 30, description: 'Default 12 (8 orphans in orphans mode)' },
+        limit: { type: 'integer', minimum: 1, maximum: 30, description: 'Default 12 (8 ideas in orphans and inbox modes)' },
         per_idea_cap: {
           type: 'integer',
           minimum: 1,
@@ -730,9 +751,13 @@ const definitions: ToolDefinition[] = [
           default: 2,
           description: 'Max candidates per idea (near/band/outputs)',
         },
-        cross_domain: { type: 'boolean', description: 'Only pairs with no tag in common (near/band/orphans)' },
-        order: { type: 'string', enum: ['newest', 'oldest'], default: 'newest', description: 'orphans/outputs: by captured_at' },
-        offset: { type: 'integer', minimum: 0, default: 0, description: 'orphans/outputs paging (see paging.next_offset)' },
+        cross_domain: { type: 'boolean', description: 'Only pairs with no tag in common (near/band/orphans/inbox)' },
+        order: {
+          type: 'string',
+          enum: ['newest', 'oldest'],
+          description: 'orphans/outputs/inbox: by captured_at (default newest; oldest in inbox mode)',
+        },
+        offset: { type: 'integer', minimum: 0, default: 0, description: 'orphans/outputs/inbox paging. Ideas that leave the list (marked reviewed, composted, promoted or linked) move later ones up: pass paging.next_offset minus the number of ideas on the page that left it.' },
         include_statuses: {
           type: 'array',
           items: { type: 'string', enum: ['parked', 'exploring', 'used', 'composted'] },
@@ -747,11 +772,15 @@ const definitions: ToolDefinition[] = [
   {
     name: 'propose_idea_links',
     description:
-      `Gardening step 2: stage up to 20 typed link PROPOSALS. ONLY call inside a gardening session the user started (origin 'gardening') or during the import protocol (origin 'import'). Proposals are not links until the user accepts them. Rationale: one line naming the specific shared mechanism, tension or dependency. Types: builds_on, example_of (directed idea→idea); part_of (idea→synthesis); tension_with, same_mechanism, combines_with, related (symmetric; related only when nothing specific fits); became, revisits (idea→public_artifact). Pairs the user rejected or retracted are refused unless reconsider_rejected=true, which you may set ONLY when the user explicitly asks to revisit them. read_protocol('idea-parking-lot') §2.`,
+      `Stage typed link PROPOSALS. ONLY call inside a gardening session the user started (origin 'gardening', up to 20 links), during the import protocol (origin 'import'), or right after park_idea for the link_candidates that genuinely connect (origin 'capture': at most 3 links, each between the newly parked idea and another idea). Proposals are not links until the user accepts them (decide_idea_links). Composted ideas take no new proposals. Rationale (the gloss): one line naming the specific shared mechanism, tension or dependency. Types, each with the label to show the user. Directed idea→idea: builds_on (extends), example_of (example-of), mechanism_for (mechanism-for: the source explains why the target happens). Idea→synthesis: part_of (part-of: the target must be a synthesis). Symmetric: tension_with (contradicts), same_mechanism (rhymes-with), inverts (inverts: each is the other with the causality flipped), combines_with (combines-with), related (related: only when nothing specific fits). Idea→public_artifact, never at capture: became (became), revisits (revisits). Pairs the user rejected or retracted are refused unless reconsider_rejected=true, which you may set ONLY when the user explicitly asks to revisit them. read_protocol('idea-parking-lot') §2.`,
     inputSchema: {
       type: 'object',
       properties: {
-        origin: { type: 'string', enum: ['gardening', 'import'] },
+        origin: {
+          type: 'string',
+          enum: ['gardening', 'import', 'capture'],
+          description: "'capture': at most 3 idea-to-idea links, all on the newly parked idea",
+        },
         proposed_via: {
           type: 'object',
           properties: { client: { type: 'string', maxLength: 100 }, model: { type: 'string', maxLength: 100 } },
@@ -785,14 +814,14 @@ const definitions: ToolDefinition[] = [
   {
     name: 'list_idea_links',
     description:
-      'List idea links with both endpoints resolved. Defaults to pending proposals (status proposed) — call this first in a gardening session to clear old or imported proposals. Filter by statuses, idea_id, link_type or proposed_by. Read-only. read_protocol(\'idea-parking-lot\') §2.',
+      "List idea links with both endpoints resolved; each carries link_type and its display label (tension_with shows as contradicts). Defaults to pending proposals (status proposed) — call this first in a gardening session to clear old, imported or capture-time proposals (proposed_by 'capture'). Filter by statuses, idea_id, link_type or proposed_by. Read-only. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
         statuses: { type: 'array', items: { type: 'string', enum: [...LINK_STATUSES] }, minItems: 1 },
         idea_id: { type: 'string', format: 'uuid' },
         link_type: { type: 'string', enum: [...LINK_TYPES] },
-        proposed_by: { type: 'string', enum: ['gardening', 'import', 'synthesis'] },
+        proposed_by: { type: 'string', enum: ['gardening', 'import', 'synthesis', 'capture'] },
         limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
         offset: { type: 'integer', minimum: 0, default: 0 },
       },
@@ -803,13 +832,12 @@ const definitions: ToolDefinition[] = [
   {
     name: 'decide_idea_links',
     description:
-      "Record the user's verdicts on link proposals. ONLY with decisions the user explicitly stated in this conversation — never accept or reject on their behalf, and leave unanswered proposals pending. accept (optionally retype with link_type, or reverse a directed link) | reject (remembered; the pair won't be re-proposed) | withdraw (YOU take back your own proposal — not a rejection) | retract (the user un-accepts an accepted link). read_protocol('idea-parking-lot') §2.",
+      "Record the user's verdicts on link proposals. ONLY with decisions the user explicitly stated in this conversation — never accept or reject on their behalf, and leave unanswered proposals pending. accept (optionally retype with link_type, or reverse a directed link) | reject (remembered; the pair won't be re-proposed) | withdraw (YOU take back your own proposal — not a rejection) | retract (the user un-accepts an accepted link). mark_reviewed: ids of ideas the user has been through in this garden review (each once); after the decisions they leave the inbox in one step, and unknown ids come back in reviewed.not_found. Give decisions, mark_reviewed or both. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
         decisions: {
           type: 'array',
-          minItems: 1,
           maxItems: 50,
           items: {
             type: 'object',
@@ -824,8 +852,13 @@ const definitions: ToolDefinition[] = [
             additionalProperties: false,
           },
         },
+        mark_reviewed: {
+          type: 'array',
+          items: { type: 'string', format: 'uuid' },
+          maxItems: 200,
+          description: 'Ideas the user has reviewed: they leave the inbox (no duplicates)',
+        },
       },
-      required: ['decisions'],
       additionalProperties: false,
     },
     handler: decideIdeaLinksHandler,
@@ -833,7 +866,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'create_synthesis',
     description:
-      "Combine 2+ ideas into something bigger — an episode seed, essay, series or learning thread. ONLY call when the user explicitly decides to combine them; confirm the title, intent and parts with the user first. Creates a synthesis idea (status exploring by default) with accepted part_of links from each part. read_protocol('idea-parking-lot') §2.",
+      "Combine 2+ ideas into something bigger — an episode seed, essay, series or learning thread. ONLY call when the user explicitly decides to combine them; confirm the title, intent and parts with the user first. Creates a synthesis idea (status exploring by default, already reviewed, so it skips the inbox) with accepted part_of links from each part. read_protocol('idea-parking-lot') §2.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -864,11 +897,11 @@ const definitions: ToolDefinition[] = [
   {
     name: 'export_idea_map',
     description:
-      "Export the curiosity map as graph data for visualisation — call when the user asks to see their idea map/graph, then render it with whatever visualisation tool you have. format: json (canonical idea-map/v1: nodes with degree, connected component and territory; typed edges with rationale; legend), graphml (Gephi / yEd / Cytoscape), mermaid (inline chat, ≤150 nodes). Focus on one idea with focus_idea_id + depth for an ego network. Accepted links only unless include_pending. Read-only. read_protocol('idea-parking-lot') §3.",
+      "Export the curiosity map — call when the user asks to see their idea map/graph. format: html (a self-contained interactive page to hand over as a file: nodes coloured by cluster, the gloss on hover or tap, a legend, an as-of slider for journey reviews; works offline, only published outputs; returns two text blocks: JSON meta with the suggested filename and byte size, then the page — save the page unchanged as that file; max_nodes defaults to 150 here, and the meta carries a warning when the page is large), json (canonical idea-map/v1: nodes with degree, connected component, cluster, territory, inbox and promotion; typed edges with display label, rationale and timestamps; named clusters; legend), graphml (Gephi / yEd / Cytoscape), mermaid (inline chat, ≤150 nodes). Focus on one idea with focus_idea_id + depth for an ego network. Accepted links only unless include_pending. Read-only. read_protocol('idea-parking-lot') §3.",
     inputSchema: {
       type: 'object',
       properties: {
-        format: { type: 'string', enum: ['json', 'graphml', 'mermaid'], default: 'json' },
+        format: { type: 'string', enum: ['json', 'graphml', 'mermaid', 'html'], default: 'json' },
         focus_idea_id: { type: 'string', format: 'uuid' },
         depth: { type: 'integer', minimum: 1, maximum: 4, default: 2 },
         statuses: {
@@ -880,17 +913,39 @@ const definitions: ToolDefinition[] = [
         include_outputs: { type: 'boolean', default: true },
         include_pending: { type: 'boolean', default: false },
         include_isolated: { type: 'boolean', default: true },
-        max_nodes: { type: 'integer', minimum: 10, maximum: 1000, default: 300 },
+        max_nodes: {
+          type: 'integer',
+          minimum: 10,
+          maximum: 1000,
+          description: 'Default 300; 150 for html, so the page stays small enough to pass through and save',
+        },
       },
       additionalProperties: false,
     },
     handler: exportIdeaMapHandler,
   },
+  {
+    name: 'explore_topic',
+    description:
+      "Answer 'what do I have on X?' from the Idea Garden — the episode-planning query (pull-only: only when the user asks). Finds the live ideas matching the topic (same hybrid search as search_ideas: meaning plus exact text, works for Chinese and for ideas not yet embedded), then follows their accepted links depth hops in both directions, syntheses included and published outputs as leaves. Returns clusters (connected groups among the returned ideas, best match first), each with its ideas and every link as source -label-> target with its one-line gloss, plus the outputs those ideas became or revisit. Present the clusters with their glosses, not as a flat list. Composted ideas are left out (search_ideas finds them). For the journal ('have I thought about X?') use search_brain. Read-only. read_protocol('idea-parking-lot') §5.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 500, description: 'The topic, in the user\'s words' },
+        depth: { type: 'integer', minimum: 1, maximum: 2, default: 1, description: 'Link hops to follow from each matching idea' },
+        max_ideas: { type: 'integer', minimum: 1, maximum: 100, default: 40, description: 'Cap on ideas returned (matches first); truncated says when it bit' },
+        include_pending: { type: 'boolean', default: false, description: 'Also follow and list proposed links (status proposed) that await a decision' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: exploreTopicHandler,
+  },
   // ── Protocols ──────────────────────────────────────────────
   {
     name: 'read_protocol',
     description:
-      "Read an executable protocol: 'idea-parking-lot' (capture §1, gardening §2, map §3, import §4, retrieval §5) or 'goal-amendment' (Section 1A constitution, Section 1B goals). Same text as the MCP resources second-brain://protocol/*, for clients without resource support. Call before using idea tools or proposing amendments; pass section (e.g. '§2', '1B') to fetch one part. Read-only.",
+      "Read an executable protocol: 'idea-parking-lot', the Idea Garden (model, link labels, inbox and promotion §0; capture with up to 3 link proposals §1; gardening and the weekly garden review §2; the map, HTML included §3; import §4; retrieval with explore_topic §5; cheat sheet §6) or 'goal-amendment' (Section 1A constitution, Section 1B goals). Same text as the MCP resources second-brain://protocol/*, for clients without resource support. Call before using idea tools or proposing amendments; pass section (e.g. '§2', '1B') to fetch one part. Read-only.",
     inputSchema: {
       type: 'object',
       properties: {

@@ -25,6 +25,9 @@ export default defineConfig({
     // DB-backed suites (test/db) share one database; setup resets it and
     // applies every migration when TEST_DATABASE_URL is set (else no-op).
     globalSetup: ['test/setup/test-db.ts'],
+    // Every test file starts with a fetch that fails fast: no test reaches
+    // the network unless it stubs fetch itself.
+    setupFiles: ['test/setup/no-network.ts'],
     fileParallelism: false,
   },
 });

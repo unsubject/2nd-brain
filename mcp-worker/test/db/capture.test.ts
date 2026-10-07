@@ -13,7 +13,7 @@ afterAll(() => admin.end({ timeout: 5 }));
 describe.skipIf(!TEST_DB)('capture: park_idea / get_idea / update_idea', () => {
   beforeEach(resetIdeaData);
 
-  it('files an idea and returns only the receipt', async () => {
+  it('files an idea and returns the receipt, then its link candidates', async () => {
     const r = await ok('park_idea', {
       title: '  Why do tides have two bulges?  ',
       thoughts: 'raw  thought,\n\n第二段 — keep me exactly 🙂  ',
@@ -24,9 +24,19 @@ describe.skipIf(!TEST_DB)('capture: park_idea / get_idea / update_idea', () => {
       idempotency_key: 'k-1',
       captured_via: { client: 'test', model: 'm' },
     });
-    expect(Object.keys(r).sort()).toEqual(
-      ['captured_at', 'deduplicated', 'embedding', 'fields_filed', 'idea_id', 'note', 'status', 'title'].sort(),
-    );
+    // The receipt keys come first, unchanged; link_candidates follows them.
+    expect(Object.keys(r)).toEqual([
+      'idea_id',
+      'title',
+      'captured_at',
+      'status',
+      'fields_filed',
+      'embedding',
+      'deduplicated',
+      'note',
+      'link_candidates',
+    ]);
+    expect(r.link_candidates).toEqual([]); // nothing else is embedded yet
     expect(r.title).toBe('Why do tides have two bulges?');
     expect(r.status).toBe('parked');
     expect(r.deduplicated).toBe(false);

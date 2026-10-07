@@ -33,9 +33,9 @@ export const resources: McpResource[] = [
   },
   {
     uri: 'second-brain://protocol/idea-parking-lot',
-    name: 'Idea Parking Lot Protocol',
+    name: 'Idea Garden Protocol (Idea Parking Lot)',
     description:
-      'Executable protocol for the Idea Parking Lot: Librarian capture (§1), gardening / creating associations (§2), the curiosity map (§3), the one-time Notion + Google Tasks import (§4), and pull-only retrieval (§5). Read before calling any idea tool (park_idea, garden_ideas, propose/decide_idea_links, create_synthesis, export_idea_map, import_ideas). Source of truth: docs/idea-parking-lot-protocol.md in the repo.',
+      'Executable protocol for the Idea Garden (formerly the Idea Parking Lot): the model, link types with their display labels, the inbox and promotion (§0); Librarian capture, receipt first, then up to 3 link proposals (§1); gardening and the weekly garden review (§2); the curiosity map, including the interactive HTML page (§3); the one-time Notion + Google Tasks "Subjects" import (§4); pull-only retrieval, including explore_topic for "what do I have on X?" (§5); and a cheat sheet (§6). Read before calling any idea tool: park_idea, update_idea, get_idea, list_ideas, search_ideas, explore_topic, garden_ideas, propose_idea_links, list_idea_links, decide_idea_links, create_synthesis, export_idea_map, import_ideas, list_subjects_for_import. Source of truth: docs/idea-parking-lot-protocol.md in the repo.',
     mimeType: 'text/markdown',
     text: ideaParkingLotProtocol,
   },

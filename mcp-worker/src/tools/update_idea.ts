@@ -25,6 +25,19 @@ import {
 // Tri-state text fields: undefined → leave, null → clear, string → set.
 const optText = (max: number) => z.string().max(max).nullable().optional();
 
+// A promotion to the Google Tasks "Subjects" list (refocus D1): Simon or
+// Muse writes the task; this only records it. Trimmed to match the
+// btrim-based CHECK idea_promoted_pair.
+const promotedSchema = z
+  .object({
+    title: z
+      .string()
+      .transform((t) => t.trim())
+      .pipe(z.string().min(1).max(LIMITS.title)),
+    at: isoDateTimeSchema.optional(),
+  })
+  .strict();
+
 const inputSchema = z
   .object({
     id: uuidSchema,
@@ -45,6 +58,8 @@ const inputSchema = z
     remove_tags: tagsSchema.optional(),
     status: ideaStatusSchema.optional(),
     intent: ideaIntentSchema.optional(),
+    reviewed: z.boolean().optional(),
+    promoted: promotedSchema.nullable().optional(),
     append_note: z
       .object({
         text: z.string().min(1).max(LIMITS.note),
@@ -80,6 +95,11 @@ export async function updateIdeaHandler(
   if (args.tags && (args.add_tags || args.remove_tags)) {
     return errorResult('Invalid arguments: use either tags (replace) or add_tags/remove_tags, not both');
   }
+  // Never in the future: a minute of slack for clock skew here, and the
+  // stored value is clamped to the database clock below.
+  if (args.promoted?.at && Date.parse(args.promoted.at) > Date.now() + 60 * 1000) {
+    return errorResult('Invalid arguments: promoted.at is in the future');
+  }
   const touched = [
     'title',
     ...TEXT_FIELDS,
@@ -88,6 +108,8 @@ export async function updateIdeaHandler(
     'remove_tags',
     'status',
     'intent',
+    'reviewed',
+    'promoted',
     'append_note',
   ].filter((k) => (args as Record<string, unknown>)[k] !== undefined);
   if (touched.length === 0) return errorResult('No fields to update');
@@ -96,10 +118,18 @@ export async function updateIdeaHandler(
   try {
     const result = await sql.begin(async (tx) => {
       const cur = await tx<
-        Array<{ kind: string; status: string; tags: unknown; title: string; embedded: boolean }>
+        Array<{
+          kind: string;
+          status: string;
+          tags: unknown;
+          title: string;
+          embedded: boolean;
+          reviewed_at: Date | null;
+          promoted_title: string | null;
+        }>
       >`
         SELECT kind, status, to_jsonb(tags) AS tags, title, (embedding IS NOT NULL) AS embedded,
-               now() AS as_of
+               reviewed_at, promoted_title, now() AS as_of
           FROM idea
          WHERE id = ${args.id} AND user_id = ${env.BRAIN_USER_ID}
          FOR UPDATE
@@ -120,11 +150,37 @@ export async function updateIdeaHandler(
         );
       }
 
+      // Recording a promotion moves a parked or composted idea to
+      // exploring (refocus D15); an explicit status in the same call wins.
+      const nextStatus =
+        args.status ??
+        (args.promoted && (before.status === 'parked' || before.status === 'composted') ? 'exploring' : undefined);
+      // A promotion is a review decision, so it also takes the idea out of
+      // the inbox; an explicit `reviewed` in the same call wins.
+      const reviewedAt =
+        args.reviewed === true
+          ? tx`now()`
+          : args.reviewed === false
+            ? tx`NULL`
+            : args.promoted
+              ? tx`COALESCE(reviewed_at, now())`
+              : tx`reviewed_at`;
+      const fields = [
+        ...touched,
+        ...(args.status === undefined && nextStatus !== undefined && nextStatus !== before.status ? ['status'] : []),
+        ...(args.reviewed === undefined && args.promoted && before.reviewed_at === null ? ['reviewed'] : []),
+      ];
+
       const now = new Date().toISOString();
       const credential = credentialLabel(principal);
       const newNotes: Note[] = [];
-      if (args.status !== undefined && args.status !== before.status) {
-        newNotes.push({ at: now, by: 'system', text: `status: ${before.status} → ${args.status}`, credential });
+      if (args.promoted) {
+        newNotes.push({ at: now, by: 'system', text: `promoted to Subjects as "${args.promoted.title}"`, credential });
+      } else if (args.promoted === null && before.promoted_title !== null) {
+        newNotes.push({ at: now, by: 'system', text: `promotion cleared (was "${before.promoted_title}")`, credential });
+      }
+      if (nextStatus !== undefined && nextStatus !== before.status) {
+        newNotes.push({ at: now, by: 'system', text: `status: ${before.status} → ${nextStatus}`, credential });
       }
       if (args.append_note) {
         newNotes.push({
@@ -149,22 +205,54 @@ export async function updateIdeaHandler(
           framing           = CASE WHEN ${omit('framing')} THEN framing ELSE ${val('framing')}::text END,
           thoughts          = CASE WHEN ${omit('thoughts')} THEN thoughts ELSE ${val('thoughts')}::text END,
           tags = ${nextTags === null ? tx`tags` : textArray(tx, nextTags)},
-          status = COALESCE(${args.status ?? null}::text, status),
+          status = COALESCE(${nextStatus ?? null}::text, status),
           intent = COALESCE(${args.intent ?? null}::text, intent),
+          reviewed_at = ${reviewedAt},
+          promoted_at = ${
+            args.promoted === undefined
+              ? tx`promoted_at`
+              : args.promoted === null
+                ? tx`NULL`
+                : tx`LEAST(COALESCE(${args.promoted.at ?? null}::timestamptz, now()), now())`
+          },
+          promoted_title = ${
+            args.promoted === undefined ? tx`promoted_title` : tx`${args.promoted?.title ?? null}::text`
+          },
           notes = notes || ${jsonParam(tx, newNotes)},
-          edit_log = edit_log || ${jsonParam(tx, [{ at: now, credential, tool: 'update_idea', fields: touched }])},
+          edit_log = edit_log || ${jsonParam(tx, [{ at: now, credential, tool: 'update_idea', fields }])},
           updated_at = now()
         WHERE id = ${args.id} AND user_id = ${env.BRAIN_USER_ID}
         RETURNING (embedding IS NOT NULL) AS embedded
       `;
-      return { embeddedBefore: before.embedded, embeddedAfter: rows[0].embedded };
+
+      // A composted idea is set aside, so proposals waiting on it are taken
+      // back the way decide_idea_links withdraws them. Accepted links stay.
+      // Runs whenever composted is sent, so composting again also clears
+      // proposals made on an idea that was already composted.
+      let withdrawn: number | undefined;
+      if (nextStatus === 'composted') {
+        const w = await tx`
+          UPDATE idea_link SET
+            status = 'withdrawn',
+            decided_at = now(),
+            decided_via = ${jsonParam(tx, { credential })},
+            decision_note = 'endpoint composted'
+          WHERE user_id = ${env.BRAIN_USER_ID}
+            AND status = 'proposed'
+            AND (source_idea_id = ${args.id} OR target_idea_id = ${args.id})
+          RETURNING id
+        `;
+        withdrawn = w.length;
+      }
+      return { embeddedBefore: before.embedded, embeddedAfter: rows[0].embedded, fields, withdrawn };
     });
 
     return ok({
       ok: true,
       idea_id: args.id,
-      changed: touched,
+      changed: result.fields,
       embedding: result.embeddedBefore && result.embeddedAfter ? 'unchanged' : 'pending',
+      ...(result.withdrawn !== undefined ? { withdrawn_proposals: result.withdrawn } : {}),
     });
   } catch (e) {
     if (e instanceof HandlerError) return errorResult(`${e.code}: ${e.message}`);

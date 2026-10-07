@@ -83,15 +83,17 @@ export async function createSynthesisHandler(
         throw new HandlerError('not_found', `parts not found: ${partIds.filter((p) => !have.has(p)).join(', ')}`);
       }
 
+      // Made by the user during a review, so it skips the inbox.
       const rows = await tx<Array<{ id: string }>>`
         INSERT INTO idea (
           user_id, kind, intent, title, status, thoughts, framing, why_interesting,
-          tags, captured_via
+          tags, captured_via, reviewed_at
         ) VALUES (
           ${env.BRAIN_USER_ID}, 'synthesis', ${args.intent}, ${title}, ${args.status ?? 'exploring'},
           ${blankToNull(args.thoughts)}, ${blankToNull(args.framing)}, ${blankToNull(args.why_interesting)},
           ${textArray(tx, cleanTags(args.tags))},
-          ${jsonParam(tx, { ...(args.captured_via ?? {}), role: 'gardener', credential: credentialLabel(principal) })}
+          ${jsonParam(tx, { ...(args.captured_via ?? {}), role: 'gardener', credential: credentialLabel(principal) })},
+          now()
         )
         RETURNING id
       `;

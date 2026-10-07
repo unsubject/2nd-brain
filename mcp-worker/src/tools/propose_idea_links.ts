@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
-import { canonicalPair, endpointError } from '../ideas/linkTypes';
+import { canonicalPair, endpointError, targetsArtifact } from '../ideas/linkTypes';
 import {
   capturedViaSchema,
   credentialLabel,
@@ -12,18 +12,26 @@ import {
   jsonParam,
   linkTypeSchema,
   ok,
+  uuidSchema,
 } from './idea_shared';
 
 // Gardening step 2 (docs/idea-parking-lot-protocol.md §2): stage typed
 // link PROPOSALS. Nothing becomes a link until the user accepts it via
 // decide_idea_links. A pair the user rejected or retracted (any type) is
 // refused unless reconsider_rejected=true; withdrawn proposals reopen.
+//
+// origin 'capture' (refocus D3, D12): the proposals the assistant drafts
+// from park_idea's link_candidates right after a capture. At most 3, all
+// on the newly parked idea, idea to idea; they wait for the user's yes
+// like any other proposal.
+
+const CAPTURE_MAX_LINKS = 3;
 
 const linkSchema = z
   .object({
-    source_idea_id: z.string().uuid(),
-    target_idea_id: z.string().uuid().optional(),
-    target_artifact_id: z.string().uuid().optional(),
+    source_idea_id: uuidSchema,
+    target_idea_id: uuidSchema.optional(),
+    target_artifact_id: uuidSchema.optional(),
     link_type: linkTypeSchema,
     rationale: z
       .string()
@@ -36,12 +44,35 @@ const linkSchema = z
 
 const inputSchema = z
   .object({
-    origin: z.enum(['gardening', 'import']),
+    origin: z.enum(['gardening', 'import', 'capture']),
     proposed_via: capturedViaSchema.optional(),
     reconsider_rejected: z.boolean().optional(),
     links: z.array(linkSchema).min(1).max(20),
   })
   .strict();
+
+type LinkInput = z.infer<typeof linkSchema>;
+
+// The call-level rules for origin 'capture'; an error message or null.
+function captureRuleError(links: LinkInput[]): string | null {
+  if (links.length > CAPTURE_MAX_LINKS) {
+    return `origin 'capture' allows at most ${CAPTURE_MAX_LINKS} links per call (got ${links.length})`;
+  }
+  const toArtifact = links.find((l) => targetsArtifact(l.link_type) || l.target_artifact_id);
+  if (toArtifact) {
+    return `origin 'capture' proposes idea-to-idea links only (not ${toArtifact.link_type} or target_artifact_id)`;
+  }
+  // The newly parked idea is an endpoint of every link.
+  let shared: string[] | null = null;
+  for (const l of links) {
+    const ends = [l.source_idea_id, l.target_idea_id].filter((x): x is string => !!x);
+    shared = shared === null ? ends : shared.filter((id) => ends.includes(id));
+  }
+  if (!shared || shared.length === 0) {
+    return "origin 'capture': every link must have the newly parked idea as an endpoint (one idea shared by all links)";
+  }
+  return null;
+}
 
 type Result = {
   index: number;
@@ -63,6 +94,10 @@ export async function proposeIdeaLinksHandler(
     return errorResult(`Invalid arguments: ${parsed.error.message}`);
   }
   const args = parsed.data;
+  if (args.origin === 'capture') {
+    const ruleErr = captureRuleError(args.links);
+    if (ruleErr) return errorResult(`Invalid arguments: ${ruleErr}`);
+  }
   const reconsider = args.reconsider_rejected ?? false;
   const via = { ...(args.proposed_via ?? {}), credential: credentialLabel(principal) };
 
@@ -84,13 +119,25 @@ export async function proposeIdeaLinksHandler(
             targetIdea = c.target;
           }
 
-          const owned = await tx<Array<{ id: string }>>`
-            SELECT id, now() AS as_of FROM idea
+          // FOR SHARE holds the endpoints' status until this proposal commits:
+          // a compost in flight (update_idea locks the idea FOR UPDATE) makes
+          // this read wait and see 'composted', and a compost that starts
+          // later waits for this proposal and then withdraws it.
+          const owned = await tx<Array<{ id: string; status: string }>>`
+            SELECT id, status, now() AS as_of FROM idea
              WHERE user_id = ${env.BRAIN_USER_ID}
                AND id IN (${source}, ${targetIdea ?? source})
+             FOR SHARE
           `;
           const need = targetIdea ? 2 : 1;
           if (owned.length < need) throw new HandlerError('not_found', 'idea endpoint not found');
+          // Composted ideas are set aside: composting withdraws their pending
+          // proposals, and the garden review never shows them, so a new one
+          // would wait unseen. Un-compost the idea first (update_idea status).
+          const composted = owned.find((o) => o.status === 'composted');
+          if (composted) {
+            throw new HandlerError('invalid', `idea ${composted.id} is composted; set its status back before linking it`);
+          }
           if (targetArtifact) {
             const art = await tx`SELECT 1 AS found, now() AS as_of FROM public_artifact WHERE id = ${targetArtifact}`;
             if (art.length === 0) throw new HandlerError('not_found', `public_artifact ${targetArtifact}`);
@@ -191,6 +238,9 @@ export async function proposeIdeaLinksHandler(
   return ok({
     counts,
     results,
-    note: 'Proposals are pending until the user decides. Present them as a numbered list and record exactly their verdicts with decide_idea_links.',
+    note:
+      args.origin === 'capture'
+        ? 'Proposals are pending until the user decides. Show them after the capture receipt as a numbered list with their display labels and glosses, and record exactly the verdicts the user gives with decide_idea_links. Ones they ignore stay pending for the weekly garden review.'
+        : 'Proposals are pending until the user decides. Present them as a numbered list and record exactly their verdicts with decide_idea_links.',
   });
 }

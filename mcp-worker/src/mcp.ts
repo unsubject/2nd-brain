@@ -33,13 +33,13 @@ const MAX_BATCH = 20;
 
 // Kept under ~2,000 characters: some clients (Claude Code) truncate server
 // instructions at 2,048. Tool descriptions repeat the rules that matter.
-export const INSTRUCTIONS = `You are connected to the user's personal 2nd-brain: their journal (AI-chat sessions; older entries came from a retired Telegram bot), their goal system, and their Idea Parking Lot.
+export const INSTRUCTIONS = `You are connected to the user's personal 2nd-brain: their journal (AI-chat sessions; older entries came from a retired Telegram bot), their goal system, and their Idea Garden (Idea Parking Lot).
 
 Journal: use search_brain when the user brainstorms a topic they may have thought about before, or asks "have I thought about X?"; get_entry to follow a hit; list_recent for "what have I been thinking about lately". Use save_session ONLY when the user explicitly asks ("save this", "log this"): propose a title, confirm it, and write a narrative summary, not a transcript. Similarity below ~0.3 is noise; above ~0.5 is worth attention. The journal is private: treat it with discretion.
 
 Goals and constitution: amendments are NEVER autonomous. Before any propose_*/commit_*_amendment call, read read_protocol('goal-amendment') (same text as resource second-brain://protocol/goal-amendment).
 
-Idea Parking Lot: ideas are curated raw material, not tasks. Use park_idea ONLY when the user asks to park or file an idea: confirm the title, copy their own thoughts verbatim, and reply with the receipt only, never suggesting links at capture. "Save this session" still means save_session. Associations are made only in gardening sessions the user starts (garden_ideas, propose_idea_links, the user decides, decide_idea_links with exactly their verdicts). Idea tools are pull-only: never surface ideas unprompted. For a map, call export_idea_map and render it with your own tools. Before capturing, gardening, mapping or importing, read read_protocol('idea-parking-lot') (same text as resource second-brain://protocol/idea-parking-lot).
+Idea Garden: ideas are raw material, not tasks. Use park_idea ONLY when the user asks to park or file an idea: confirm the title, copy their thoughts verbatim. Reply with the receipt first; then, only if park_idea's link_candidates genuinely connect, save up to 3 proposals with propose_idea_links (origin 'capture') and show them after the receipt. Nothing is linked without the user's yes (decide_idea_links with exactly their verdicts); ignored proposals wait for the weekly garden review. "Save this session" means save_session. "What do I have on X?" or episode planning: explore_topic. Map: export_idea_map(format:'html'), handed over as a file. Pull-only: never surface ideas unprompted. The user starts the weekly review (a reminder they set in Muse may prompt them; 2nd-brain never reminds). Before capturing, gardening or reviewing, mapping or importing, read read_protocol('idea-parking-lot') (same text as resource second-brain://protocol/idea-parking-lot).
 
 If a tool returns an error, report it and ask the user; don't retry silently.`;
 

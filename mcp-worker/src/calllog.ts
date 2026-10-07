@@ -17,7 +17,9 @@ export type CallEntry = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Top-level `*_id` uuids plus `results[*].*_id` from a tool's JSON result.
+// Top-level `*_id` uuids plus `results[*].*_id` from a tool's JSON result,
+// and the uuids in `*_ids` arrays at the top level or one object down
+// (decide_idea_links' reviewed.idea_ids).
 export function extractResultIds(resultText: string | undefined): string[] {
   if (!resultText) return [];
   let obj: unknown;
@@ -33,9 +35,18 @@ export function extractResultIds(resultText: string | undefined): string[] {
       if (k.endsWith('_id') && typeof v === 'string' && UUID.test(v)) out.push(v.toLowerCase());
     }
   };
+  const takeArrays = (o: unknown) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (!k.endsWith('_ids') || !Array.isArray(v)) continue;
+      for (const x of v) if (typeof x === 'string' && UUID.test(x)) out.push(x.toLowerCase());
+    }
+  };
   take(obj);
   const results = (obj as { results?: unknown })?.results;
   if (Array.isArray(results)) results.forEach(take);
+  takeArrays(obj);
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) Object.values(obj).forEach(takeArrays);
   return [...new Set(out)].slice(0, 50);
 }
 

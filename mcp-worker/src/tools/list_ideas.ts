@@ -8,6 +8,8 @@ import {
   errorResult,
   ideaKindSchema,
   ideaStatusSchema,
+  inboxCondition,
+  isInInbox,
   isoDateTimeSchema,
   ok,
   parseJsonb,
@@ -25,6 +27,8 @@ const inputSchema = z
     until: isoDateTimeSchema.optional(),
     unlinked: z.boolean().optional(),
     has_output: z.boolean().optional(),
+    inbox: z.boolean().optional(),
+    promoted: z.boolean().optional(),
     territory: z.enum(['frontier', 'adjacent', 'territory']).optional(),
     sort: z.enum(['captured_at', 'updated_at']).optional(),
     limit: z.number().int().min(1).max(200).optional(),
@@ -66,6 +70,9 @@ export async function listIdeasHandler(
         has_output: boolean;
         revisits_output: boolean;
         embedded: boolean;
+        reviewed_at: Date | null;
+        promoted_at: Date | null;
+        promoted_title: string | null;
         total: string | number;
         as_of: Date;
       }>
@@ -75,6 +82,7 @@ export async function listIdeasHandler(
                to_jsonb(i.tags) AS tags,
                left(COALESCE(i.framing, i.why_interesting, i.thoughts, i.source_excerpt), 600) AS snippet_src,
                (i.embedding IS NOT NULL) AS embedded,
+               i.reviewed_at, i.promoted_at, i.promoted_title,
                (SELECT count(*) FROM idea_link l
                  WHERE l.user_id = i.user_id AND l.status = 'accepted'
                    AND (l.source_idea_id = i.id OR l.target_idea_id = i.id)) AS link_count,
@@ -99,6 +107,8 @@ export async function listIdeasHandler(
            }
            AND ${args.since ? sql`i.captured_at >= ${args.since}::timestamptz` : sql`TRUE`}
            AND ${args.until ? sql`i.captured_at <= ${args.until}::timestamptz` : sql`TRUE`}
+           AND ${args.inbox === undefined ? sql`TRUE` : args.inbox ? inboxCondition(sql) : sql`NOT ${inboxCondition(sql)}`}
+           AND ${args.promoted === undefined ? sql`TRUE` : sql`(i.promoted_at IS NOT NULL) = ${args.promoted}`}
       )
       SELECT b.*, count(*) OVER () AS total, now() AS as_of
         FROM base b
@@ -136,6 +146,8 @@ export async function listIdeasHandler(
         has_output: r.has_output,
         territory: r.has_output ? 'territory' : r.revisits_output ? 'adjacent' : 'frontier',
         embedded: r.embedded,
+        inbox: isInInbox(r),
+        promoted: r.promoted_at ? { at: toIso(r.promoted_at), title: r.promoted_title } : null,
       })),
     });
   } catch (e) {

@@ -27,7 +27,7 @@ There are two ways a client gets a credential:
   - The token (`brain_pat_…`) is shown **once**, together with ready-to-paste snippets.
   - Only a hash of it is stored.
 
-The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 35 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
+The server speaks both the 2025 protocol versions and MCP 2026-07-28: newer clients skip `initialize` and call `server/discover` instead, and `/tokens` then shows their protocol as `2026-07-28`. Every client sees the same 36 tools. Clients that can't read MCP resources should call the `read_protocol` tool before they capture, garden, map or import ideas, or change goals.
 
 ## Claude (claude.ai web, Desktop, mobile)
 
@@ -59,7 +59,7 @@ Custom MCP connectors need a paid plan with **developer mode**. Business, Enterp
 3. Approve on the consent page (label `ChatGPT`).
 4. In a chat, enable the connector from the tools menu.
 
-ChatGPT asks for confirmation before any tool that isn't marked read-only. That covers every write tool (`park_idea`, `decide_idea_links`, …), which is intended.
+ChatGPT asks for confirmation before any tool that isn't marked read-only. That covers every write tool (`park_idea`, `decide_idea_links`, …), which is intended. A capture that comes with link proposals is two writes (`park_idea`, then `propose_idea_links`), so it asks twice.
 
 ## Cursor
 
@@ -71,7 +71,7 @@ Add this to `~/.cursor/mcp.json` (or to `.cursor/mcp.json` in a project):
 
 Cursor shows **Needs login**. Click it and approve (label `Cursor`). Cursor registers both its app callback and its Cloud Agents callback (`https://www.cursor.com/agents/mcp/oauth/callback`); both are allowed. If OAuth fails, use the PAT snippet from `/tokens`, which adds a `headers` block.
 
-Cursor allows only about 40 tools across all servers. 2nd-brain uses 35, so disable other servers' tools if you hit the limit.
+Cursor allows only about 40 tools across all servers. 2nd-brain uses 36, so disable other servers' tools if you hit the limit.
 
 ## Gemini CLI
 
@@ -167,10 +167,11 @@ BRAIN_TOKEN=brain_pat_… npm run smoke -- --modern      # + the MCP 2026-07-28 
 After connecting any client, ask it to do these steps in order:
 
 1. *"Call read_protocol for idea-parking-lot section §1 and quote its first line."* This checks that it reaches the server and can read the rules.
-2. *"Park an idea titled '[smoke] <client name>' with thoughts 'test'."* Then: *"Set that idea's status to composted."*
-3. Open `/tokens`. The client's row should say **last used just now**. Its **activity** link should list `read_protocol`, `park_idea` and `update_idea`, and the idea's `captured_via.credential` should be the client's label.
+2. *"Park an idea titled '[smoke] <client name>' with thoughts 'test'."* The receipt comes first. The result may also list `link_candidates` (existing ideas close to the new one): the assistant must **not** save link proposals for a smoke idea. If it saves any anyway, don't answer them: the next step withdraws them.
+3. *"Set that idea's status to composted."* Composting withdraws any pending proposals on the idea, so a proposal saved by mistake doesn't stay pending.
+4. Open `/tokens`. The client's row should say **last used just now**. Its **activity** link should list `read_protocol`, `park_idea` and `update_idea` (and no `propose_idea_links`), and the idea's `captured_via.credential` should be the client's label.
 
-Gardening leaves composted ideas out by default, so smoke ideas don't get in the way.
+Composted ideas never wait in the garden inbox, and their pending proposals are withdrawn, so smoke ideas don't show up in the weekly garden review. Gardening also leaves composted ideas out by default.
 
 ## Troubleshooting
 
