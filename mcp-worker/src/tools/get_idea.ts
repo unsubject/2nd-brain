@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { isSymmetric, type LinkType } from '../ideas/linkTypes';
+import { isSymmetric, linkLabel, type LinkType } from '../ideas/linkTypes';
 import {
   dbError,
   errorResult,
@@ -111,6 +111,8 @@ export async function getIdeaHandler(
       return {
         link_id: l.id,
         link_type: l.link_type,
+        // How the type is shown to the user (tension_with -> contradicts).
+        label: linkLabel(l.link_type),
         status: l.status,
         direction,
         rationale: l.rationale,

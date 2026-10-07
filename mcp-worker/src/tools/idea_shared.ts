@@ -129,6 +129,18 @@ export function unwrapJsonb(v: unknown): unknown {
   return cur;
 }
 
+// The inbox (refocus Phase 4): ideas no garden review has handled yet.
+// Composted ideas are set aside, so they never wait in it. Keep this and
+// inboxCondition in step.
+export function isInInbox(r: { reviewed_at: Date | string | null; status: string }): boolean {
+  return r.reviewed_at === null && r.status !== 'composted';
+}
+
+// SQL form of isInInbox for an `idea i` alias.
+export function inboxCondition(q: Q) {
+  return q`(i.reviewed_at IS NULL AND i.status <> 'composted')`;
+}
+
 export function sortNotes(notes: Note[]): Note[] {
   return [...notes].sort((a, b) => a.at.localeCompare(b.at));
 }
@@ -141,6 +153,7 @@ export function ideaColumns(q: Q) {
     i.why_interesting, i.thoughts, i.framing, i.notes,
     to_jsonb(i.tags) AS tags, i.captured_via, i.edit_log,
     (i.embedding IS NOT NULL) AS embedded, i.embed_error,
+    i.reviewed_at, i.promoted_at, i.promoted_title,
     i.status_changed_at, i.created_at, i.updated_at
   `;
 }
@@ -165,6 +178,9 @@ export type IdeaRow = {
   edit_log: unknown;
   embedded: boolean;
   embed_error: string | null;
+  reviewed_at: Date | string | null;
+  promoted_at: Date | string | null;
+  promoted_title: string | null;
   status_changed_at: Date | string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -193,6 +209,12 @@ export function ideaFromRow(r: IdeaRow) {
     // Who changed the idea after capture, oldest first: [{at, credential, tool, fields?}].
     edit_log: parseJsonb<Array<Record<string, unknown>>>(r.edit_log, []),
     embedding_status: r.embedded ? 'embedded' : r.embed_error ? 'error' : 'pending',
+    // In the inbox until a garden review handles it (composted ideas are
+    // never waiting); reviewed_at says when that happened.
+    inbox: isInInbox(r),
+    reviewed_at: toIsoOrNull(r.reviewed_at),
+    // Recorded promotion to the Google Tasks "Subjects" list, or null.
+    promoted: r.promoted_at ? { at: toIso(r.promoted_at), title: r.promoted_title } : null,
     status_changed_at: toIso(r.status_changed_at),
     created_at: toIso(r.created_at),
     updated_at: toIso(r.updated_at),

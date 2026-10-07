@@ -11,13 +11,22 @@ describe('Hyperdrive cache-busting convention', () => {
   // never serves it from cache (read-after-write loops in gardening/import).
   const dir = fileURLToPath(new URL('../src/tools/', import.meta.url).href);
   const ideaTools = readdirSync(dir).filter((f) =>
-    /^(park_idea|update_idea|get_idea|list_ideas|search_ideas|garden_ideas|propose_idea_links|list_idea_links|decide_idea_links|create_synthesis|export_idea_map|import_ideas|list_subjects_for_import)\.ts$/.test(
+    /^(park_idea|update_idea|get_idea|list_ideas|search_ideas|garden_ideas|propose_idea_links|list_idea_links|decide_idea_links|create_synthesis|export_idea_map|explore_topic|import_ideas|list_subjects_for_import)\.ts$/.test(
       f,
     ),
   );
 
-  it('covers all 13 idea tools', () => {
-    expect(ideaTools).toHaveLength(13);
+  it('covers all 14 idea tools', () => {
+    expect(ideaTools).toHaveLength(14);
+  });
+
+  // Shared idea modules may hold SQL too (the hybrid search lives in
+  // src/ideas/search.ts), so every one of them is scanned.
+  const ideasDir = fileURLToPath(new URL('../src/ideas/', import.meta.url).href);
+  const ideaModules = readdirSync(ideasDir).filter((f) => f.endsWith('.ts'));
+
+  it('scans the shared idea modules, including the hybrid search', () => {
+    expect(ideaModules).toEqual(expect.arrayContaining(['search.ts', 'graph.ts', 'explore.ts']));
   });
 
   // Auth reads must never be cached either: a revoked token has to stop
@@ -36,6 +45,7 @@ describe('Hyperdrive cache-busting convention', () => {
   });
   const scanned = [
     ...ideaTools.map((f) => ({ path: `${dir}/${f}`, name: f, mustQuery: true })),
+    ...ideaModules.map((f) => ({ path: `${ideasDir}/${f}`, name: `ideas/${f}`, mustQuery: f === 'search.ts' })),
     ...authFiles.map((f) => ({ path: `${srcDir}/${f}`, name: f, mustQuery: false })),
   ];
 

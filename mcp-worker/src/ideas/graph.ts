@@ -1,7 +1,7 @@
 // Pure graph assembly + serialisation for export_idea_map. The tool
 // handler does the SQL; everything here is deterministic and unit-tested.
 
-import { LINK_TYPE_INFO, legend, type LinkType } from './linkTypes';
+import { LINK_TYPE_INFO, legend, linkLabel, type LinkType } from './linkTypes';
 import { truncateChars } from './text';
 
 export type MapIdea = {
@@ -12,6 +12,11 @@ export type MapIdea = {
   status: string;
   captured_at: string;
   tags: string[];
+  // Row insert time (captured_at can be backdated); defaults to null.
+  created_at?: string;
+  // In the inbox (see isInInbox in tools/idea_shared.ts); defaults to false.
+  inbox?: boolean;
+  promoted_at?: string | null;
 };
 
 export type MapArtifact = {
@@ -30,6 +35,8 @@ export type MapLink = {
   link_type: LinkType;
   status: 'accepted' | 'proposed';
   rationale: string;
+  proposed_at?: string;
+  decided_at?: string | null;
 };
 
 export type Territory = 'territory' | 'adjacent' | 'frontier';
@@ -49,9 +56,17 @@ export type MapNode = {
   // 1 = largest). Output nodes take the component of an idea they link to.
   component: number;
   component_size: number;
+  // Community inside a component (Louvain over the same accepted
+  // idea↔idea links; ranked by size, 1 = largest). Outputs take the
+  // cluster of an idea they link to.
+  cluster: number;
+  cluster_size: number;
   territory: Territory | null;
   url: string | null;
   published_at: string | null;
+  created_at: string | null;
+  inbox: boolean;
+  promoted_at: string | null;
 };
 
 export type MapEdge = {
@@ -59,10 +74,16 @@ export type MapEdge = {
   source: string;
   target: string;
   type: LinkType;
+  // Display label (refocus D4), read source -> target.
+  label: string;
   directed: boolean;
   status: 'accepted' | 'proposed';
   rationale: string;
+  proposed_at: string | null;
+  decided_at: string | null;
 };
+
+export type MapCluster = { id: number; name: string; size: number };
 
 export type IdeaMap = {
   format: 'idea-map/v1';
@@ -73,6 +94,9 @@ export type IdeaMap = {
   omitted_count: number;
   nodes: MapNode[];
   edges: MapEdge[];
+  // Clusters of 2+ ideas, named after their highest-degree member.
+  // Singletons keep a cluster id but get no entry here.
+  clusters: MapCluster[];
   legend: {
     link_types: ReturnType<typeof legend>;
     statuses: string[];
@@ -99,6 +123,83 @@ const TERRITORY_LEGEND: Record<Territory, string> = {
 
 function targetOf(l: MapLink): string {
   return (l.target_idea_id ?? l.target_artifact_id) as string;
+}
+
+// Louvain modularity communities on nodes 0..n-1. Deterministic: nodes are
+// visited in index order and a node moves only for a strictly better gain
+// (a tie keeps it where it is; among equal better gains the lower community
+// index wins). Communities never span two connected components: a node
+// only ever joins a neighbouring community.
+export function louvain(n: number, edges: Array<[number, number, number]>): number[] {
+  const EPS = 1e-12;
+  let membership = Array.from({ length: n }, (_, i) => i);
+  let size = n;
+  let adj: Array<Map<number, number>> = Array.from({ length: n }, () => new Map());
+  let self: number[] = new Array(n).fill(0);
+  for (const [a, b, w] of edges) {
+    if (a === b) self[a] += w;
+    else {
+      adj[a].set(b, (adj[a].get(b) ?? 0) + w);
+      adj[b].set(a, (adj[b].get(a) ?? 0) + w);
+    }
+  }
+  for (let level = 0; level < 32; level++) {
+    const k = adj.map((m, i) => 2 * self[i] + [...m.values()].reduce((x, y) => x + y, 0));
+    const m2 = k.reduce((x, y) => x + y, 0);
+    if (m2 === 0) break;
+    const comm = Array.from({ length: size }, (_, i) => i);
+    const tot = [...k];
+    let moved = false;
+    for (let pass = 0, improved = true; improved && pass < 100; pass++) {
+      improved = false;
+      for (let i = 0; i < size; i++) {
+        const ci = comm[i];
+        const toComm = new Map<number, number>();
+        for (const [j, w] of adj[i]) toComm.set(comm[j], (toComm.get(comm[j]) ?? 0) + w);
+        tot[ci] -= k[i];
+        let best = ci;
+        let bestGain = (toComm.get(ci) ?? 0) - (tot[ci] * k[i]) / m2;
+        for (const c of [...toComm.keys()].sort((a, b) => a - b)) {
+          const gain = toComm.get(c)! - (tot[c] * k[i]) / m2;
+          if (gain > bestGain + EPS) {
+            best = c;
+            bestGain = gain;
+          }
+        }
+        tot[best] += k[i];
+        if (best !== ci) {
+          comm[i] = best;
+          improved = true;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+    // Renumber communities by first appearance, then aggregate.
+    const renum = new Map<number, number>();
+    for (const c of comm) if (!renum.has(c)) renum.set(c, renum.size);
+    membership = membership.map((c) => renum.get(comm[c])!);
+    const nextSize = renum.size;
+    const nextAdj: Array<Map<number, number>> = Array.from({ length: nextSize }, () => new Map());
+    const nextSelf: number[] = new Array(nextSize).fill(0);
+    for (let i = 0; i < size; i++) {
+      const ci = renum.get(comm[i])!;
+      nextSelf[ci] += self[i];
+      for (const [j, w] of adj[i]) {
+        if (j < i) continue;
+        const cj = renum.get(comm[j])!;
+        if (ci === cj) nextSelf[ci] += w;
+        else {
+          nextAdj[ci].set(cj, (nextAdj[ci].get(cj) ?? 0) + w);
+          nextAdj[cj].set(ci, (nextAdj[cj].get(ci) ?? 0) + w);
+        }
+      }
+    }
+    size = nextSize;
+    adj = nextAdj;
+    self = nextSelf;
+  }
+  return membership;
 }
 
 // Build the map from ideas (already status/since-filtered), the links
@@ -163,6 +264,7 @@ export function buildIdeaMap(
 
   // Ordered list of node ids to keep (before max_nodes truncation).
   let ordered: string[];
+  let connectedIdeas = 0;
   if (opts.focus_idea_id && ideaById.has(opts.focus_idea_id)) {
     ordered = [];
     const seen = new Set<string>([opts.focus_idea_id]);
@@ -188,8 +290,10 @@ export function buildIdeaMap(
       frontier = next;
     }
   } else {
-    const ideaIds = ideas
-      .filter((i) => opts.include_isolated || (adj.get(i.id)?.length ?? 0) > 0)
+    // Linked ideas by degree then recency, then isolated ones.
+    const isLinked = (id: string) => (adj.get(id)?.length ?? 0) > 0;
+    const sorted = ideas
+      .filter((i) => opts.include_isolated || isLinked(i.id))
       .sort(
         (a, b) =>
           (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0) ||
@@ -197,25 +301,32 @@ export function buildIdeaMap(
           a.id.localeCompare(b.id),
       )
       .map((i) => i.id);
+    const ideaIds = [...sorted.filter(isLinked), ...sorted.filter((id) => !isLinked(id))];
+    connectedIdeas = ideaIds.filter(isLinked).length;
     const artifactIds = [...candidateArtifacts].sort(
       (a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0) || a.localeCompare(b),
     );
     ordered = [...ideaIds, ...artifactIds];
   }
 
-  // Truncate. Without a focus, keep ideas first, then only artifacts that
-  // still connect to a kept idea.
+  // Truncate. Without a focus: connected ideas first, then the outputs
+  // linked to them, then isolated ideas, so a loose idea never pushes out
+  // a published output. Outputs keep up to a tenth of the map even when
+  // connected ideas alone would fill it. Only outputs that connect to a
+  // kept idea are kept.
   let kept = ordered.slice(0, opts.max_nodes);
   let keptSet = new Set(kept);
   if (!opts.focus_idea_id) {
-    const keptIdeas = kept.filter((id) => ideaById.has(id));
-    const keptIdeaSet = new Set(keptIdeas);
-    const room = opts.max_nodes - keptIdeas.length;
-    const linkedArtifacts = ordered
-      .filter((id) => artifactById.has(id))
-      .filter((id) => (adj.get(id) ?? []).some((n) => keptIdeaSet.has(n)))
-      .slice(0, Math.max(0, room));
-    kept = [...keptIdeas, ...linkedArtifacts];
+    const ideaIds = ordered.filter((id) => ideaById.has(id));
+    const artifactIds = ordered.filter((id) => artifactById.has(id));
+    const reserve = Math.min(artifactIds.length, Math.floor(opts.max_nodes / 10));
+    const first = ideaIds.slice(0, Math.min(connectedIdeas, opts.max_nodes - reserve));
+    const firstSet = new Set(first);
+    const linkedArtifacts = artifactIds
+      .filter((id) => (adj.get(id) ?? []).some((n) => firstSet.has(n)))
+      .slice(0, opts.max_nodes - first.length);
+    const rest = ideaIds.slice(first.length, opts.max_nodes - linkedArtifacts.length);
+    kept = [...first, ...rest, ...linkedArtifacts];
     keptSet = new Set(kept);
   }
   const omitted = ordered.length - kept.length;
@@ -227,9 +338,12 @@ export function buildIdeaMap(
       source: l.source_idea_id,
       target: targetOf(l),
       type: l.link_type,
+      label: linkLabel(l.link_type),
       directed: LINK_TYPE_INFO[l.link_type].directed,
       status: l.status,
       rationale: l.rationale,
+      proposed_at: l.proposed_at ?? null,
+      decided_at: l.decided_at ?? null,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 
@@ -276,8 +390,47 @@ export function buildIdeaMap(
     componentOf.set(id, linked[0] ?? { id: 0, size: 0 });
   }
 
+  // Clusters: Louvain over the same accepted idea↔idea edges, on ideas in
+  // sorted id order so the result never depends on input order.
+  const sortedIdeas = [...keptIdeas].sort();
+  const index = new Map(sortedIdeas.map((id, i) => [id, i]));
+  const weighted = new Map<string, [number, number, number]>();
+  for (const e of edges) {
+    if (e.status !== 'accepted' || !index.has(e.source) || !index.has(e.target)) continue;
+    const a = Math.min(index.get(e.source)!, index.get(e.target)!);
+    const b = Math.max(index.get(e.source)!, index.get(e.target)!);
+    const key = `${a}:${b}`;
+    const prev = weighted.get(key);
+    if (prev) prev[2] += 1;
+    else weighted.set(key, [a, b, 1]);
+  }
+  const membership = louvain(sortedIdeas.length, [...weighted.values()]);
+  const communities = new Map<number, string[]>();
+  sortedIdeas.forEach((id, i) => {
+    if (!communities.has(membership[i])) communities.set(membership[i], []);
+    communities.get(membership[i])!.push(id);
+  });
+  const rankedClusters = [...communities.values()].sort((a, b) => b.length - a.length || a[0].localeCompare(b[0]));
+  const clusterOf = new Map<string, { id: number; size: number }>();
+  const clusters: MapCluster[] = [];
+  rankedClusters.forEach((members, i) => {
+    for (const m of members) clusterOf.set(m, { id: i + 1, size: members.length });
+    if (members.length < 2) return;
+    const top = [...members].sort((a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0) || a.localeCompare(b))[0];
+    clusters.push({ id: i + 1, name: ideaById.get(top)!.title, size: members.length });
+  });
+  for (const id of kept) {
+    if (ideaById.has(id)) continue;
+    const linked = edges
+      .filter((e) => e.target === id && clusterOf.has(e.source))
+      .map((e) => clusterOf.get(e.source)!)
+      .sort((a, b) => a.id - b.id);
+    clusterOf.set(id, linked[0] ?? { id: 0, size: 0 });
+  }
+
   const nodes: MapNode[] = kept.map((id) => {
     const comp = componentOf.get(id)!;
+    const cl = clusterOf.get(id)!;
     const idea = ideaById.get(id);
     if (idea) {
       return {
@@ -293,9 +446,14 @@ export function buildIdeaMap(
         pending_degree: pendingDegree.get(id) ?? 0,
         component: comp.id,
         component_size: comp.size,
+        cluster: cl.id,
+        cluster_size: cl.size,
         territory: territory.get(id) ?? 'frontier',
         url: null,
         published_at: null,
+        created_at: idea.created_at ?? null,
+        inbox: idea.inbox ?? false,
+        promoted_at: idea.promoted_at ?? null,
       };
     }
     const a = artifactById.get(id)!;
@@ -312,12 +470,16 @@ export function buildIdeaMap(
       pending_degree: pendingDegree.get(id) ?? 0,
       component: comp.id,
       component_size: comp.size,
+      cluster: cl.id,
+      cluster_size: cl.size,
       territory: null,
       url: a.url,
       published_at: a.published_at,
+      created_at: null,
+      inbox: false,
+      promoted_at: null,
     };
   });
-
 
   return {
     format: 'idea-map/v1',
@@ -334,6 +496,7 @@ export function buildIdeaMap(
     omitted_count: omitted,
     nodes,
     edges,
+    clusters,
     legend: {
       link_types: legend(),
       statuses: ['parked', 'exploring', 'used', 'composted'],
@@ -371,6 +534,11 @@ const NODE_KEYS: Array<[keyof MapNode, string]> = [
   ['territory', 'string'],
   ['url', 'string'],
   ['published_at', 'string'],
+  ['cluster', 'int'],
+  ['cluster_size', 'int'],
+  ['created_at', 'string'],
+  ['inbox', 'boolean'],
+  ['promoted_at', 'string'],
 ];
 
 const EDGE_KEYS: Array<[keyof MapEdge, string]> = [
@@ -378,6 +546,9 @@ const EDGE_KEYS: Array<[keyof MapEdge, string]> = [
   ['status', 'string'],
   ['rationale', 'string'],
   ['directed', 'boolean'],
+  ['label', 'string'],
+  ['proposed_at', 'string'],
+  ['decided_at', 'string'],
 ];
 
 export function toGraphML(map: IdeaMap): string {
@@ -408,7 +579,9 @@ export function toGraphML(map: IdeaMap): string {
   for (const e of map.edges) {
     lines.push(`    <edge id="${xmlEscape(e.id)}" source="${xmlEscape(e.source)}" target="${xmlEscape(e.target)}">`);
     for (const [k] of EDGE_KEYS) {
-      lines.push(`      <data key="e_${k}">${xmlEscape(String(e[k]))}</data>`);
+      const v = e[k];
+      if (v === null || v === undefined) continue;
+      lines.push(`      <data key="e_${k}">${xmlEscape(String(v))}</data>`);
     }
     lines.push('    </edge>');
   }

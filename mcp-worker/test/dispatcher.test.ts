@@ -21,6 +21,7 @@ const IDEA_TOOLS = [
   'garden_ideas',
   'list_idea_links',
   'export_idea_map',
+  'explore_topic',
 ];
 
 // Minimal Env stub. The dispatcher cases below never touch Hyperdrive
@@ -93,6 +94,23 @@ describe('mcp dispatcher', () => {
   it('initialize instructions mention the idea protocol resource', async () => {
     const r = await rpc('initialize');
     expect(r.result.instructions).toContain('second-brain://protocol/idea-parking-lot');
+  });
+
+  it('initialize instructions describe the Idea Garden v2 flow, not one-way capture', async () => {
+    const r = await rpc('initialize');
+    const text = r.result.instructions as string;
+    // Capture is no longer one-way (refocus D3, D12): receipt first, then proposals.
+    expect(text).not.toContain('never suggesting links at capture');
+    expect(text).not.toContain('receipt only');
+    expect(text).toContain('receipt first');
+    expect(text).toContain("propose_idea_links (origin 'capture')");
+    expect(text).toContain('weekly garden review');
+    // Free gardening ("let's garden") is not a review: it needs the protocol too.
+    expect(text).toContain('Before capturing, gardening or reviewing, mapping or importing');
+    // "What do I have on X?" goes to the cluster query; the map is the HTML file.
+    expect(text).toContain('explore_topic');
+    expect(text).toContain("export_idea_map(format:'html')");
+    expect(text).toContain('search_brain');
   });
 
   it('resources/list returns the protocol resources', async () => {

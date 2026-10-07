@@ -3,8 +3,10 @@
 // handleMcpRequest so the JSON-RPC layer is exercised end to end.
 
 import postgres from 'postgres';
+import { vi } from 'vitest';
 import { handleMcpRequest } from '../../src/mcp';
 import type { Env } from '../../src/env';
+import { hashToken, newToken } from '../../src/auth/tokens';
 
 export const TEST_DB = process.env.TEST_DATABASE_URL;
 export const USER = 'test-user';
@@ -178,6 +180,34 @@ export async function setEmbedding(ideaId: string, v: number[]): Promise<void> {
                     embedding_model = 'test', embedded_at = now()
      WHERE id = ${ideaId}
   `;
+}
+
+// Stub the OpenAI embeddings endpoint for one test: every call returns
+// `vector` (a 500 for 'fail'), after running `before` if given. Returns
+// the spy, so a test can count calls and read the request bodies. Pair it
+// with afterEach(() => vi.unstubAllGlobals()), which puts back the
+// fail-fast fetch from test/setup/no-network.ts, never the real one.
+export function stubEmbeddings(vector: number[] | 'fail', before?: () => Promise<unknown>) {
+  const spy = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (!url.includes('api.openai.com')) throw new Error(`unexpected fetch ${url}`);
+    if (before) await before();
+    if (vector === 'fail') return new Response('boom', { status: 500 });
+    return Response.json({ data: [{ embedding: vector }] });
+  });
+  vi.stubGlobal('fetch', spy);
+  return spy;
+}
+
+// A personal access token whose label is stamped on the writes made with it.
+export async function seedPat(label: string, scope = 'all'): Promise<{ token: string; id: string }> {
+  const token = newToken('pat');
+  const [cred] = await admin<Array<{ id: string }>>`
+    INSERT INTO mcp_credential (user_id, label, kind, scope, token_hint)
+    VALUES (${USER}, ${label}, 'pat', ${scope}, ${token.slice(-4)}) RETURNING id
+  `;
+  await admin`INSERT INTO mcp_token (token_hash, credential_id, kind) VALUES (${await hashToken(token)}, ${cred.id}, 'pat')`;
+  return { token, id: cred.id };
 }
 
 export async function seedIdea(title: string, extra: Record<string, unknown> = {}): Promise<string> {
