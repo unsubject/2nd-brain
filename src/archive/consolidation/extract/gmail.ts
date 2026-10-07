@@ -74,6 +74,20 @@ export function detectColumn(...texts: (string | null | undefined)[]): { name: s
   return null;
 }
 
+// Apple Daily Forum submissions often had no column name in the subject.
+const COLUMN_ADDRESSES: Record<string, string> = {
+  "forum@appledaily.com": "蘋果論壇",
+  "onlineforum@appledaily.com": "蘋果論壇",
+};
+
+export function columnFromRecipients(recipients: string[]): { name: string; outlet?: string } | null {
+  for (const r of recipients) {
+    const name = COLUMN_ADDRESSES[emailAddress(r)];
+    if (name) return COLUMNS.find((c) => c.name === name) ?? null;
+  }
+  return null;
+}
+
 export function detectOutlet(recipients: string[], column: { outlet?: string } | null): string | null {
   if (column?.outlet) return column.outlet;
   const domains = recipients.map((r) => emailAddress(r).split("@")[1] ?? "");
@@ -95,11 +109,14 @@ export function cleanSubject(subject: string | null): string {
   return s.replace(/[（(]\s*留稿[^）)]*[）)]/g, "").trim();
 }
 
-// The piece's own title: no column marker, date, "投稿" or "- Simon Lee".
+// The piece's own title: no column marker, author name, date, "投稿" or
+// "- Simon Lee".
 export function bareTitle(s: string | null): string {
   let t = (s ?? "").trim().replace(/^[*_]+|[*_]+$/g, "");
   t = t.replace(/【[^】]*】/g, " ").trim();
   t = t.replace(COLUMN_PREFIX, "").trim();
+  // "李兆富：福利與權利": the author's name, not part of the title.
+  t = t.replace(/^(李兆富|利世民)\s*[:：]/, "").trim();
   t = t.replace(/^[（(]?\s*\d{4}[\s\-./]?\d{1,2}[\s\-./]?\d{1,2}\s*[）)]?/, "").trim();
   t = t.replace(/^[:：\-–—|·．]+/, "").trim();
   t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(/^投稿\s*[:：\-–—]?\s*/, "");
@@ -156,6 +173,8 @@ const QUOTE_HEADERS: RegExp[] = [
   /^On\b.{3,250}\bwrote:\s*$/i,
   /^.{0,160}[於在]\s*\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日.{0,60}寫道\s*[:：]\s*$/,
   /^\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}\s*GMT[+-]\d{1,2}:\d{2}\s+.{1,160}:\s*$/,
+  // Older Gmail: "2013/12/26 Liu Jing <echoliu@appledaily.com>".
+  /^\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+.{1,160}<[^<>\s]+@[^<>\s]+>\s*:?\s*$/,
   /^-{2,}\s*(original message|forwarded message|原始郵件|原始邮件|轉寄郵件|轉寄的郵件)\s*-{2,}\s*$/i,
   /^_{8,}\s*$/,
 ];
@@ -166,7 +185,8 @@ const OUTLOOK_NEXT = /^(sent|date|to|subject|傳送時間|寄件日期|收件者
 export function cutQuoted(text: string): { text: string; cut: boolean } {
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    // iPhone replies put the header itself inside the quote ("> On …").
+    const line = lines[i].trim().replace(/^(>\s*)+/, "");
     const joined = i + 1 < lines.length ? `${line} ${lines[i + 1].trim()}` : line;
     const isHeader =
       QUOTE_HEADERS.some((re) => re.test(line)) ||
@@ -185,7 +205,9 @@ export function cutQuoted(text: string): { text: string; cut: boolean } {
 
 const DEVICE_SIGNATURE =
   /^(sent from my (iphone|ipad|blackberry|mobile|android).*|從我的\s*(iphone|ipad)\s*傳送|從我的 iPhone 傳送|get outlook for .+|發自我的\s*iphone)$/i;
-const SIGN_OFF_NAME = /^(利世民|simon|simon lee|simon lee\s*\|\s*利世民|simon\s*\(利世民\))$/i;
+// 李兆富 is the name he signed with until about 2014.
+const SIGN_OFF_NAME =
+  /^(利世民|李兆富|simon|simon lee|simon lee\s*[|｜]\s*(利世民|李兆富)|simon\s*[（(](利世民|李兆富)[）)]|(利世民|李兆富)\s*simon( lee)?)$/i;
 const CLOSING = /^(regards|best|best regards|thanks|thank you|cheers|謝謝|多謝|thx)[,，!！.]?$/i;
 
 export function stripSignature(text: string): string {
@@ -214,8 +236,10 @@ export function stripSignature(text: string): string {
   return lines.join("\n");
 }
 
+// Words of a note to the editor, not of an essay's opening ("稿費",
+// "Delhi" and "thanks to" must not match).
 const NOTE_HINT =
-  /(dear|hi\b|hello|thanks|thank you|attached|edited|version|piece|老總|編輯|版本|修正|修改|請用|附上|稿|麻煩|不好意思|sorry|唔該|請查收)/i;
+  /(^(dear|hi|hello|hey)\b|\b(attached|edited|revised|updated version|please use|please find)\b|老總|編輯|版本|修正|修改|請用|附上|來稿|投稿|麻煩|不好意思|唔該|請查收)/i;
 
 function isTitleLine(p: string, subjectTitle: string): boolean {
   if (p.includes("\n") || textLength(p) > 60) return false;
@@ -357,7 +381,7 @@ export function extractGmail(item: StagedItem): Candidate {
   }
 
   const fromText = !!item.rawText && textLength(item.rawText) > 0;
-  let body = normalizeText(fromText ? item.rawText! : item.rawHtml ? htmlToText(item.rawHtml) : "");
+  let body = normalizeText(fromText ? stripLinkTargets(item.rawText!) : item.rawHtml ? htmlToText(item.rawHtml) : "");
   const quoted = cutQuoted(body);
   body = stripSignature(quoted.text);
   if (fromText) body = unwrapSoftBreaks(body);
@@ -366,7 +390,7 @@ export function extractGmail(item: StagedItem): Candidate {
 
   const reasons = [...pre.reasons];
   if (quoted.cut) reasons.push("quote-removed");
-  const column = detectColumn(pre.title, cleanSubj);
+  const column = detectColumn(pre.title, cleanSubj) ?? columnFromRecipients(recipients);
   const title = pre.title ?? (bareTitle(cleanSubj) || null);
   const fromSubject = subjectDate(subject, item.authoredAt);
   const base = {
@@ -389,9 +413,23 @@ export function extractGmail(item: StagedItem): Candidate {
     return candidate({ ...base, kind: "self_draft", status: "review", isPublished: false, reasons: [...reasons, "sent-only-to-own-addresses"] });
   }
   // A piece for an outlet or column not listed above (an occasional
-  // contribution) is still a submission, just with no column.
-  const uncertain = reasons.some((r) => r === "possible-note-removed" || r === "long-text-before-title");
+  // contribution) is still a submission, just with no column. A long reply
+  // to someone at no known outlet is more likely a conversation with a
+  // reader or friend than a piece: review.
+  if (base.outlet === null) {
+    reasons.push(REPLY_SUBJECT.test(subject ?? "") ? "reply-outside-outlets" : "outlet-unknown");
+  }
+  const uncertain = reasons.some(
+    (r) => r === "possible-note-removed" || r === "long-text-before-title" || r === "reply-outside-outlets"
+  );
   return candidate({ ...base, kind: "submission", status: uncertain ? "review" : "keep", isPublished: true, reasons });
+}
+
+const REPLY_SUBJECT = /^\s*(re|回覆|答覆)\s*[:：]/i;
+
+// Gmail's plain-text part writes a link as "text <https://…>".
+function stripLinkTargets(text: string): string {
+  return text.replace(/[ \t]*<(?:https?:\/\/|mailto:)[^<>\s]+>/g, "");
 }
 
 function extractAttachment(item: StagedItem, mine: boolean, subject: string | null): Candidate {
@@ -426,6 +464,11 @@ function extractNewsletter(item: StagedItem, platform: Platform, subject: string
       publishedAt: item.authoredAt,
       dateSource: "email",
     });
+  }
+  // Patreon mails every creator's posts from the same address; his own say
+  // "利世民 just shared" (or Simon Lee).
+  if (platform === "patreon" && !/(利世民|simon lee)\s+just shared/i.test(subject ?? "")) {
+    return candidate({ kind: "received", status: "drop", reasons: ["other-patreon-creator"], title: cleanSubject(subject) || null });
   }
   const title = platform === "patreon" ? patreonTitle(subject) ?? cleanSubject(subject) : cleanSubject(subject);
   const raw = item.rawHtml ? htmlToText(item.rawHtml) : normalizeText(item.rawText ?? "");

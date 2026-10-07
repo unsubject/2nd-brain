@@ -113,6 +113,12 @@ Extraction reads only the database (no Google calls) and takes a minute or
 two. Every run rewrites every candidate, so a rule change applies to all of
 it on the next run; `archive_source_item` is never changed.
 
+It runs by itself: 90 s after boot (so after every deploy) the app checks
+whether any staged item has no candidate, or one made by an older
+`EXTRACTOR_VERSION` (`extract/types.ts`, bumped with every rule change), and
+if so starts a run (`extract/auto.ts`). The run's counts appear in the logs
+(`[consolidation] extract run … finished: {…}`). To run it by hand:
+
 ```sh
 curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"
 curl "$BASE/archive/consolidation/status" -H "Authorization: Bearer $ARCHIVE_API_KEY"   # candidates: counts by source, kind, status
@@ -137,24 +143,27 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 
 | Source | Kind | Status | Rule |
 |---|---|---|---|
-| gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column. |
+| gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column (`outlet-unknown`); but a `Re:` to no known outlet is more likely a conversation with a reader, so it goes to review (`reply-outside-outlets`). |
 | gmail | `attachment` | keep | His `.docx` attachment; title from the file name. |
 | gmail | `self_draft` | drop / review | Sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
 | gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
 | gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
 | gmail | `received` | drop | From anyone else: editors, readers, acknowledgements. |
-| gmail | `newsletter` | keep | A Revue (newsletter@leesimon.me), unsubject.me or Patreon issue as mailed, platform header and footer removed. |
+| gmail | `newsletter` | keep | A Revue (newsletter@leesimon.me), unsubject.me or Patreon issue as mailed, platform header and footer removed. Patreon mail about another creator's post ("X just shared", X not 利世民 / Simon Lee) is `received`. |
 | gmail | `duplicate` | drop | A later copy of the same issue (same platform, title and day); the earliest is kept. |
 | gmail | `platform_copy` | drop | A Substack email: the Substack export has the post. |
 | wordpress | `post` / `page` | keep / review | Published posts kept; pages and private posts to review; drafts dropped. |
 | substack | `post` | keep | Published posts, any audience (`audience-only_paid` noted); drafts dropped. |
 | gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date. |
 
-Cleaning an email, in order: cut everything from the first quote header
-("On … wrote:", "… 於 2020年6月1日 … 寫道：", "2016-03-01 10:22 GMT+08:00 …:",
-Outlook "From: / Sent:", "Original message") or a trailing block of `>`
-lines; cut the signature (`-- `, "Sent from my iPhone", a sign-off name such
-as 利世民 or Simon in the last lines with at most a short tag after it);
+Cleaning an email, in order: drop Gmail's link targets (`text <https://…>`);
+cut everything from the first quote header ("On … wrote:", also as "> On …"
+in iPhone replies, "… 於 2020年6月1日 … 寫道：", "2016-03-01 10:22 GMT+08:00 …:",
+older Gmail's "2013/12/26 Name <address>", Outlook "From: / Sent:",
+"Original message") or a trailing block of `>` lines; cut the signature
+(`-- `, "Sent from my iPhone", a sign-off name such as 利世民, 李兆富 (his
+signature until about 2014) or Simon in the last lines with at most a short
+tag after it);
 rejoin hard-wrapped lines (no space between Chinese characters); then, when
 a title line (`*title*`, `【利字當頭】title`, `蘋果論壇：title`, or the
 subject's title) appears in the first paragraphs, the text before it is the
@@ -164,6 +173,14 @@ The publication date is the column date in the subject when there is one
 ("留稿：12月30日見報", "利字當頭 2020 06 30", within 45 days of sending),
 else the send date (`date_source`). The outlet follows the column (蘋果論壇 →
 蘋果日報, 壹擋專政 → 壹週刊, 金融一條針 → 爽報), else the recipients' domain.
+A piece mailed to forum@appledaily.com is a 蘋果論壇 piece even when the
+subject doesn't say so. A leading "李兆富：" or "利世民：" in a subject is the
+author's name, not part of the title.
+
+These rules were checked against about 15 real messages from the label
+(2013–2024) on 2026-10-07; that pass added the 李兆富 sign-off, the older
+Gmail and iPhone quote headers, link targets, the forum address, the
+reader-reply review and the Patreon creator check.
 
 ## What is stored
 

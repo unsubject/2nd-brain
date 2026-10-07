@@ -497,3 +497,32 @@ test("an extraction run is tracked like a collection run", { skip }, async () =>
   assert.equal(row?.stats.written, 5);
   assert.equal(row?.stats.duplicates, 1);
 });
+
+test("candidates are stale until extracted, and again when the rules change", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  assert.equal(await auto.candidatesStale(db), false); // nothing staged
+  await stageForExtraction();
+  assert.equal(await auto.candidatesStale(db), true);
+
+  const started: unknown[] = [];
+  const fakeStart = async (req: unknown) => {
+    started.push(req);
+    return "run-1";
+  };
+  assert.equal(await auto.extractIfStale(fakeStart, () => auto.candidatesStale(db)), "run-1");
+  assert.deepEqual(started, [{ source: "extract" }]);
+
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.equal(await auto.candidatesStale(db), false);
+  assert.equal(await auto.extractIfStale(fakeStart, () => auto.candidatesStale(db)), null);
+
+  await db.query("UPDATE archive_candidate SET extractor_version = extractor_version - 1 WHERE id IN (SELECT id FROM archive_candidate LIMIT 1)");
+  assert.equal(await auto.candidatesStale(db), true);
+
+  // A run already going is left alone.
+  const busy = async () => {
+    throw new staging.RunAlreadyActiveError("extract");
+  };
+  assert.equal(await auto.extractIfStale(busy, async () => true), null);
+});
