@@ -41,9 +41,11 @@ Decisions (Simon, 2026-10-04):
    replies and duplicate newsletter copies dropped; HTML converted to text.
    Rule-based, with uncertain items marked `review`. See "Running step 2".
 3. **Match.** Group candidates of the same piece across sources into works
-   (title + date + text similarity). Canonical text, in order: final emailed
-   version → Substack / WordPress as published → Drive doc → old row.
-   Truncated or conflicting versions go to a review list.
+   in `archive_work` / `archive_work_member` (migration
+   `029_archive_works.sql`), by text similarity. Canonical text, in order:
+   final emailed version → Substack / WordPress as published → newsletter →
+   Drive doc (the old `public_artifact` rows come in at step 4). See
+   "Running step 3".
 4. **Load.** Write canonical works to `public_artifact` under new source
    systems and mark the old Notion/email rows superseded (not deleted).
 5. **Keep current.** New Substack posts arrive by email at Simon's own
@@ -181,6 +183,43 @@ These rules were checked against about 15 real messages from the label
 (2013–2024) on 2026-10-07; that pass added the 李兆富 sign-off, the older
 Gmail and iPhone quote headers, link targets, the forum address, the
 reader-reply review and the Patreon creator check.
+
+## Running step 3
+
+Matching runs by itself after every successful extraction (and on boot when
+the works are older than the candidates or than `MATCHER_VERSION` in
+`match/run.ts`). It reads the candidates that extraction kept or sent to
+review, takes a few seconds, and rebuilds every work in one transaction.
+The run's counts appear in the logs (`[consolidation] match run …
+finished: {…}`): `works`, `byStatus`, `bySize` (works with 1, 2, 3–5, 6–10,
+11+ members) and the five `largest` works by title; a very large work would
+mean different pieces were merged.
+
+Same piece: each text becomes the set of its 4-unit shingles (a unit is one
+Chinese character or one Latin word; spacing and punctuation don't count).
+Two candidates are the same piece when at least 60% of the shorter text's
+shingles are in the longer one and the shorter is at least 30% of the
+longer's size, so an edited resend, a repost with a new opening, or a
+Drive draft joins its work, but a paragraph quoted in another essay does
+not. MinHash with banded LSH finds the likely pairs; each is then checked
+exactly, and pairs chain into works.
+
+Each work's canonical text, in order: the latest version emailed to a known
+outlet (Simon's decision: the last version he sent wins, not the editor's
+edit); the Substack post; the WordPress post; the newsletter issue; an email
+to an address at no known outlet; the Drive document; anything else. Its
+date is the first publication (the earliest date among published members),
+its outlet and column those of that first publication, and `outlets` lists
+every outlet a member went to.
+
+A work is `review` when none of its members was published or its canonical
+candidate is itself under review; `versions-differ` notes a member whose
+text is much changed from the canonical (Jaccard below 0.6).
+
+```sh
+curl "$BASE/archive/consolidation/works?status=review&limit=50" -H "Authorization: Bearer $ARCHIVE_API_KEY"
+curl "$BASE/archive/consolidation/works/<id>" -H "Authorization: Bearer $ARCHIVE_API_KEY"   # with its members
+```
 
 ## What is stored
 

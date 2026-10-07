@@ -316,6 +316,11 @@ test("resumeRequest continues a run without refetching, up to MAX_RESUMES times"
     resumeCount: 1,
   });
   assert.equal(resumeRequest({ id: "r", source: "extract", params: { resumeCount: MAX_RESUMES } }), null);
+  assert.deepEqual(resumeRequest({ id: "run-4", source: "match", params: {} }), {
+    source: "match",
+    resumedFrom: "run-4",
+    resumeCount: 1,
+  });
 
   // Resumed too often, or params that don't describe a run: left alone.
   assert.equal(resumeRequest({ id: "r", source: "gmail", params: { label: "Writing", resumeCount: MAX_RESUMES } }), null);

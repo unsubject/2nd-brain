@@ -2,7 +2,8 @@ import { collectDrive, emptyDriveStats, type DriveCollectParams } from "./drive"
 import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
 import { describeGoogleError } from "../../google/errors";
 import { emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
-import { finishRun, heartbeatRun, startRun } from "./staging";
+import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
+import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun } from "./staging";
 
 // Set on runs started by the resume sweeper (resume.ts); stored in params.
 export interface ResumeInfo {
@@ -13,7 +14,8 @@ export interface ResumeInfo {
 export type CollectRequest =
   | ({ source: "gmail" } & GmailCollectParams & ResumeInfo)
   | ({ source: "gdrive" } & DriveCollectParams & ResumeInfo)
-  | ({ source: "extract" } & ResumeInfo);
+  | ({ source: "extract" } & ResumeInfo)
+  | ({ source: "match" } & ResumeInfo);
 
 // Independent of progress, so a long rate-limit pause never looks like a
 // dead process (staging.STALE_RUN_SECONDS is the other side of this).
@@ -23,10 +25,26 @@ const HEARTBEAT_MS = 30_000;
 // archive_collect_run row carries progress and the final outcome. A run
 // where any item failed ends 'failed' (with the per-item errors in stats)
 // so partial loss is never reported as success.
+function startFollowUp(req: CollectRequest): void {
+  startCollection(req)
+    .then((id) => console.log(`[consolidation] ${req.source} run ${id} started after the previous step`))
+    .catch((err) => {
+      if (err instanceof RunAlreadyActiveError) return;
+      console.error(`[consolidation] could not start ${req.source} run:`, describeGoogleError(err));
+    });
+}
+
 export async function startCollection(req: CollectRequest): Promise<string> {
   const { source, ...params } = req;
   const runId = await startRun(source, params);
-  const stats = source === "gmail" ? emptyStats() : source === "gdrive" ? emptyDriveStats() : emptyExtractStats();
+  const stats =
+    source === "gmail"
+      ? emptyStats()
+      : source === "gdrive"
+        ? emptyDriveStats()
+        : source === "extract"
+          ? emptyExtractStats()
+          : emptyMatchStats();
   // Set when the row stops being 'running' under us (taken over as
   // interrupted); the collector then stops at its next item.
   let takenOver = false;
@@ -54,7 +72,9 @@ export async function startCollection(req: CollectRequest): Promise<string> {
             progress,
             shouldStop
           )
-        : runExtraction(stats as ExtractStats, progress, shouldStop);
+        : req.source === "extract"
+          ? runExtraction(stats as ExtractStats, progress, shouldStop)
+          : runMatch(stats as MatchStats, progress, shouldStop);
 
   job
     .then(() => {
@@ -65,7 +85,12 @@ export async function startCollection(req: CollectRequest): Promise<string> {
       }
       const failed = stats.failed > 0;
       console.log(`[consolidation] ${source} run ${runId} finished: ${JSON.stringify({ ...stats, errors: undefined })}`);
-      return finishRun(runId, failed ? "failed" : "succeeded", stats, failed ? `${stats.failed} item(s) failed` : null);
+      return finishRun(runId, failed ? "failed" : "succeeded", stats, failed ? `${stats.failed} item(s) failed` : null).then(
+        () => {
+          // New candidates mean the works are out of date: match next.
+          if (source === "extract" && !failed) startFollowUp({ source: "match" });
+        }
+      );
     })
     .catch((err) => {
       // Google errors carry the token request; log only the safe summary.
