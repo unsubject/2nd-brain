@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseCapturedAt, parseUtcOffset, splitDatedNotes } from '../src/ideas/parse';
 import { escapeLike, normalizeTags, normalizeTitle, searchTerms, snippet, titlesLikelySame } from '../src/ideas/text';
-import { canonicalPair, endpointError, isSymmetric, LINK_TYPES, LINK_TYPE_INFO } from '../src/ideas/linkTypes';
+import { canonicalPair, endpointError, isSymmetric, legend, linkLabel, LINK_TYPES, LINK_TYPE_INFO } from '../src/ideas/linkTypes';
 
 describe('parse: captured_at', () => {
   it('parses Notion export dates at a UTC offset', () => {
@@ -80,10 +80,29 @@ describe('text helpers', () => {
 
 describe('link types', () => {
   it('covers the vocabulary with consistent info', () => {
-    expect(LINK_TYPES).toHaveLength(9);
+    expect(LINK_TYPES).toHaveLength(11);
     for (const t of LINK_TYPES) expect(LINK_TYPE_INFO[t]).toBeDefined();
     expect(isSymmetric('tension_with')).toBe(true);
     expect(isSymmetric('builds_on')).toBe(false);
+  });
+
+  it('adds mechanism_for (directed) and inverts (symmetric) with the brief’s display labels', () => {
+    expect(isSymmetric('mechanism_for')).toBe(false);
+    expect(isSymmetric('inverts')).toBe(true);
+    expect(endpointError('mechanism_for', { target_artifact_id: 'x' })).toMatch(/idea/);
+    const lo = '00000000-0000-0000-0000-00000000000a';
+    const hi = 'f0000000-0000-0000-0000-000000000000';
+    expect(canonicalPair('inverts', hi, lo).swapped).toBe(true);
+    expect(canonicalPair('mechanism_for', hi, lo).swapped).toBe(false);
+    // Refocus decision D4: stored names stay; these are display labels.
+    expect(linkLabel('tension_with')).toBe('contradicts');
+    expect(linkLabel('builds_on')).toBe('extends');
+    expect(linkLabel('example_of')).toBe('example-of');
+    expect(linkLabel('same_mechanism')).toBe('rhymes-with');
+    expect(linkLabel('mechanism_for')).toBe('mechanism-for');
+    expect(linkLabel('inverts')).toBe('inverts');
+    expect(new Set(LINK_TYPES.map(linkLabel)).size).toBe(LINK_TYPES.length);
+    expect(legend().every((l) => typeof l.label === 'string' && l.label.length > 0)).toBe(true);
   });
 
   it('canonicalizes only symmetric pairs (smaller uuid first)', () => {

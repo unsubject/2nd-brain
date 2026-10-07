@@ -56,6 +56,7 @@ export const TOOL_META: Record<string, { title: string; annotations: ToolAnnotat
   decide_idea_links: { title: 'Garden: record decisions', annotations: WRITE_DESTRUCTIVE },
   create_synthesis: { title: 'Create synthesis', annotations: WRITE },
   export_idea_map: { title: 'Export idea map', annotations: READ },
+  explore_topic: { title: 'Explore a topic in the garden', annotations: READ },
   // Protocols
   read_protocol: { title: 'Read protocol', annotations: READ },
 };

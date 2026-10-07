@@ -4,11 +4,22 @@ import type { ToolResult } from './registry';
 import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
 import { canonicalPair, endpointError, isSymmetric, type LinkType } from '../ideas/linkTypes';
-import { credentialLabel, errorResult, HandlerError, jsonParam, linkTypeSchema, ok } from './idea_shared';
+import {
+  credentialLabel,
+  dbError,
+  errorResult,
+  HandlerError,
+  jsonParam,
+  linkTypeSchema,
+  ok,
+  uuidArrayLiteral,
+  uuidSchema,
+} from './idea_shared';
 
 // Record the user's verdicts on proposals (docs/idea-parking-lot-protocol.md §2).
 // Transitions: proposed → accept | reject | withdraw; accepted → retract.
 // Only these decisions turn proposals into links (besides create_synthesis).
+// mark_reviewed takes ideas a garden review has handled out of the inbox.
 
 const decisionSchema = z
   .object({
@@ -22,7 +33,8 @@ const decisionSchema = z
 
 const inputSchema = z
   .object({
-    decisions: z.array(decisionSchema).min(1).max(50),
+    decisions: z.array(decisionSchema).max(50).optional(),
+    mark_reviewed: z.array(uuidSchema).max(200).optional(),
   })
   .strict();
 
@@ -51,17 +63,26 @@ export async function decideIdeaLinksHandler(
   if (!parsed.success) {
     return errorResult(`Invalid arguments: ${parsed.error.message}`);
   }
-  const ids = parsed.data.decisions.map((d) => d.link_id.toLowerCase());
+  const decisions = parsed.data.decisions ?? [];
+  const markIds = parsed.data.mark_reviewed ?? [];
+  if (decisions.length === 0 && markIds.length === 0) {
+    return errorResult('Invalid arguments: give at least one decision or one mark_reviewed id');
+  }
+  const ids = decisions.map((d) => d.link_id.toLowerCase());
   if (new Set(ids).size !== ids.length) {
     return errorResult('Invalid arguments: each link_id may appear only once per call');
+  }
+  if (new Set(markIds).size !== markIds.length) {
+    return errorResult('Invalid arguments: each idea id may appear only once in mark_reviewed');
   }
 
   const decidedVia = { credential: credentialLabel(principal) };
   const sql = getDb(env);
   const results: Result[] = [];
   const hints: string[] = [];
+  let reviewed: { idea_ids: string[]; not_found: string[] } | { error: string } | undefined;
   try {
-    for (const d of parsed.data.decisions) {
+    for (const d of decisions) {
       try {
         const r = await sql.begin(async (tx): Promise<Result> => {
           const rows = await tx<
@@ -231,11 +252,45 @@ export async function decideIdeaLinksHandler(
         results.push({ link_id: d.link_id, result: 'error', error: msg });
       }
     }
+
+    // One statement after the decisions. updated_at is left alone: a
+    // review changes nothing the embedding sweeper or the garden's
+    // recently-updated scope cares about.
+    if (markIds.length > 0) {
+      try {
+        const entry = {
+          at: new Date().toISOString(),
+          credential: decidedVia.credential,
+          tool: 'decide_idea_links',
+          fields: ['reviewed'],
+        };
+        const rows = await sql<Array<{ id: string }>>`
+          UPDATE idea SET
+            reviewed_at = now(),
+            edit_log = edit_log || ${jsonParam(sql, [entry])}
+          WHERE user_id = ${env.BRAIN_USER_ID}
+            AND id = ANY(${uuidArrayLiteral(markIds)}::uuid[])
+          RETURNING id
+        `;
+        const done = new Set(rows.map((r) => r.id));
+        reviewed = { idea_ids: markIds.filter((id) => done.has(id)), not_found: markIds.filter((id) => !done.has(id)) };
+      } catch (e) {
+        // With no decisions, nothing was done: the call failed.
+        if (decisions.length === 0) return dbError(e);
+        // The decisions above are already committed; report them anyway.
+        reviewed = { error: `DB error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
   } finally {
     ctx.waitUntil(sql.end({ timeout: 5 }));
   }
 
   const counts: Record<string, number> = {};
   for (const r of results) counts[r.result] = (counts[r.result] ?? 0) + 1;
-  return ok({ counts, results, ...(hints.length > 0 ? { hints } : {}) });
+  return ok({
+    counts,
+    results,
+    ...(reviewed ? { reviewed } : {}),
+    ...(hints.length > 0 ? { hints } : {}),
+  });
 }

@@ -3,6 +3,10 @@ import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import type { Principal } from '../auth/principal';
 import { getDb } from '../db';
+import { embed, vectorLiteral } from '../embeddings';
+import { buildIdeaEmbeddingText } from '../ideas/embeddingText';
+import { LINK_TYPES, LINK_TYPE_INFO, targetsArtifact } from '../ideas/linkTypes';
+import { snippet } from '../ideas/text';
 import {
   capturedViaSchema,
   cleanTags,
@@ -16,6 +20,7 @@ import {
   tagsSchema,
   textArray,
   toIso,
+  type Q,
 } from './idea_shared';
 
 const inputSchema = z
@@ -40,8 +45,46 @@ const inputSchema = z
   })
   .strict();
 
+// Link proposals at capture (refocus D3, D12): park_idea returns the
+// nearest existing ideas; the assistant drafts the typed proposals and
+// glosses, saves them with propose_idea_links(origin 'capture'), and the
+// user decides. Below this cosine similarity a neighbour is noise (the
+// protocol's similarity guide).
+export const CANDIDATE_MIN_SIMILARITY = 0.3;
+const MAX_CANDIDATES = 5;
+// A slow embedding call must not hold up the capture: it just means no candidates.
+export const CANDIDATE_EMBED_TIMEOUT_MS = 5000;
+
+// Idea-to-idea types with the label the user sees, e.g. "tension_with
+// (contradicts)"; part_of also says it needs a synthesis candidate.
+const CAPTURE_TYPE_LABELS = LINK_TYPES.filter((t) => !targetsArtifact(t))
+  .map((t) => {
+    const { label, target } = LINK_TYPE_INFO[t];
+    const notes = [
+      ...(label === t ? [] : [label]),
+      ...(target === 'synthesis' ? ["only to a candidate of kind 'synthesis'"] : []),
+    ];
+    return notes.length > 0 ? `${t} (${notes.join('; ')})` : t;
+  })
+  .join(', ');
+
 const RECEIPT_NOTE =
-  'Filed. Capture is one-way: do not suggest related ideas, links or tags now — associations are made only in gardening sessions the user starts. Embedding runs async (~30–60s).';
+  'Filed. In your reply this receipt comes first. Where a link_candidate genuinely connects with this idea, draft ' +
+  'up to 3 typed link proposals between this idea and those candidates, each with a one-line gloss naming the ' +
+  "specific connection; save them with propose_idea_links (origin 'capture') and list them after the receipt in " +
+  `the same reply, with their display labels. Types (label): ${CAPTURE_TYPE_LABELS}; directed types read ` +
+  'source → target. Nothing is linked until the user says yes: record exactly their verdicts with ' +
+  'decide_idea_links. Proposals they ignore stay pending for the weekly garden review. Propose nothing if no ' +
+  'candidate truly connects, and do not suggest tags. Embedding runs async (~30–60s).';
+
+const NO_CANDIDATES_NOTE =
+  'Filed. Reply with this receipt only: there are no link candidates to propose from (see warnings, if any). ' +
+  'The weekly garden review links it later. Embedding runs async (~30–60s).';
+
+const DEDUP_NOTE =
+  'Already filed (same idempotency key, or the same title and content within the last 10 minutes). Nothing new ' +
+  'was written. A retry returns no link_candidates: proposals saved after the first capture are still pending ' +
+  '(list_idea_links with idea_id).';
 
 export async function parkIdeaHandler(
   rawArgs: unknown,
@@ -137,7 +180,7 @@ export async function parkIdeaHandler(
 
     const existing = await lookupExisting();
     if (existing) {
-      return ok(receipt(existing.id, existing.title, existing.captured_at, existing.status, [], true));
+      return ok(receipt(existing.id, existing.title, existing.captured_at, existing.status, [], true, [], []));
     }
 
     let created: { id: string; title: string; captured_at: Date; status: string };
@@ -168,13 +211,34 @@ export async function parkIdeaHandler(
       if ((e as { code?: string }).code === '23505' && key) {
         const again = await lookupExisting();
         if (again) {
-          return ok(receipt(again.id, again.title, again.captured_at, again.status, [], true));
+          return ok(receipt(again.id, again.title, again.captured_at, again.status, [], true, [], []));
         }
       }
       throw e;
     }
 
-    return ok(receipt(created.id, created.title, created.captured_at, created.status, fieldsFiled, false));
+    // The idea is filed; finding candidates is best effort and never fails the capture.
+    const warnings: string[] = [];
+    let candidates: LinkCandidate[] = [];
+    try {
+      const text = buildIdeaEmbeddingText({
+        title,
+        framing: fields.framing,
+        why_interesting: fields.why_interesting,
+        thoughts,
+        notes: null,
+        source_title: fields.source_title,
+        source_excerpt: fields.source_excerpt,
+        tags,
+      });
+      candidates = await findLinkCandidates(sql, env, created.id, text);
+    } catch (e) {
+      warnings.push(`Link candidates unavailable (${e instanceof Error ? e.message : String(e)}); the idea is filed.`);
+    }
+
+    return ok(
+      receipt(created.id, created.title, created.captured_at, created.status, fieldsFiled, false, candidates, warnings),
+    );
   } catch (e) {
     return dbError(e);
   } finally {
@@ -182,6 +246,65 @@ export async function parkIdeaHandler(
   }
 }
 
+type LinkCandidate = {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  similarity: number;
+  snippet: string | null;
+};
+
+// The nearest live ideas to a new one, nearest first. The new idea's text
+// is embedded here only as a query vector: the vector is not stored, since
+// the Node sweeper embeds rows and the Worker never processes them.
+async function findLinkCandidates(sql: Q, env: Env, ideaId: string, text: string): Promise<LinkCandidate[]> {
+  // Nothing to compare with (no other embedded idea that is not composted):
+  // skip the OpenAI call.
+  const others = await sql<Array<{ found: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM idea
+       WHERE user_id = ${env.BRAIN_USER_ID} AND id <> ${ideaId}
+         AND status <> 'composted' AND embedding IS NOT NULL
+    ) AS found, now() AS as_of
+  `;
+  if (!others[0]?.found) return [];
+
+  const q = vectorLiteral(await withTimeout(embed(text, env.OPENAI_API_KEY), CANDIDATE_EMBED_TIMEOUT_MS));
+  const rows = await sql<
+    Array<{ id: string; title: string; kind: string; status: string; snippet_src: string | null; similarity: number }>
+  >`
+    SELECT i.id, i.title, i.kind, i.status,
+           left(COALESCE(i.framing, i.why_interesting, i.thoughts, i.source_excerpt), 600) AS snippet_src,
+           1 - (i.embedding <=> ${q}::vector) AS similarity,
+           now() AS as_of
+      FROM idea i
+     WHERE i.user_id = ${env.BRAIN_USER_ID} AND i.id <> ${ideaId}
+       AND i.status <> 'composted' AND i.embedding IS NOT NULL
+       AND 1 - (i.embedding <=> ${q}::vector) >= ${CANDIDATE_MIN_SIMILARITY}
+     ORDER BY i.embedding <=> ${q}::vector
+     LIMIT ${MAX_CANDIDATES}
+  `;
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    kind: r.kind,
+    status: r.status,
+    similarity: Math.round(Number(r.similarity) * 10000) / 10000,
+    snippet: snippet(r.snippet_src, 240),
+  }));
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`embedding timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+// The receipt fields come first and keep their shape; link_candidates
+// (and warnings, when there are any) follow them.
 function receipt(
   id: string,
   title: string,
@@ -189,6 +312,8 @@ function receipt(
   status: string,
   fieldsFiled: string[],
   deduplicated: boolean,
+  candidates: LinkCandidate[],
+  warnings: string[],
 ) {
   return {
     idea_id: id,
@@ -198,8 +323,8 @@ function receipt(
     fields_filed: fieldsFiled,
     embedding: deduplicated ? 'unchanged' : 'pending',
     deduplicated,
-    note: deduplicated
-      ? 'Already filed (same idempotency key, or the same title and content within the last 10 minutes). Nothing new was written.'
-      : RECEIPT_NOTE,
+    note: deduplicated ? DEDUP_NOTE : candidates.length > 0 ? RECEIPT_NOTE : NO_CANDIDATES_NOTE,
+    link_candidates: candidates,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

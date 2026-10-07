@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { LINK_TYPE_INFO, type LinkType } from '../ideas/linkTypes';
+import { LINK_TYPE_INFO, linkLabel, type LinkType } from '../ideas/linkTypes';
 import { snippet } from '../ideas/text';
 import {
   dbError,
@@ -22,7 +22,7 @@ const inputSchema = z
     statuses: z.array(linkStatusSchema).min(1).optional(),
     idea_id: uuidSchema.optional(),
     link_type: linkTypeSchema.optional(),
-    proposed_by: z.enum(['gardening', 'import', 'synthesis']).optional(),
+    proposed_by: z.enum(['gardening', 'import', 'synthesis', 'capture']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
     offset: z.number().int().min(0).optional(),
   })
@@ -107,6 +107,8 @@ export async function listIdeaLinksHandler(
       links: rows.map((r) => ({
         link_id: r.id,
         link_type: r.link_type,
+        // How the type is shown to the user (tension_with -> contradicts).
+        label: linkLabel(r.link_type),
         directed: LINK_TYPE_INFO[r.link_type].directed,
         status: r.status,
         rationale: r.rationale,
