@@ -24,6 +24,9 @@ Decisions (Simon, 2026-10-04):
   editor later changed the printed text.
 - **Every past platform counts as published**: 蘋果論壇, 利字當頭 (all
   outlets), Revue, unsubject.me, Patreon, WordPress, Substack.
+- Occasional contributions to outlets or columns outside the known ones are
+  published pieces too, filed with no column (2026-10-06).
+- Drafts sent to note@leesimon.me were never published (2026-10-06).
 - Only the "Article Archive" folder and the exports folder are read from Drive.
 - PDFs in those folders are skipped (2026-10-05).
 
@@ -134,9 +137,9 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 
 | Source | Kind | Status | Rule |
 |---|---|---|---|
-| gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. |
+| gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column. |
 | gmail | `attachment` | keep | His `.docx` attachment; title from the file name. |
-| gmail | `self_draft` | review | Sent only to his own addresses (note@leesimon.me, …): a draft, not necessarily published. |
+| gmail | `self_draft` | drop / review | Sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
 | gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
 | gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
 | gmail | `received` | drop | From anyone else: editors, readers, acknowledgements. |

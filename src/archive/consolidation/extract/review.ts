@@ -220,7 +220,9 @@ function card(d: CandidateDetail, n: number): string {
   const beforeLabel = d.source.rawText !== null ? "staged text" : "staged HTML";
   const meta = [
     c.outlet && esc(String(c.outlet)),
-    c.column_name && esc(String(c.column_name)),
+    c.column_name
+      ? esc(String(c.column_name))
+      : (c.kind === "submission" || c.kind === "attachment") && "other (no known column)",
     `${day(c.published_at)}${c.date_source ? ` (${esc(String(c.date_source))})` : ""}`,
     `${c.char_count} chars`,
   ].filter(Boolean);
