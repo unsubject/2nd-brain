@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { admin, callTool, ok, resetIdeaData, seedIdea, setEmbedding, axis, TEST_DB, USER } from './helpers';
+
+const MIGRATION_028 = readFileSync(new URL('../../../migrations/028_idea_garden_v2.sql', import.meta.url), 'utf8');
 
 afterAll(() => admin.end({ timeout: 5 }));
 
@@ -146,5 +149,61 @@ describe.skipIf(!TEST_DB)('migration 019 constraints', () => {
     await admin`UPDATE idea SET status = 'composted' WHERE id = ${a}`;
     const after = await admin`SELECT status_changed_at FROM idea WHERE id = ${a}`;
     expect(new Date(after[0].status_changed_at) >= new Date(before[0].status_changed_at)).toBe(true);
+  });
+});
+
+describe.skipIf(!TEST_DB)('migration 028 (Idea Garden v2)', () => {
+  beforeEach(resetIdeaData);
+
+  const insertLink = (src: string, tgt: string, type: string, proposedBy = 'gardening') => admin`
+    INSERT INTO idea_link (user_id, source_idea_id, target_idea_id, link_type, rationale, proposed_by)
+    VALUES (${USER}, ${src}, ${tgt}, ${type}, 'a reason here', ${proposedBy})
+  `;
+
+  it('accepts mechanism_for (directed) and inverts (symmetric, canonical order)', async () => {
+    const a = await seedIdea('A');
+    const b = await seedIdea('B');
+    const [lo, hi] = [a, b].sort();
+    await insertLink(a, b, 'mechanism_for');
+    await expect(insertLink(b, a, 'mechanism_for')).rejects.toThrow(/idx_idea_link_pair_type/);
+    await expect(insertLink(hi, lo, 'inverts')).rejects.toThrow(/idea_link_symmetric_canonical/);
+    await insertLink(lo, hi, 'inverts');
+    await expect(insertLink(lo, hi, 'contradicts')).rejects.toThrow(/idea_link_link_type_check/);
+  });
+
+  it("allows proposed_by 'capture' and nothing new beyond it", async () => {
+    const a = await seedIdea('A');
+    const b = await seedIdea('B');
+    await insertLink(a, b, 'builds_on', 'capture');
+    await expect(insertLink(a, b, 'example_of', 'assistant')).rejects.toThrow(/idea_link_proposed_by_check/);
+  });
+
+  it('starts ideas in the inbox and pairs the promotion columns', async () => {
+    const a = await seedIdea('A');
+    const rows = await admin`SELECT reviewed_at, promoted_at, promoted_title FROM idea WHERE id = ${a}`;
+    expect(rows[0]).toEqual({ reviewed_at: null, promoted_at: null, promoted_title: null });
+    await expect(admin`UPDATE idea SET promoted_at = now() WHERE id = ${a}`).rejects.toThrow(/idea_promoted_pair/);
+    await expect(admin`UPDATE idea SET promoted_at = now(), promoted_title = '  ' WHERE id = ${a}`).rejects.toThrow(
+      /idea_promoted_pair/,
+    );
+    await admin`UPDATE idea SET promoted_at = now(), promoted_title = 'Episode: tides' WHERE id = ${a}`;
+  });
+
+  it('keeps the embedding when only the review or promotion fields change', async () => {
+    const a = await seedIdea('A');
+    await setEmbedding(a, axis(0));
+    await admin`UPDATE idea SET reviewed_at = now(), promoted_at = now(), promoted_title = 'T' WHERE id = ${a}`;
+    const rows = await admin`SELECT embedding IS NOT NULL AS has FROM idea WHERE id = ${a}`;
+    expect(rows[0].has).toBe(true);
+  });
+
+  it('runs again without changing anything', async () => {
+    const a = await seedIdea('A');
+    const b = await seedIdea('B');
+    const [lo, hi] = [a, b].sort();
+    await insertLink(lo, hi, 'inverts', 'capture');
+    await admin.unsafe(MIGRATION_028).simple();
+    const n = await admin`SELECT count(*)::int AS n FROM idea_link WHERE link_type = 'inverts'`;
+    expect(n[0].n).toBe(1);
   });
 });
