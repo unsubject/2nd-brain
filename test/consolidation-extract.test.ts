@@ -456,3 +456,95 @@ test("the review page escapes everything it shows", () => {
   assert.ok(page.includes("before &lt;i&gt;"));
   assert.ok(page.includes("2020-01-02 (sent)"));
 });
+
+// ── Patterns found in the real "Writing" label (2026-10-07) ─────────────
+
+test("a 2013-style forum resend: old Gmail quote header, signed 李兆富, author name in the subject", () => {
+  const c = extractGmail(
+    message(
+      {
+        title: "Re: 李兆富：福利與權利",
+        authoredAt: new Date("2013-12-26T11:16:35Z"),
+        rawText:
+          `${ESSAY}\n\n李兆富\n\n\n2013/12/26 Liu Jing <echoliu@appledaily.com>\n> 好的，多謝您！\n>\n> 劉 璟\n` +
+          "> --\n> 利世民\n> Facebook - http://www.facebook.com/leesimon.hk\n",
+      },
+      { from: "Simon Lee <simoncf@gmail.com>", to: ["echoliu@appledaily.com", "forum@appledaily.com"] }
+    )
+  );
+  assert.equal(c.kind, "submission");
+  assert.equal(c.status, "keep");
+  assert.equal(c.bodyText, ESSAY);
+  assert.equal(c.title, "福利與權利");
+  assert.equal(c.column, "蘋果論壇");
+  assert.equal(c.outlet, "蘋果日報");
+  assert.deepEqual(c.reasons, ["quote-removed"]);
+});
+
+test("an iPhone reply quotes its own header ('> On … wrote:')", () => {
+  const c = extractGmail(
+    message({
+      title: "Re: 李兆富：福利與權利",
+      rawText: `五點左右，講經濟展望\n\nSent from my iPhone\n\n> On 1 Jan, 2014, at 15:12, "Liu Jing" <echoliu@appledaily.com> wrote:\n>\n> 李先生，請問您今日幾時來稿？\n>\n> ${SENTENCE.repeat(12)}\n`,
+    })
+  );
+  assert.equal(c.kind, "reply");
+  assert.equal(c.bodyText, "五點左右，講經濟展望");
+});
+
+test("Gmail link targets are removed from the text", () => {
+  const c = extractGmail(
+    message({ rawText: `幾個星期前，港聲你聽 <https://www.youtube.com/@voxhk>的例會上，我問了一個問題。\n\n${ESSAY}` })
+  );
+  assert.ok(c.bodyText!.startsWith("幾個星期前，港聲你聽的例會上，我問了一個問題。"));
+  assert.ok(!c.bodyText!.includes("https://"));
+});
+
+test("a piece mailed to the forum address is a 蘋果論壇 piece even without the column in the subject", () => {
+  const c = extractGmail(
+    message(
+      { title: "專業議政是擴闊泛民光譜的關鍵", rawText: `專業議政是擴闊泛民光譜的關鍵\n\n${ESSAY}` },
+      { to: ["forum@appledaily.com", "yeungck@appledaily.com"] }
+    )
+  );
+  assert.deepEqual([c.kind, c.status, c.column, c.outlet], ["submission", "keep", "蘋果論壇", "蘋果日報"]);
+  assert.equal(c.title, "專業議政是擴闊泛民光譜的關鍵");
+  assert.equal(c.bodyText, ESSAY);
+});
+
+test("a long reply to a reader goes to review; a first send to an unknown outlet is kept", () => {
+  const reply = extractGmail(message({ title: "Re: 利字當頭 2020 06 02" }, { to: ["Raymond <reader@gmail.com>"] }));
+  assert.deepEqual([reply.kind, reply.status], ["submission", "review"]);
+  assert.deepEqual(reply.reasons, ["reply-outside-outlets"]);
+
+  const fresh = extractGmail(message({ title: "樓市的下一步" }, { to: ["editor@example-weekly.com"] }));
+  assert.deepEqual([fresh.kind, fresh.status], ["submission", "keep"]);
+  assert.deepEqual(fresh.reasons, ["outlet-unknown"]);
+});
+
+test("Patreon mail about another creator's post is not his", () => {
+  const c = extractGmail(
+    message(
+      { title: '🎉 Someone Else just shared "A post" for patrons only', rawText: ESSAY },
+      { from: "Patreon <bingo@patreon.com>", isSent: false }
+    )
+  );
+  assert.deepEqual([c.kind, c.status, c.reasons], ["received", "drop", ["other-patreon-creator"]]);
+  const his = extractGmail(
+    message(
+      { title: '🎉 利世民 just shared "【暑期作業】三權合作" for patrons only', rawText: `利世民\n\n【暑期作業】三權合作\n\n${ESSAY}\n\nView on Patreon` },
+      { from: "Patreon <bingo@patreon.com>", isSent: false }
+    )
+  );
+  assert.equal(his.kind, "newsletter");
+  assert.equal(his.title, "【暑期作業】三權合作");
+  assert.equal(his.bodyText, ESSAY);
+});
+
+test("an essay's short first paragraph is not taken for a note", () => {
+  for (const first of ["今年稿費又加了，但物價升得更快。", "I flew to Delhi last week, and saw the same thing."]) {
+    const c = extractGmail(message({ title: "隨筆", rawText: `${first}\n\n${ESSAY}` }));
+    assert.equal(c.status, "keep", first);
+    assert.ok(c.bodyText!.startsWith(first), first);
+  }
+});

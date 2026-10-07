@@ -2,7 +2,9 @@
 // extraction could tell about it. Matching (step 3) groups candidates of the
 // same piece; loading (step 4) picks the canonical text among them.
 
-export const EXTRACTOR_VERSION = 1;
+// Bump with every rule change: the app re-extracts on boot when candidates
+// were made by an older version (extract/auto.ts).
+export const EXTRACTOR_VERSION = 2;
 
 export type CandidateKind =
   | "submission" // an email Simon sent to an editor or outlet with the piece

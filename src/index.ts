@@ -6,6 +6,7 @@ import { startArchiveWorker } from "./archive/worker";
 import { startIdeaEmbeddingWorker } from "./ideas/worker";
 import { startMcpRetention } from "./mcp/retention";
 import { startCollectionResumer } from "./archive/consolidation/resume";
+import { startAutoExtraction } from "./archive/consolidation/extract/auto";
 import { describeGoogleError } from "./google/errors";
 
 // Node prints an unhandled error in full, nested properties included, which
@@ -34,6 +35,7 @@ async function main() {
   startIdeaEmbeddingWorker();
   startMcpRetention();
   startCollectionResumer();
+  startAutoExtraction();
 }
 
 main().catch((err) => {
