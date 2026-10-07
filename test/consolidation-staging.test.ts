@@ -496,33 +496,108 @@ test("an extraction run is tracked like a collection run", { skip }, async () =>
   assert.equal(row?.status, "succeeded");
   assert.equal(row?.stats.written, 5);
   assert.equal(row?.stats.duplicates, 1);
+
+  // A successful extraction starts matching by itself.
+  let matchRow: { status: string; stats: Record<string, unknown> } | undefined;
+  for (let i = 0; i < 100; i++) {
+    matchRow = (await db.query("SELECT status, stats FROM archive_collect_run WHERE source = 'match'")).rows[0];
+    if (matchRow && matchRow.status !== "running") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(matchRow?.status, "succeeded");
+  assert.equal(matchRow?.stats.works, 1);
 });
 
-test("candidates are stale until extracted, and again when the rules change", { skip }, async () => {
+test("catch-up: extract when candidates are stale, then match when works are", { skip }, async () => {
   const run = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
   const auto = await import("../src/archive/consolidation/extract/auto");
-  assert.equal(await auto.candidatesStale(db), false); // nothing staged
-  await stageForExtraction();
-  assert.equal(await auto.candidatesStale(db), true);
-
+  const stale = { candidates: () => auto.candidatesStale(db), works: () => auto.worksStale(db) };
   const started: unknown[] = [];
   const fakeStart = async (req: unknown) => {
     started.push(req);
-    return "run-1";
+    return `run-${started.length}`;
   };
-  assert.equal(await auto.extractIfStale(fakeStart, () => auto.candidatesStale(db)), "run-1");
-  assert.deepEqual(started, [{ source: "extract" }]);
+
+  assert.equal(await auto.catchUp(fakeStart, stale), null); // nothing staged
+  await stageForExtraction();
+  assert.deepEqual(await auto.catchUp(fakeStart, stale), { source: "extract", runId: "run-1" });
 
   await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
   assert.equal(await auto.candidatesStale(db), false);
-  assert.equal(await auto.extractIfStale(fakeStart, () => auto.candidatesStale(db)), null);
+  assert.equal(await auto.worksStale(db), true);
+  assert.deepEqual(await auto.catchUp(fakeStart, stale), { source: "match", runId: "run-2" });
 
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+  assert.equal(await auto.worksStale(db), false);
+  assert.equal(await auto.catchUp(fakeStart, stale), null);
+
+  // New rules: an older extractor version, or an older matcher version.
+  await db.query("UPDATE archive_work SET matcher_version = matcher_version - 1");
+  assert.equal(await auto.worksStale(db), true);
   await db.query("UPDATE archive_candidate SET extractor_version = extractor_version - 1 WHERE id IN (SELECT id FROM archive_candidate LIMIT 1)");
-  assert.equal(await auto.candidatesStale(db), true);
+  assert.deepEqual((await auto.catchUp(fakeStart, stale))?.source, "extract");
 
   // A run already going is left alone.
   const busy = async () => {
     throw new staging.RunAlreadyActiveError("extract");
   };
-  assert.equal(await auto.extractIfStale(busy, async () => true), null);
+  assert.equal(await auto.catchUp(busy, stale), null);
+});
+
+test("runMatch groups the copies of one piece into a work with the emailed text as canonical", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
+  await stageForExtraction();
+  // The same column reposted on Substack two days later, with a new opening line.
+  await staging.upsertSourceItem(
+    item({
+      source: "substack",
+      sourceRef: "post-9",
+      title: "自由市場的代價",
+      authoredAt: new Date("2020-06-26T00:00:00Z"),
+      rawText: null,
+      rawHtml: `<p>舊文重溫。</p>${ESSAY.split("\n\n").map((p) => `<p>${p}</p>`).join("")}`,
+      metadata: { isPublished: true, audience: "everyone" },
+    }),
+    db
+  );
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  const stats = match.emptyMatchStats();
+  await match.runMatch(stats, async () => {}, () => false, db);
+
+  // Kept or in review: the submission, the newsletter, the WordPress post and
+  // the Substack post; the newsletter and both posts share ESSAY's text.
+  assert.equal(stats.candidates, 4);
+  assert.equal(stats.works, 1);
+  assert.deepEqual(stats.bySize, { "3-5": 1 });
+  assert.deepEqual(stats.largest, [{ members: 4, title: "自由市場的代價" }]);
+  const { rows: works } = await db.query(
+    `SELECT w.title, w.published_at, w.outlet, w.outlets, w.status, w.member_count, s.source_ref AS canonical
+       FROM archive_work w JOIN archive_candidate c ON c.id = w.canonical_candidate_id
+       JOIN archive_source_item s ON s.id = c.source_item_id`
+  );
+  assert.equal(works.length, 1);
+  assert.equal(works[0].canonical, "sub"); // the column as emailed to Apple Daily
+  assert.equal(works[0].member_count, 4);
+  assert.equal(works[0].title, "自由市場的代價");
+  assert.equal(works[0].outlet, "蘋果日報");
+  assert.equal(works[0].published_at.toISOString().slice(0, 10), "2020-06-24"); // first publication
+  assert.equal(works[0].outlets[0], "蘋果日報");
+  assert.equal(works[0].status, "keep");
+
+  // A second run rebuilds rather than adds.
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+  const { rows: count } = await db.query("SELECT count(*)::int AS n FROM archive_work_member");
+  assert.equal(count[0].n, 4);
+
+  const review = await import("../src/archive/consolidation/match/review");
+  const list = await review.listWorks({ limit: 10, offset: 0 }, db);
+  assert.equal(list.total, 1);
+  assert.equal((await review.listWorks({ status: "review", limit: 10, offset: 0 }, db)).total, 0);
+  const work = (await review.getWork(String(list.works[0].id), db)) as { members: { role: string; source: string }[] };
+  assert.deepEqual(work.members.map((m) => m.role), ["canonical", "copy", "copy", "copy"]);
+  assert.equal(work.members[0].source, "gmail");
+  assert.equal(await review.getWork("00000000-0000-0000-0000-000000000000", db), null);
+  assert.equal((await match.workSummary(db))[0].works, 1);
 });

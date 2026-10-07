@@ -6,6 +6,8 @@ import { auditPublicArtifacts } from "./consolidation/audit";
 import { startCollection, type CollectRequest } from "./consolidation/runner";
 import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
 import { candidateSummary } from "./consolidation/extract/run";
+import { workSummary } from "./consolidation/match/run";
+import { getWork, listWorks, parseWorkListQuery } from "./consolidation/match/review";
 import {
   getCandidate,
   listCandidates,
@@ -125,12 +127,13 @@ export function archiveRoutes(): Router {
 
   router.get("/archive/consolidation/status", async (_req, res) => {
     try {
-      const [staging, candidates, audit] = await Promise.all([
+      const [staging, candidates, works, audit] = await Promise.all([
         getStagingStatus(),
         candidateSummary(),
+        workSummary(),
         auditPublicArtifacts(),
       ]);
-      res.json({ staging, candidates, publicArtifactAudit: audit });
+      res.json({ staging, candidates, works, publicArtifactAudit: audit });
     } catch (err) {
       console.error("[consolidation] status error:", describeGoogleError(err));
       res.status(500).json({ error: "Failed to get consolidation status" });
@@ -182,6 +185,39 @@ export function archiveRoutes(): Router {
     } catch (err) {
       console.error("[consolidation] candidate error:", describeGoogleError(err));
       res.status(500).json({ error: "Failed to get candidate" });
+    }
+  });
+
+  // Step 3: works (one per piece) and their members.
+  router.get("/archive/consolidation/works", async (req, res) => {
+    const q = parseWorkListQuery(req.query);
+    if (typeof q === "string") {
+      res.status(400).json({ error: q });
+      return;
+    }
+    try {
+      res.json(await listWorks(q));
+    } catch (err) {
+      console.error("[consolidation] works error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to list works" });
+    }
+  });
+
+  router.get("/archive/consolidation/works/:id", async (req, res) => {
+    if (!UUID.test(req.params.id)) {
+      res.status(400).json({ error: "id must be a work id" });
+      return;
+    }
+    try {
+      const work = await getWork(req.params.id);
+      if (!work) {
+        res.status(404).json({ error: "no such work" });
+        return;
+      }
+      res.json(work);
+    } catch (err) {
+      console.error("[consolidation] work error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to get work" });
     }
   });
 
