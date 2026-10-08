@@ -5,7 +5,7 @@
 // reader replies, forwards, drafts to self, and newsletter copies.
 
 import { candidate, type Candidate, type StagedItem } from "./types";
-import { htmlToText, normalizeText, paragraphs, textLength, unwrapSoftBreaks } from "./text";
+import { htmlToText, normalizeText, paragraphs, textLength, unwrapSoftBreaks, utcDate } from "./text";
 
 // Simon's own mailboxes: a message from one of these is his even without
 // the SENT label (copies that arrived through forwarding).
@@ -109,6 +109,11 @@ export function cleanSubject(subject: string | null): string {
   return s.replace(/[（(]\s*留稿[^）)]*[）)]/g, "").trim();
 }
 
+// "投稿" ("submission") as a marker before the title: followed by a
+// separator, a space, an opening quote or nothing, so a title that starts
+// with the word ("投稿文化的轉變") keeps it.
+const SUBMISSION_MARKER = /^投稿(?:\s*[:：\-–—|｜·．]\s*|\s+|$|(?=[「『《〈“"‘'（(]))/;
+
 // The piece's own title: no column marker, author name, date, "投稿" or
 // "- Simon Lee".
 export function bareTitle(s: string | null): string {
@@ -119,7 +124,7 @@ export function bareTitle(s: string | null): string {
   t = t.replace(/^(李兆富|利世民)\s*[:：]/, "").trim();
   t = t.replace(/^[（(]?\s*\d{4}[\s\-./]?\d{1,2}[\s\-./]?\d{1,2}\s*[）)]?/, "").trim();
   t = t.replace(/^[:：\-–—|·．]+/, "").trim();
-  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(/^投稿\s*[:：\-–—]?\s*/, "");
+  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(SUBMISSION_MARKER, "");
   t = t.trim();
   return /^[\d\s\-./]*$/.test(t) ? "" : t;
 }
@@ -145,9 +150,11 @@ function isTitleOf(line: string, title: string): boolean {
 
 // A column's publication date often sits in the subject ("利字當頭
 // 2020 06 30", "Apple Daily Forum 20200624", "（留稿：12月30日見報）").
+// A day that doesn't exist ("2月30日") is a typo, not a date.
 export function subjectDate(subject: string | null, sentAt: Date | null): Date | null {
   if (!subject || !sentAt) return null;
-  const ok = (d: Date) => {
+  const ok = (d: Date | null) => {
+    if (!d) return null;
     const days = (d.getTime() - sentAt.getTime()) / 86_400_000;
     return days > -3 && days < 45 ? d : null;
   };
@@ -157,14 +164,12 @@ export function subjectDate(subject: string | null, sentAt: Date | null): Date |
     const day = Number(scheduled[2]);
     let year = sentAt.getUTCFullYear();
     if (month < sentAt.getUTCMonth() + 1 - 6) year += 1;
-    return ok(new Date(Date.UTC(year, month - 1, day)));
+    return ok(utcDate(year, month, day));
   }
   if (!COLUMN_PREFIX.test(cleanSubject(subject).replace(/^【/, ""))) return null;
   const m = subject.match(/(20\d{2})[\s\-./]?(\d{2})[\s\-./]?(\d{2})/);
   if (!m) return null;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return ok(new Date(Date.UTC(y, mo - 1, d)));
+  return ok(utcDate(Number(m[1]), Number(m[2]), Number(m[3])));
 }
 
 // ── Quotes, signatures and notes to the editor ──────────────────────────
@@ -358,13 +363,23 @@ function dayKey(d: Date | null): string {
   return d ? d.toISOString().slice(0, 10) : "undated";
 }
 
+// Sent only to his own addresses: a draft, not a submission. Nothing sent to
+// the notes address was published; other self-sends are unclear.
+function selfDraft(recipients: string[]): { status: "drop" | "review"; reason: string } | null {
+  if (recipients.length === 0 || !recipients.every(isOwnAddress)) return null;
+  return recipients.some((r) => emailAddress(r) === NOTE_ADDRESS)
+    ? { status: "drop", reason: "note-to-self" }
+    : { status: "review", reason: "sent-only-to-own-addresses" };
+}
+
 export function extractGmail(item: StagedItem): Candidate {
   const m = item.metadata;
   const from = str(m.from);
   const subject = str(m.subject) ?? item.title;
   const mine = m.isSent === true || (!!from && isOwnAddress(from));
 
-  if (m.kind === "attachment") return extractAttachment(item, mine, subject);
+  const recipients = [...strings(m.to), ...strings(m.cc)];
+  if (m.kind === "attachment") return extractAttachment(item, mine, subject, recipients);
 
   // Before the own-address test: Revue and Ghost sent from newsletter@ his
   // own domains, but those copies arrived as mail, never through SENT.
@@ -374,7 +389,6 @@ export function extractGmail(item: StagedItem): Candidate {
     return candidate({ kind: "received", status: "drop", reasons: ["not-from-simon"], title: cleanSubject(subject) || null });
   }
 
-  const recipients = [...strings(m.to), ...strings(m.cc)];
   const cleanSubj = cleanSubject(subject);
   if (/^\s*(fwd?|fw|轉寄)\s*[:：]/i.test(subject ?? "")) {
     return candidate({ kind: "forward", status: "drop", reasons: ["forwarded"], title: bareTitle(cleanSubj) || cleanSubj || null });
@@ -406,11 +420,9 @@ export function extractGmail(item: StagedItem): Candidate {
   if (textLength(body) < MIN_ESSAY) {
     return candidate({ ...base, kind: "reply", status: "drop", reasons: [...reasons, "short-message"] });
   }
-  if (recipients.length > 0 && recipients.every(isOwnAddress)) {
-    if (recipients.some((r) => emailAddress(r) === NOTE_ADDRESS)) {
-      return candidate({ ...base, kind: "self_draft", status: "drop", isPublished: false, reasons: [...reasons, "note-to-self"] });
-    }
-    return candidate({ ...base, kind: "self_draft", status: "review", isPublished: false, reasons: [...reasons, "sent-only-to-own-addresses"] });
+  const draft = selfDraft(recipients);
+  if (draft) {
+    return candidate({ ...base, kind: "self_draft", status: draft.status, isPublished: false, reasons: [...reasons, draft.reason] });
   }
   // A piece for an outlet or column not listed above (an occasional
   // contribution) is still a submission, just with no column. A long reply
@@ -432,22 +444,29 @@ function stripLinkTargets(text: string): string {
   return text.replace(/[ \t]*<(?:https?:\/\/|mailto:)[^<>\s]+>/g, "");
 }
 
-function extractAttachment(item: StagedItem, mine: boolean, subject: string | null): Candidate {
+// The recipients are its message's: extraction reads them from the parent
+// row (run.ts), so a .docx follows the same column, outlet and self-draft
+// rules as the message that carried it.
+function extractAttachment(item: StagedItem, mine: boolean, subject: string | null, recipients: string[]): Candidate {
   const filename = (str(item.metadata.filename) ?? item.title ?? "").replace(/\.docx$/i, "").trim();
-  const title = bareTitle(filename) || filename || null;
+  // A file named only by its column and date ("利字當頭 20240220") leaves
+  // no title: the subject's, if it has one, before the bare file name.
+  const title = bareTitle(filename) || bareTitle(cleanSubject(subject)) || filename || null;
   const body = normalizeText(item.rawText ?? (item.rawHtml ? htmlToText(item.rawHtml) : ""));
-  const column = detectColumn(filename, cleanSubject(subject));
+  const column = detectColumn(filename, cleanSubject(subject)) ?? columnFromRecipients(recipients);
   const fromSubject = subjectDate(subject, item.authoredAt);
   const base = {
     title,
     column: column?.name ?? null,
-    outlet: column?.outlet ?? null,
+    outlet: detectOutlet(recipients, column),
     publishedAt: fromSubject ?? item.authoredAt,
     dateSource: fromSubject ? "subject" : "sent",
     bodyText: body || null,
   };
   if (!mine) return candidate({ ...base, kind: "received", status: "drop", reasons: ["attachment-not-from-simon"] });
   if (textLength(body) < MIN_ESSAY) return candidate({ ...base, kind: "empty", status: "drop", reasons: ["short-attachment"] });
+  const draft = selfDraft(recipients);
+  if (draft) return candidate({ ...base, kind: "self_draft", status: draft.status, isPublished: false, reasons: [draft.reason] });
   return candidate({ ...base, kind: "attachment", status: "keep", isPublished: true });
 }
 

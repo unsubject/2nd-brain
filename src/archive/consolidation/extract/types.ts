@@ -4,7 +4,7 @@
 
 // Bump with every rule change: the app re-extracts on boot when candidates
 // were made by an older version (extract/auto.ts).
-export const EXTRACTOR_VERSION = 2;
+export const EXTRACTOR_VERSION = 3;
 
 export type CandidateKind =
   | "submission" // an email Simon sent to an editor or outlet with the piece

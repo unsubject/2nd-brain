@@ -2,7 +2,7 @@
 // and Drive documents as they are.
 
 import { candidate, type Candidate, type StagedItem } from "./types";
-import { htmlToText, normalizeText, textLength } from "./text";
+import { htmlToText, normalizeText, textLength, utcDate } from "./text";
 import { detectColumn } from "./gmail";
 
 const MIN_TEXT = 50;
@@ -68,13 +68,11 @@ export function extractSubstack(item: StagedItem): Candidate {
 }
 
 // "利字當頭 20190730.docx", "2019-07-30 …": a date in the file name is
-// usually the piece's own date, better than when the file was created.
+// usually the piece's own date, better than when the file was created. A
+// day that doesn't exist ("20230231") is a typo, not a date.
 export function titleDate(title: string | null): Date | null {
   const m = (title ?? "").match(/(?<!\d)((?:19|20)\d{2})[\-./\s]?(\d{2})[\-./\s]?(\d{2})(?!\d)/);
-  if (!m) return null;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return new Date(Date.UTC(y, mo - 1, d));
+  return m ? utcDate(Number(m[1]), Number(m[2]), Number(m[3])) : null;
 }
 
 export function extractDrive(item: StagedItem): Candidate {
