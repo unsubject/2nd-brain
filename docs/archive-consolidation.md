@@ -131,9 +131,10 @@ while a collection is live it checks again every minute). If items were
 staged or changed while an extraction ran (a collection started
 alongside), it runs again before matching, whether it succeeded or
 failed; after a failed run only those items count, so an item that always
-fails waits for the next boot check or a run by hand. The run's counts
-appear in the logs (`[consolidation] extract run … finished: {…}`). To run
-it by hand:
+fails waits for the next boot check or a run by hand. A candidate is
+stamped with the time its item was read, so an item changed while the run
+held it counts as changed. The run's counts appear in the logs
+(`[consolidation] extract run … finished: {…}`). To run it by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"

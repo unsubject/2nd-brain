@@ -46,21 +46,32 @@ interface Row {
   raw_text: string | null;
   raw_html: string | null;
   metadata: Record<string, unknown>;
+  // When the batch was read, as text: a JS Date would drop the microseconds.
+  read_at: string;
 }
 
-async function writeCandidate(itemId: string, source: string, c: Candidate, db: DB): Promise<"inserted" | "updated"> {
+// extracted_at is when the item was read, not when its candidate is written,
+// so a change to the item committed in between leaves the candidate older
+// than the item (candidatesStale).
+async function writeCandidate(
+  itemId: string,
+  source: string,
+  c: Candidate,
+  readAt: string,
+  db: DB
+): Promise<"inserted" | "updated"> {
   const { rows } = await db.query<{ inserted: boolean }>(
     `INSERT INTO archive_candidate
        (source_item_id, source, kind, status, reasons, title, outlet, column_name, published_at,
         date_source, is_published, body_text, note, dedupe_key, char_count, extractor_version, extracted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::timestamptz)
      ON CONFLICT (source_item_id) DO UPDATE SET
        source = EXCLUDED.source, kind = EXCLUDED.kind, status = EXCLUDED.status, reasons = EXCLUDED.reasons,
        title = EXCLUDED.title, outlet = EXCLUDED.outlet, column_name = EXCLUDED.column_name,
        published_at = EXCLUDED.published_at, date_source = EXCLUDED.date_source,
        is_published = EXCLUDED.is_published, body_text = EXCLUDED.body_text, note = EXCLUDED.note,
        dedupe_key = EXCLUDED.dedupe_key, char_count = EXCLUDED.char_count,
-       extractor_version = EXCLUDED.extractor_version, extracted_at = now()
+       extractor_version = EXCLUDED.extractor_version, extracted_at = EXCLUDED.extracted_at
      RETURNING (xmax = 0) AS inserted`,
     [
       itemId,
@@ -79,6 +90,7 @@ async function writeCandidate(itemId: string, source: string, c: Candidate, db: 
       c.dedupeKey,
       charCount(c),
       EXTRACTOR_VERSION,
+      readAt,
     ]
   );
   return rows[0].inserted ? "inserted" : "updated";
@@ -106,7 +118,8 @@ export async function markDuplicateNewsletters(db: DB = pool): Promise<number> {
 }
 
 // True when a staged item has no candidate, one made by an older
-// EXTRACTOR_VERSION, or one older than the item (re-collected since).
+// EXTRACTOR_VERSION, or one older than the item (re-collected since, or
+// while the extraction held it: extracted_at is when the item was read).
 // With `sinceRun`, only items staged or changed since that run started.
 export async function candidatesStale(db: DB = pool, sinceRun?: string): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
@@ -133,7 +146,8 @@ export async function runExtraction(
   for (;;) {
     if (shouldStop()) return;
     const { rows } = await db.query<Row>(
-      `SELECT id, source, source_ref, container_ref, title, authored_at, raw_text, raw_html, metadata
+      `SELECT id, source, source_ref, container_ref, title, authored_at, raw_text, raw_html, metadata,
+              now()::text AS read_at
          FROM archive_source_item WHERE id > $1 ORDER BY id LIMIT $2`,
       [after, BATCH]
     );
@@ -152,7 +166,7 @@ export async function runExtraction(
           rawHtml: r.raw_html,
           metadata: r.metadata ?? {},
         });
-        stats[await writeCandidate(r.id, r.source, c, db)] += 1;
+        stats[await writeCandidate(r.id, r.source, c, r.read_at, db)] += 1;
         stats.written += 1;
         stats.byKind[c.kind] = (stats.byKind[c.kind] ?? 0) + 1;
         stats.byStatus[c.status] = (stats.byStatus[c.status] ?? 0) + 1;

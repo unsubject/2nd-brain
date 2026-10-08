@@ -684,6 +684,39 @@ test("after a failed extraction, only items staged or changed while it ran start
   assert.deepEqual(await nextStep("extract", false, failedAgain, db), { source: "extract" });
 });
 
+test("an item rewritten after extraction read it, before its candidate was written, is extracted again", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  await staging.upsertSourceItem(item({ rawText: "舊的內容。".repeat(20) }), db);
+  // A refetch collection rewrites the item just after the extraction reads
+  // its batch, so the candidate is made from the text read before.
+  let raced = false;
+  const racing = {
+    query: async (sql: string, params?: unknown[]) => {
+      const res = await db.query(sql, params);
+      if (!raced && /FROM archive_source_item WHERE id > \$1/.test(sql)) {
+        raced = true;
+        assert.equal(await staging.upsertSourceItem(item({ rawText: "新的內容。".repeat(20) }), db), "updated");
+      }
+      return res;
+    },
+  } as unknown as Pool;
+  const extractRun = await endedRun("extract", "succeeded");
+  const stats = run.emptyExtractStats();
+  await run.runExtraction(stats, async () => {}, () => false, racing);
+  assert.equal(raced, true);
+  assert.equal(stats.written, 1);
+  const body = async () => (await db.query("SELECT body_text FROM archive_candidate")).rows[0].body_text as string;
+  assert.ok((await body()).startsWith("舊的內容"));
+
+  // The candidate is older than the item: extract again, not match.
+  assert.equal(await run.candidatesStale(db), true);
+  assert.deepEqual(await nextStep("extract", true, extractRun, db), { source: "extract" });
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.ok((await body()).startsWith("新的內容"));
+  assert.equal(await run.candidatesStale(db), false);
+});
+
 test("runMatch groups the copies of one piece into a work with the emailed text as canonical", { skip }, async () => {
   const run = await import("../src/archive/consolidation/extract/run");
   const match = await import("../src/archive/consolidation/match/run");
