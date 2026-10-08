@@ -350,17 +350,24 @@ What a load writes, in one transaction:
   published WordPress copy if there is one. A work in review gets
   `flag = 'review'`. A new or changed text goes to the archive worker
   (`processing_status = 'pending'`), which summarises, chunks and embeds it
-  as for any row; an unchanged one is left as it is. The worker saves its
+  as for any row; an unchanged one is left as it is. Each time the worker
+  claims a row it gets a token of its own (`claim_token`) and a lease
+  (`claimed_at`), which it renews between its model steps. It saves its
   summary, chunks, entities and shared-entity links in one transaction,
-  only if the row still holds the text it processed. A load that changes
-  the text waits for that save, or leaves it writing nothing (a save waits
-  for a running load, up to 5 minutes, rather than failing). So a text
-  changed mid-way is processed again rather than overwritten, even by a
-  slower pass on the old text that ends after the new one (a failure on
-  the old text is not recorded against the new one either), and a row is
-  `processed` only once all of it is in. A row
-  a stopped worker left `processing` (a deploy restarts it mid-row) goes
-  back to the queue once its claim is 15 minutes old.
+  only if the row is still `processing` under its token and holds the text
+  it processed; it records a failure only on the same terms. A load that
+  changes the text queues the row again without the token: it waits for
+  that save, or leaves it writing nothing (a save or a renewal waits for a
+  running load, up to 5 minutes, rather than failing). So a text changed
+  mid-way is processed again rather than overwritten, even by a slower
+  pass on the old text that ends after the new one (a failure on the old
+  text is not recorded against the new one either), and a row is
+  `processed` only once all of it is in. A row whose lease is 15 minutes
+  old (a deploy restarted its worker mid-row, or one model call ran that
+  long) goes back to the queue without its token, as do the rows
+  `processing` when errors are retried by hand (`/archive/retry-errors`).
+  A worker that held one stops at its next renewal and writes nothing for
+  it, even once another pass has finished the row.
 - **The rows it replaces** get `superseded_by` pointing at the new row:
   - a row from the first import (any source but `youtube`) that is a copy
     of any version of the work: the step 3 test, or, for a row the import

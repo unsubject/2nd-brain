@@ -131,8 +131,9 @@ async function loadMembers(db: DB): Promise<MemberRow[]> {
 }
 
 // Insert or update the works' rows. A row whose text changed goes back to
-// the worker; one whose text is the same keeps its summary, chunks and
-// embedding.
+// the worker (a pass on the old text loses its claim); one whose text is
+// the same keeps its summary, chunks and embedding, and a pass on it keeps
+// its claim.
 async function upsertWorks(works: WorkRow[], q: DB): Promise<Map<string, { id: string; created: boolean; requeued: boolean }>> {
   const out = new Map<string, { id: string; created: boolean; requeued: boolean }>();
   for (const batch of chunks(works, BATCH)) {
@@ -179,7 +180,9 @@ async function upsertWorks(works: WorkRow[], q: DB): Promise<Map<string, { id: s
                            THEN a.updated_at ELSE now() END,
          summary = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.summary ELSE NULL END,
          processing_status = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.processing_status ELSE 'pending' END,
-         last_error = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.last_error ELSE NULL END
+         last_error = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.last_error ELSE NULL END,
+         claim_token = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.claim_token ELSE NULL END,
+         claimed_at = CASE WHEN a.raw_source = EXCLUDED.raw_source THEN a.claimed_at ELSE NULL END
        RETURNING a.source_external_id AS ref, a.id,
                  NOT EXISTS (SELECT 1 FROM old WHERE old.ref = a.source_external_id) AS created,
                  NOT EXISTS (SELECT 1 FROM old WHERE old.ref = a.source_external_id
