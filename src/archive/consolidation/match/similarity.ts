@@ -2,13 +2,10 @@
 // A text becomes a set of hashed 4-unit shingles, where a unit is one
 // Chinese/Japanese character or one Latin word, so a Cantonese column and
 // an English essay are measured alike and whitespace and punctuation don't
-// count. MinHash with banded LSH finds likely pairs without comparing every
-// pair; each is then checked exactly.
+// count. Sampled shingles find likely pairs without comparing every pair;
+// each is then checked exactly.
 
 const SHINGLE = 4;
-const BANDS = 32;
-const ROWS = 3;
-export const SIGNATURE_SIZE = BANDS * ROWS;
 
 const UNIT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{N}]+/gu;
 
@@ -44,44 +41,58 @@ function mix(x: number): number {
   return x >>> 0;
 }
 
-const SEEDS = Array.from({ length: SIGNATURE_SIZE }, (_, i) => mix(i * 0x9e3779b9 + 1));
+// Candidate pairs. Every text keeps the shingles whose (mixed) hash falls
+// in one fixed 1-in-SAMPLE slice; since the rule is the same for every
+// text, a shingle sampled in a short copy is sampled in the long text too,
+// so the share of the shorter text's samples found in the other estimates
+// containment. (MinHash estimates Jaccard instead, which is low for a short
+// copy of a long text: at a 0.3 size ratio, banded LSH missed about 40% of
+// fully contained copies.) The screen is generous; overlap() decides.
+const SAMPLE = 8;
+// A sampled shingle in more texts than this is boilerplate or a stock
+// phrase ("香港政府"): it says nothing about which texts are the same piece.
+const COMMON = 50;
+const MIN_SHARED = 0.3;
+const ID_SPACE = 65536;
 
-export function minhash(set: Uint32Array): Uint32Array {
-  const sig = new Uint32Array(SIGNATURE_SIZE).fill(0xffffffff);
-  for (const x of set) {
-    for (let i = 0; i < SIGNATURE_SIZE; i++) {
-      const h = mix(x ^ SEEDS[i]);
-      if (h < sig[i]) sig[i] = h;
-    }
-  }
-  return sig;
+function sampled(h: number): boolean {
+  return mix(h) % SAMPLE === 0;
 }
 
-// Index pairs [i, j] (i < j) whose signatures agree on a whole band. With
-// 32 bands of 3 rows, a pair at Jaccard 0.4 is found with p ≈ 0.88, at 0.6
-// almost always.
-export function candidatePairs(signatures: Uint32Array[]): [number, number][] {
-  const seen = new Set<string>();
-  const pairs: [number, number][] = [];
-  for (let b = 0; b < BANDS; b++) {
-    const buckets = new Map<string, number[]>();
-    signatures.forEach((sig, i) => {
-      if (sig[0] === 0xffffffff) return; // empty text
-      const key = Array.from(sig.subarray(b * ROWS, (b + 1) * ROWS)).join(",");
-      const list = buckets.get(key);
-      if (list) list.push(i);
-      else buckets.set(key, [i]);
-    });
-    for (const list of buckets.values()) {
-      for (let x = 0; x < list.length; x++) {
-        for (let y = x + 1; y < list.length; y++) {
-          const k = `${list[x]},${list[y]}`;
-          if (seen.has(k)) continue;
-          seen.add(k);
-          pairs.push([list[x], list[y]]);
+// Index pairs [i, j] (i < j) worth checking exactly.
+export function candidatePairs(sets: Uint32Array[]): [number, number][] {
+  if (sets.length >= ID_SPACE) throw new Error(`candidatePairs: at most ${ID_SPACE - 1} texts`);
+  // (hash, text) packed in one float so a native numeric sort groups each
+  // shingle's texts; ids ascend within a group because texts are added in order.
+  const entries: number[] = [];
+  sets.forEach((set, i) => {
+    for (const h of set) if (sampled(h)) entries.push(h * ID_SPACE + i);
+  });
+  const packed = Float64Array.from(entries).sort();
+  const useful = new Uint32Array(sets.length);
+  const shared = new Map<number, number>();
+  for (let start = 0; start < packed.length; ) {
+    const hash = Math.floor(packed[start] / ID_SPACE);
+    let end = start + 1;
+    while (end < packed.length && Math.floor(packed[end] / ID_SPACE) === hash) end++;
+    const n = end - start;
+    if (n <= COMMON) {
+      for (let x = start; x < end; x++) {
+        const i = packed[x] % ID_SPACE;
+        useful[i]++;
+        for (let y = x + 1; y < end; y++) {
+          const key = i * ID_SPACE + (packed[y] % ID_SPACE);
+          shared.set(key, (shared.get(key) ?? 0) + 1);
         }
       }
     }
+    start = end;
+  }
+  const pairs: [number, number][] = [];
+  for (const [key, count] of shared) {
+    const i = Math.floor(key / ID_SPACE);
+    const j = key % ID_SPACE;
+    if (count >= Math.max(1, Math.ceil(MIN_SHARED * Math.min(useful[i], useful[j])))) pairs.push([i, j]);
   }
   return pairs;
 }

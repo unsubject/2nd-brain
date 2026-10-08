@@ -3,7 +3,7 @@
 // Simon emailed to the outlet; then the piece as published on Substack,
 // WordPress or a newsletter; then a Drive document.
 
-import { candidatePairs, minhash, overlap, samePiece, shingles } from "./similarity";
+import { candidatePairs, overlap, samePiece, shingles } from "./similarity";
 
 export interface MatchCandidate {
   id: string;
@@ -46,8 +46,10 @@ export interface Work {
 export function canonicalRank(c: MatchCandidate): number {
   const emailed = c.source === "gmail" && (c.kind === "submission" || c.kind === "attachment");
   if (emailed && c.outlet) return 0;
-  if (c.source === "substack" && c.kind === "post") return 1;
-  if (c.source === "wordpress") return 2;
+  // As published on his own platforms; a WordPress page or private post
+  // (under review, not published) is no better than any other draft.
+  if (c.source === "substack" && c.kind === "post" && c.isPublished) return 1;
+  if (c.source === "wordpress" && c.kind === "post" && c.isPublished) return 2;
   if (c.kind === "newsletter") return 3;
   if (emailed) return 4; // to an address at no known outlet
   if (c.source === "gdrive") return 5;
@@ -133,7 +135,7 @@ export interface MatchResult {
 
 export function matchCandidates(candidates: MatchCandidate[]): MatchResult {
   const sets = candidates.map((c) => shingles(c.bodyText));
-  const pairs = candidatePairs(sets.map(minhash));
+  const pairs = candidatePairs(sets);
   const uf = new UnionFind(candidates.length);
   let links = 0;
   for (const [i, j] of pairs) {

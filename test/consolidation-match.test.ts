@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { overlap, samePiece, shingles, units } from "../src/archive/consolidation/match/similarity";
+import { candidatePairs, overlap, samePiece, shingles, units } from "../src/archive/consolidation/match/similarity";
 import { canonicalRank, matchCandidates, type MatchCandidate } from "../src/archive/consolidation/match/cluster";
 import { parseWorkListQuery } from "../src/archive/consolidation/match/review";
 
@@ -60,6 +60,19 @@ test("an edited resend is the same piece; an excerpt quoted in another essay is 
   assert.equal(samePiece(overlap(shingles(essay(10)), shingles(essay(11)))), false);
 });
 
+test("a much shorter copy contained in a longer text is always found (Codex P1 on #97)", () => {
+  // Jaccard is only about the size ratio here (0.3–0.45), where banded
+  // MinHash missed up to ~40% of such pairs; the sampled index must not.
+  for (let seed = 0; seed < 40; seed++) {
+    const long = essay(500 + seed, 3000);
+    const ratio = 0.31 + (seed % 5) * 0.035;
+    const short = long.slice(0, Math.round(long.length * ratio));
+    const sets = [shingles(long), shingles(essay(900 + seed)), shingles(short)];
+    assert.deepEqual(candidatePairs(sets), [[0, 2]], `seed ${seed}, ratio ${ratio}`);
+    assert.ok(samePiece(overlap(sets[0], sets[2])));
+  }
+});
+
 test("copies across sources form one work; the last version emailed to the outlet is canonical", () => {
   const text = essay(20);
   const first = cand({ bodyText: text, authoredAt: new Date("2020-06-29T11:00:00Z") });
@@ -112,6 +125,20 @@ test("canonical order: emailed to an outlet, Substack, WordPress, newsletter, ot
     cand({ kind: "self_draft" }),
   ].map(canonicalRank);
   assert.deepEqual(ranks, [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("an unpublished WordPress page or private post never outranks a published newsletter (Codex P2 on #97)", () => {
+  const text = essay(50);
+  const newsletter = cand({ source: "gmail", kind: "newsletter", outlet: "Revue", bodyText: text });
+  const privatePost = cand({ source: "wordpress", kind: "post", status: "review", isPublished: false, outlet: "WordPress (leesimon.me)", bodyText: text });
+  const page = cand({ source: "wordpress", kind: "page", status: "review", isPublished: true, outlet: "WordPress (leesimon.me)", bodyText: text });
+  assert.equal(canonicalRank(privatePost), 6);
+  assert.equal(canonicalRank(page), 6);
+  const { works } = matchCandidates([privatePost, page, newsletter]);
+  assert.equal(works.length, 1);
+  assert.equal(works[0].canonicalId, newsletter.id);
+  assert.equal(works[0].status, "keep");
+  assert.deepEqual(works[0].reasons, []);
 });
 
 test("a piece never published, or whose canonical is in review, is a work to review", () => {
