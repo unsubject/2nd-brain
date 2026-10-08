@@ -201,12 +201,25 @@ Two candidates are the same piece when at least 60% of the shorter text's
 shingles are in the longer one and the shorter is at least 30% of the
 longer's size, so an edited resend, a repost with a new opening, or a
 Drive draft joins its work, but a paragraph quoted in another essay does
-not. MinHash with banded LSH finds the likely pairs; each is then checked
-exactly, and pairs chain into works.
+not. Likely pairs come from sampled shingles (the same 1-in-8 slice of
+hashes in every text, so a short copy's samples are all in the long text's
+samples, which a containment screen needs; banded MinHash, used at first,
+missed many short copies). Pairs are found through shared samples that
+are in at most 50 texts, then screened on all their shared samples. A
+text whose samples in over 50 texts could pass the screen by themselves
+also counts those it shares with each other text, so a pair that shares
+only such samples is found too. A
+text the index can't vouch for (fewer than 32 ordinary samples, or more
+than 40% of its samples in over 50 texts, as with a piece in many copies
+or a widely quoted passage) is checked against every text of a size it
+could match. A pair at the 60% limit is then missed only by sampling
+noise (about 3 in 100,000). Each pair is checked exactly, and pairs chain
+into works.
 
 Each work's canonical text, in order: the latest version emailed to a known
 outlet (Simon's decision: the last version he sent wins, not the editor's
-edit); the Substack post; the WordPress post; the newsletter issue; an email
+edit); the published Substack post; the published WordPress post (a page or
+private post ranks with the drafts); the newsletter issue; an email
 to an address at no known outlet; the Drive document; anything else. Its
 date is the first publication (the earliest date among published members),
 its outlet and column those of that first publication, and `outlets` lists

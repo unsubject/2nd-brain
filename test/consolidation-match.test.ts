@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { overlap, samePiece, shingles, units } from "../src/archive/consolidation/match/similarity";
+import { candidatePairs, overlap, samePiece, sampled, shingles, units } from "../src/archive/consolidation/match/similarity";
 import { canonicalRank, matchCandidates, type MatchCandidate } from "../src/archive/consolidation/match/cluster";
 import { parseWorkListQuery } from "../src/archive/consolidation/match/review";
 
@@ -60,6 +60,111 @@ test("an edited resend is the same piece; an excerpt quoted in another essay is 
   assert.equal(samePiece(overlap(shingles(essay(10)), shingles(essay(11)))), false);
 });
 
+test("a much shorter copy contained in a longer text is always found (Codex P1 on #97)", () => {
+  // Jaccard is only about the size ratio here (0.3–0.45), where banded
+  // MinHash missed up to ~40% of such pairs; the sampled index must not.
+  for (let seed = 0; seed < 40; seed++) {
+    const long = essay(500 + seed, 3000);
+    const ratio = 0.31 + (seed % 5) * 0.035;
+    const short = long.slice(0, Math.round(long.length * ratio));
+    const sets = [shingles(long), shingles(essay(900 + seed)), shingles(short)];
+    assert.deepEqual(candidatePairs(sets), [[0, 2]], `seed ${seed}, ratio ${ratio}`);
+    assert.ok(samePiece(overlap(sets[0], sets[2])));
+  }
+});
+
+test("texts too short to sample still pair: identical copies are one work (Codex on #98)", () => {
+  // One de-duplicated shingle, not in the sampled slice.
+  const tiny = "的".repeat(50);
+  assert.deepEqual(candidatePairs([shingles(tiny), shingles(essay(60)), shingles(tiny)]), [[0, 2]]);
+  for (let seed = 0; seed < 50; seed++) {
+    const short = essay(7000 + seed, 40);
+    const { works } = matchCandidates([cand({ bodyText: short }), cand({ bodyText: essay(8000 + seed) }), cand({ bodyText: short })]);
+    assert.equal(works.length, 2, `seed ${seed}`);
+  }
+});
+
+test("a short pair with too few samples for the screen is still checked (Codex on #98)", () => {
+  // Codex's case: 47 shingles each, 64% containment, 9 samples each of
+  // which only 2 are shared, under the 30% screen.
+  const a = essay(16252, 50);
+  const b = a.slice(0, 33) + essay(507817, 17);
+  const [sa, sb] = [shingles(a), shingles(b)];
+  assert.ok(samePiece(overlap(sa, sb)));
+  assert.deepEqual(candidatePairs([sa, sb]), [[0, 1]]);
+  assert.equal(matchCandidates([cand({ bodyText: a }), cand({ bodyText: b })]).works.length, 1);
+});
+
+// Sampled and unsampled shingle hashes, for building index cases directly.
+const SAMPLED: number[] = [];
+const UNSAMPLED: number[] = [];
+for (let h = 1; SAMPLED.length < 60000 || UNSAMPLED.length < 2000; h++) (sampled(h) ? SAMPLED : UNSAMPLED).push(h);
+let nextSampled = 0;
+let nextUnsampled = 0;
+const fresh = (n: number) => SAMPLED.slice(nextSampled, (nextSampled += n));
+const unsampled = (n: number) => UNSAMPLED.slice(nextUnsampled, (nextUnsampled += n));
+const set = (...parts: number[][]) => Uint32Array.from(parts.flat()).sort();
+const paired = (pairs: [number, number][], i: number, j: number) => pairs.some(([a, b]) => a === i && b === j);
+
+test("a pair whose shared samples are all common is still checked (Codex on #98)", () => {
+  // Codex's case: 100 earlier texts each hold a rotating 50 of a 100-sample
+  // pool plus 100 unique samples; two identical texts hold the pool, so
+  // every pool sample is in 52 texts, over the cap.
+  const pool = fresh(100);
+  const earlier = Array.from({ length: 100 }, (_, k) => set(Array.from({ length: 50 }, (_, t) => pool[(k + t) % 100]), fresh(100)));
+  const sets = [...earlier, set(pool), set(pool)];
+  assert.ok(samePiece(overlap(sets[100], sets[101])));
+  assert.ok(paired(candidatePairs(sets), 100, 101));
+});
+
+test("the screen counts common shared samples too (Codex on #98)", () => {
+  // Codex's case: 100 shingles each, 60 shared; each text has 20 shared
+  // common samples and 32 ordinary ones of which only 9 are shared (under
+  // 30% of 32), and 38.5% of its samples common (under the fallback's 40%).
+  const common = fresh(20);
+  const ordinaryShared = fresh(9);
+  const unsampledShared = unsampled(31);
+  const version = () => set(common, ordinaryShared, fresh(23), unsampledShared, unsampled(17));
+  const holders = Array.from({ length: 49 }, () => set(common, fresh(200)));
+  const sets = [version(), version(), ...holders];
+  assert.equal(overlap(sets[0], sets[1]).containment, 0.6);
+  assert.ok(samePiece(overlap(sets[0], sets[1])));
+  assert.ok(paired(candidatePairs(sets), 0, 1));
+});
+
+test("a pair sharing only common samples is still checked (Codex on #98)", () => {
+  // Codex's case: 148 shingles each, 89 shared: 39 common samples and 50
+  // unsampled shingles. Each text's 59 ordinary samples are its own, and
+  // 39 of its 98 samples (under the fallback's 40%) are common.
+  const common = fresh(39);
+  const unsampledShared = unsampled(50);
+  const version = () => set(common, unsampledShared, fresh(59));
+  const holders = Array.from({ length: 49 }, () => set(common, fresh(200)));
+  const sets = [version(), version(), ...holders];
+  assert.ok(samePiece(overlap(sets[0], sets[1])));
+  assert.ok(paired(candidatePairs(sets), 0, 1));
+});
+
+test("two versions whose shared part the archive quotes widely are still checked", () => {
+  // 64% of each version is a passage also quoted in 60 longer texts (too
+  // long to be the same piece); each version has 40 samples of its own.
+  const passage = fresh(70);
+  const quoting = Array.from({ length: 60 }, () => set(passage, fresh(300)));
+  const sets = [...quoting, set(passage, fresh(40)), set(passage, fresh(40))];
+  assert.ok(samePiece(overlap(sets[60], sets[61])));
+  assert.equal(samePiece(overlap(sets[0], sets[60])), false);
+  assert.ok(paired(candidatePairs(sets), 60, 61));
+});
+
+test("a piece with more copies than the stock-phrase cap still forms one work (Codex on #98)", () => {
+  const text = essay(70);
+  const copies = Array.from({ length: 60 }, () => cand({ bodyText: text }));
+  const other = cand({ bodyText: essay(71) });
+  const { works } = matchCandidates([...copies, other]);
+  assert.equal(works.length, 2);
+  assert.deepEqual(works.map((w) => w.members.length).sort((a, b) => a - b), [1, 60]);
+});
+
 test("copies across sources form one work; the last version emailed to the outlet is canonical", () => {
   const text = essay(20);
   const first = cand({ bodyText: text, authoredAt: new Date("2020-06-29T11:00:00Z") });
@@ -112,6 +217,20 @@ test("canonical order: emailed to an outlet, Substack, WordPress, newsletter, ot
     cand({ kind: "self_draft" }),
   ].map(canonicalRank);
   assert.deepEqual(ranks, [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("an unpublished WordPress page or private post never outranks a published newsletter (Codex P2 on #97)", () => {
+  const text = essay(50);
+  const newsletter = cand({ source: "gmail", kind: "newsletter", outlet: "Revue", bodyText: text });
+  const privatePost = cand({ source: "wordpress", kind: "post", status: "review", isPublished: false, outlet: "WordPress (leesimon.me)", bodyText: text });
+  const page = cand({ source: "wordpress", kind: "page", status: "review", isPublished: true, outlet: "WordPress (leesimon.me)", bodyText: text });
+  assert.equal(canonicalRank(privatePost), 6);
+  assert.equal(canonicalRank(page), 6);
+  const { works } = matchCandidates([privatePost, page, newsletter]);
+  assert.equal(works.length, 1);
+  assert.equal(works[0].canonicalId, newsletter.id);
+  assert.equal(works[0].status, "keep");
+  assert.deepEqual(works[0].reasons, []);
 });
 
 test("a piece never published, or whose canonical is in review, is a work to review", () => {
