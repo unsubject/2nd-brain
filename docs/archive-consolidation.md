@@ -264,7 +264,9 @@ What a load writes, in one transaction:
   result only if the row still holds the text it processed, so a text
   changed mid-way is processed again rather than overwritten (a failure on
   the old text is not recorded against the new one either), and marks a row
-  `processed` only once its summary, chunks and entities are all in.
+  `processed` only once its summary, chunks and entities are all in. A row
+  a stopped worker left `processing` (a deploy restarts it mid-row) goes
+  back to the queue once its claim is 15 minutes old.
 - **The rows it replaces** get `superseded_by` pointing at the new row:
   - a row from the first import (any source but `youtube`) that is a copy
     of any version of the work: the step 3 test, or, for a row the import

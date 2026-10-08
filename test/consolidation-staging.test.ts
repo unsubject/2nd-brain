@@ -1097,3 +1097,23 @@ test("idea links to an old row move to its replacement, keeping a record (Codex 
   assert.deepEqual(byId[second].history, []);
   await db.query("DELETE FROM idea WHERE user_id = 'entity-test-user'");
 });
+
+test("rows a stopped worker left in processing go back to the queue", { skip }, async () => {
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status, updated_at) VALUES
+       ('default', 'essay', 'stranded', 'a', 'archive', 'reclaim:stranded', 'processing', now() - interval '1 hour'),
+       ('default', 'essay', 'in progress', 'b', 'archive', 'reclaim:busy', 'processing', now() - interval '1 minute'),
+       ('default', 'essay', 'queued', 'c', 'archive', 'reclaim:queued', 'pending', now() - interval '2 hours')`
+  );
+  // Claiming stamps the row, so a fresh claim is never taken for a stranded one.
+  const claimed = await queries.findPendingArtifact();
+  assert.equal(claimed?.title, "queued");
+  assert.equal(await queries.reclaimStaleProcessing(15), 1);
+  const { rows } = await db.query("SELECT title, processing_status FROM public_artifact ORDER BY title");
+  assert.deepEqual(
+    rows.map((r) => `${r.title}: ${r.processing_status}`),
+    ["in progress: processing", "queued: processing", "stranded: pending"]
+  );
+});
