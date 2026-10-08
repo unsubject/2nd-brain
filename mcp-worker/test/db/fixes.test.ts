@@ -261,6 +261,30 @@ describe.skipIf(!TEST_DB)('gardening fixes', () => {
     expect(p2.candidates[0].artifact.id).toBe(x);
   });
 
+  it('outputs mode keeps paging past a page with no candidates', async () => {
+    const x = await seedArtifact('Essay', axis(0));
+    // The 40 newest ideas are orthogonal to the essay; the 2 oldest match it.
+    for (let i = 0; i < 40; i++) {
+      const id = await seedIdea(`Far ${String(i).padStart(2, '0')}`, {
+        captured_at: `2026-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      });
+      await setEmbedding(id, axis(10 + i));
+    }
+    for (let i = 0; i < 2; i++) {
+      const id = await seedIdea(`Near ${i}`, { captured_at: `2026-01-0${i + 1}T00:00:00Z` });
+      await setEmbedding(id, mix(0, 3 + i, 0.8 - i * 0.1));
+    }
+    const p1 = await ok('garden_ideas', { mode: 'outputs' });
+    expect(p1.candidates).toEqual([]);
+    expect(p1.paging.next_offset).toBe(40);
+    const p2 = await ok('garden_ideas', { mode: 'outputs', offset: p1.paging.next_offset });
+    expect(p2.candidates.map((c: any) => [c.a.title, c.artifact.id])).toEqual([
+      ['Near 0', x],
+      ['Near 1', x],
+    ]);
+    expect(p2.paging.next_offset).toBeNull();
+  });
+
   it('band mode with a focus idea and near mode via nearest neighbours', async () => {
     const a = await seedIdea('A');
     const b = await seedIdea('B');

@@ -197,7 +197,7 @@ Mark only the ideas the user has actually been through. Ideas they skip stay in 
 | `orphans` | Ideas with no accepted links, reviewed or not, each with its nearest neighbours (newest first; `order: 'oldest'` for the backlog) | similarity ≥ 0.30 |
 | `near` | Tightening clusters; spotting duplicates (flagged at ≥ 0.90) | ≥ 0.50 |
 | `band` | Cross-domain analogies (`same_mechanism`, rhymes-with), tensions, inversions | 0.30–0.45 |
-| `outputs` | Matching ideas to the user's own published essays/episodes (territory); 40 ideas per page | ≥ 0.45 |
+| `outputs` | Matching ideas to the user's own published essays/episodes (territory); 40 ideas per page, and a page can have no candidates, so follow `paging.next_offset` until it is null | ≥ 0.45 |
 
 `focus_idea_id` narrows any mode to one idea — and is the way to reach any idea when the garden is large (global `near` / `band` passes cover the most recently updated ideas; the response says so in `scope_note`). `cross_domain: true` keeps only pairs with no tag in common (near / band / orphans / inbox). `orphans`, `outputs` and `inbox` page with `offset`. Ideas leave these lists as you work (an inbox idea when marked reviewed, composted or promoted; an orphan when a link to it is accepted; an `outputs` idea when its `became` is accepted), and later ideas move up. So call again with `offset` = `paging.next_offset` minus the number of ideas on the page that left the list (see the weekly garden review, Step 1).
 
