@@ -261,10 +261,13 @@ What a load writes, in one transaction:
   `flag = 'review'`. A new or changed text goes to the archive worker
   (`processing_status = 'pending'`), which summarises, chunks and embeds it
   as for any row; an unchanged one is left as it is. The worker saves its
-  result only if the row still holds the text it processed, so a text
-  changed mid-way is processed again rather than overwritten (a failure on
-  the old text is not recorded against the new one either), and marks a row
-  `processed` only once its summary, chunks and entities are all in.
+  summary, chunks, entities and shared-entity links in one transaction,
+  only if the row still holds the text it processed. A load that changes
+  the text waits for that save, or leaves it writing nothing. So a text
+  changed mid-way is processed again rather than overwritten, even by a
+  slower pass on the old text that ends after the new one (a failure on
+  the old text is not recorded against the new one either), and a row is
+  `processed` only once all of it is in.
 - **The rows it replaces** get `superseded_by` pointing at the new row:
   - a row from the first import (any source but `youtube`) that is a copy
     of any version of the work: the step 3 test, or, for a row the import

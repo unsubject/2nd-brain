@@ -805,6 +805,57 @@ test("catch-up loads when no load has run since the works were made", { skip }, 
   assert.deepEqual(archived.map((r) => r.status), ["superseded"]);
 });
 
+// What one worker pass hands completeArtifactProcessing, for `text`.
+function pass(text: string, over: Record<string, unknown> = {}) {
+  return {
+    cleanText: text,
+    summary: "摘要",
+    excerpt: "",
+    tags: [] as string[],
+    language: "zh",
+    embedding: new Array(1536).fill(0),
+    embeddingModel: "test",
+    chunks: [] as ReturnType<typeof chunk>[],
+    entities: [] as { entityRefId: string; mentionText: string | null; salience: number | null }[],
+    ...over,
+  };
+}
+
+function chunk(chunkIndex: number, chunkText: string) {
+  return {
+    chunkIndex,
+    chunkText,
+    chunkTokens: chunkText.length,
+    headingPath: [] as string[],
+    startOffset: 0,
+    endOffset: chunkText.length,
+    embedding: new Array(1536).fill(0),
+  };
+}
+
+async function entity(name: string): Promise<string> {
+  const { rows } = await db.query(
+    `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name)
+     VALUES ('default', 'concept', $1, $1)
+     ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE SET display_name = EXCLUDED.display_name
+     RETURNING id`,
+    [name]
+  );
+  return rows[0].id;
+}
+
+// Until `n` other sessions wait on a lock.
+async function waitForLockWait(n = 1): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    const { rows } = await db.query(
+      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()"
+    );
+    if (rows[0].n >= n) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("no session waited on the lock");
+}
+
 test("the worker saves its result only for the text it processed (Codex on #99)", { skip }, async () => {
   const load = await import("../src/archive/consolidation/load/run");
   const queries = await import("../src/archive/queries");
@@ -821,16 +872,8 @@ test("the worker saves its result only for the text it processed (Codex on #99)"
                     (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
   await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
 
-  const result = {
-    cleanText: claimed!.raw_source,
-    summary: "舊文的摘要",
-    excerpt: "",
-    tags: [],
-    language: "zh",
-    embedding: new Array(1536).fill(0),
-    embeddingModel: "test",
-  };
-  assert.equal(await queries.saveArtifactProcessingResult(claimed!.id, claimed!.raw_source, result), false);
+  const old = pass(claimed!.raw_source, { summary: "舊文的摘要" });
+  assert.equal(await queries.completeArtifactProcessing(claimed!.id, claimed!.raw_source, old), false);
   const { rows } = await db.query("SELECT processing_status, summary, raw_source FROM public_artifact WHERE id = $1", [claimed!.id]);
   assert.equal(rows[0].processing_status, "pending"); // processed again, with the new text
   assert.equal(rows[0].summary, null);
@@ -838,13 +881,122 @@ test("the worker saves its result only for the text it processed (Codex on #99)"
 
   const next = await queries.findPendingArtifact();
   assert.equal(next?.id, claimed!.id);
-  assert.equal(await queries.saveArtifactProcessingResult(next!.id, next!.raw_source, { ...result, cleanText: next!.raw_source }), true);
-  const status = async () =>
-    (await db.query("SELECT processing_status FROM public_artifact WHERE id = $1", [claimed!.id])).rows[0].processing_status;
-  // Not found yet: chunks and entities come before the row is done.
-  assert.equal(await status(), "processing");
-  assert.equal(await queries.finishArtifactProcessing(next!.id, next!.raw_source), true);
-  assert.equal(await status(), "processed");
+  assert.equal(await queries.completeArtifactProcessing(next!.id, next!.raw_source, pass(next!.raw_source)), true);
+  const { rows: done } = await db.query("SELECT processing_status, last_error FROM public_artifact WHERE id = $1", [claimed!.id]);
+  assert.deepEqual([done[0].processing_status, done[0].last_error], ["processed", null]);
+});
+
+test("a pass on an old text writes nothing, even after the new text's pass finished first (Codex on #99)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  await db.query("DELETE FROM link_edge WHERE target_type = 'public_artifact' OR source_type = 'public_artifact'");
+  await buildWorks();
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE source_external_id <> 'gmail:sub'");
+  const { rows: others } = await db.query("SELECT id, raw_source FROM public_artifact WHERE source_external_id <> 'gmail:sub' LIMIT 1");
+  const [eOld, eNew1, eNew2] = [await entity("race-old"), await entity("race-new-1"), await entity("race-new-2")];
+  // Another row shares the new text's two entities, so the new text's
+  // pass links to it.
+  assert.equal(
+    await queries.completeArtifactProcessing(others[0].id, others[0].raw_source, pass(others[0].raw_source, {
+      entities: [eNew1, eNew2].map((entityRefId) => ({ entityRefId, mentionText: null, salience: 0.9 })),
+    })),
+    true
+  );
+
+  // Worker A takes the column. A load queues the new text, worker B takes
+  // it and finishes first; then A, still on the old text, tries to save.
+  const a = await queries.findPendingArtifact();
+  await db.query(`UPDATE archive_candidate SET body_text = body_text || '\n\n補記：多謝讀者指正。' WHERE id =
+                    (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  const b = await queries.findPendingArtifact();
+  assert.equal(b?.id, a!.id);
+  assert.notEqual(b!.raw_source, a!.raw_source);
+  const newPass = pass(b!.raw_source, {
+    summary: "新文的摘要",
+    chunks: [chunk(0, "新文第一段"), chunk(1, "新文第二段")],
+    entities: [eNew1, eNew2].map((entityRefId) => ({ entityRefId, mentionText: null, salience: 0.9 })),
+  });
+  assert.equal(await queries.completeArtifactProcessing(b!.id, b!.raw_source, newPass), true);
+  const oldPass = pass(a!.raw_source, {
+    summary: "舊文的摘要",
+    chunks: [chunk(0, "舊文第一段")],
+    entities: [{ entityRefId: eOld, mentionText: null, salience: 0.9 }],
+  });
+  assert.equal(await queries.completeArtifactProcessing(a!.id, a!.raw_source, oldPass), false);
+
+  const { rows: row } = await db.query("SELECT processing_status, summary, raw_source FROM public_artifact WHERE id = $1", [a!.id]);
+  assert.deepEqual([row[0].processing_status, row[0].summary, row[0].raw_source], ["processed", "新文的摘要", b!.raw_source]);
+  const { rows: chunks } = await db.query(
+    "SELECT chunk_text FROM public_artifact_chunk WHERE public_artifact_id = $1 ORDER BY chunk_index", [a!.id]
+  );
+  assert.deepEqual(chunks.map((r) => r.chunk_text), ["新文第一段", "新文第二段"]);
+  const { rows: ents } = await db.query(
+    "SELECT entity_ref_id FROM public_artifact_entity WHERE public_artifact_id = $1 ORDER BY entity_ref_id", [a!.id]
+  );
+  assert.deepEqual(ents.map((r) => r.entity_ref_id), [eNew1, eNew2].sort());
+  const { rows: links } = await db.query(
+    `SELECT target_id, explanation FROM link_edge
+      WHERE source_type = 'public_artifact' AND source_id = $1 AND link_type = 'shared_entities'`,
+    [a!.id]
+  );
+  assert.deepEqual(links.map((r) => [r.target_id, r.explanation]), [[others[0].id, "2 shared entities"]]);
+});
+
+test("a load that changes the text while a pass saves either waits for it or leaves it writing nothing (Codex on #99)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE source_external_id <> 'gmail:sub'");
+  const claimed = await queries.findPendingArtifact();
+  const state = async () =>
+    (await db.query("SELECT processing_status, summary FROM public_artifact WHERE id = $1", [claimed!.id])).rows[0];
+
+  // The text changes in a transaction that has not committed yet: the pass
+  // waits for it, then finds the row holds another text and writes nothing.
+  const other = await db.connect();
+  try {
+    await other.query("BEGIN");
+    await other.query("UPDATE public_artifact SET raw_source = raw_source || '（修訂）', summary = NULL, processing_status = 'pending' WHERE id = $1", [claimed!.id]);
+    const saving = queries.completeArtifactProcessing(claimed!.id, claimed!.raw_source, pass(claimed!.raw_source, {
+      summary: "舊文的摘要",
+      chunks: [chunk(0, "舊文第一段")],
+    }));
+    await waitForLockWait();
+    await other.query("COMMIT");
+    assert.equal(await saving, false);
+  } finally {
+    other.release();
+  }
+  assert.deepEqual(await state(), { processing_status: "pending", summary: null });
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM public_artifact_chunk WHERE public_artifact_id = $1", [claimed!.id])).rows[0].n, 0);
+
+  // The other way round: a change that comes while the pass holds the row
+  // waits for the pass to commit, then queues the row again. (The pass is
+  // held at its lock, so the change is sure to come after it.)
+  const next = await queries.findPendingArtifact();
+  const holder = await db.connect();
+  try {
+    await holder.query("BEGIN");
+    await holder.query("SELECT 1 FROM public_artifact WHERE id = $1 FOR NO KEY UPDATE", [next!.id]);
+    const saving = queries.completeArtifactProcessing(next!.id, next!.raw_source, pass(next!.raw_source, { summary: "新文的摘要" }));
+    await waitForLockWait(1);
+    const changing = appPool!.query(
+      "UPDATE public_artifact SET raw_source = raw_source || '（再修訂）', summary = NULL, processing_status = 'pending' WHERE id = $1",
+      [next!.id]
+    );
+    await waitForLockWait(2);
+    await holder.query("COMMIT");
+    assert.equal(await saving, true);
+    await changing;
+  } finally {
+    holder.release();
+  }
+  assert.deepEqual(await state(), { processing_status: "pending", summary: null });
 });
 
 test("a failed attempt on an old text leaves the new one queued (Codex on #99)", { skip }, async () => {
@@ -895,19 +1047,10 @@ test("old rows leave search only once their replacement is fully processed, and 
     [entry, old[0].id, columnId]
   );
 
-  // The worker has saved the new row but not finished it: a load now
-  // leaves the old row in search.
+  // The worker is processing the new row: a load now leaves the old row
+  // in search.
   const claimed = await queries.findPendingArtifact();
   assert.equal(claimed?.id, columnId);
-  await queries.saveArtifactProcessingResult(columnId, claimed!.raw_source, {
-    cleanText: claimed!.raw_source,
-    summary: "摘要",
-    excerpt: "",
-    tags: [],
-    language: "zh",
-    embedding: new Array(1536).fill(0),
-    embeddingModel: "test",
-  });
   const stats = load.emptyLoadStats();
   await load.runLoad(stats, async () => {}, () => false, db);
   assert.equal(stats.legacy.hidden + stats.retiredLate, 0);
@@ -915,7 +1058,7 @@ test("old rows leave search only once their replacement is fully processed, and 
   assert.equal(await oldStatus(), "published");
 
   // Finished: the old row leaves search and its links move to the new row.
-  await queries.finishArtifactProcessing(columnId, claimed!.raw_source);
+  assert.equal(await queries.completeArtifactProcessing(columnId, claimed!.raw_source, pass(claimed!.raw_source)), true);
   assert.equal(await load.retireReplacedRows(columnId, db), 1);
   assert.equal(await oldStatus(), "superseded");
   const { rows: links } = await db.query(
@@ -1011,18 +1154,9 @@ test("each pass rebuilds an artifact's shared-entity links, dropping stale ones 
     ids.push(rows[0].id);
   }
   const [a, b, c] = ids;
-  const entity = async (name: string) =>
-    (
-      await db.query(
-        `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name)
-         VALUES ('default', 'concept', $1, $1)
-         ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE SET display_name = EXCLUDED.display_name
-         RETURNING id`,
-        [name]
-      )
-    ).rows[0].id as string;
-  const [e1, e2] = [await entity("entity-test-1"), await entity("entity-test-2")];
-  for (const [artifact, ent] of [[a, e1], [a, e2], [b, e1], [b, e2], [c, e1]]) {
+  const [e1, e2, e3] = [await entity("entity-test-1"), await entity("entity-test-2"), await entity("entity-test-3")];
+  // a's entities from the earlier pass: e3 is gone from its new text.
+  for (const [artifact, ent] of [[a, e3], [b, e1], [b, e2], [c, e1], [c, e3]]) {
     await db.query("INSERT INTO public_artifact_entity (public_artifact_id, entity_ref_id) VALUES ($1, $2)", [artifact, ent]);
   }
   // Links from an earlier pass on another text: to c (no longer related),
@@ -1036,7 +1170,17 @@ test("each pass rebuilds an artifact's shared-entity links, dropping stale ones 
     [a, b, c]
   );
 
-  assert.equal(await queries.replaceSharedEntityLinks(a, 2), 1);
+  // The extractor named e1 twice: it counts once.
+  const entities = [
+    { entityRefId: e1, mentionText: "entity-test-1", salience: 0.9 },
+    { entityRefId: e1, mentionText: "Entity-Test-1", salience: 0.8 },
+    { entityRefId: e2, mentionText: "entity-test-2", salience: null },
+  ];
+  assert.equal(await queries.completeArtifactProcessing(a, "entity-test:a", pass("entity-test:a", { entities })), true);
+  const { rows: mine } = await db.query(
+    "SELECT entity_ref_id, salience FROM public_artifact_entity WHERE public_artifact_id = $1 ORDER BY entity_ref_id", [a]
+  );
+  assert.deepEqual(mine.map((r) => [r.entity_ref_id, r.salience]), [[e1, 0.9], [e2, null]].sort((x, y) => (String(x[0]) < String(y[0]) ? -1 : 1)));
   const { rows } = await db.query(
     `SELECT source_id, target_id, link_type, explanation FROM link_edge
       WHERE source_id = $1 OR target_id = $1 ORDER BY link_type, source_id`,
