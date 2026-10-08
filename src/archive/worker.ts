@@ -6,8 +6,19 @@ import { normalizeMarkdown } from "./ingest/markdown";
 import { retireReplacedRows } from "./consolidation/load/run";
 
 const POLL_INTERVAL_MS = 60_000;
+// How often to put back rows a stopped worker left half done.
+const RECLAIM_INTERVAL_MS = 5 * 60_000;
+let lastReclaim = 0;
+
+async function reclaimStale(): Promise<void> {
+  if (Date.now() - lastReclaim < RECLAIM_INTERVAL_MS) return;
+  lastReclaim = Date.now();
+  const n = await archiveQueries.reclaimStaleProcessing();
+  if (n > 0) console.log(`[archive] Requeued ${n} row(s) a stopped worker left in processing`);
+}
 
 async function processOne(): Promise<boolean> {
+  await reclaimStale();
   const artifact = await archiveQueries.findPendingArtifact();
   if (!artifact) return false;
 

@@ -87,9 +87,12 @@ export async function findPendingArtifact(): Promise<{
   tags: string[] | null;
   summary: string | null;
 } | null> {
+  // The claim stamps updated_at, so a claim left by a worker that stopped
+  // mid-row (a restart or deploy) can be told from one in progress.
   const { rows } = await pool.query(
     `UPDATE public_artifact
-     SET processing_status = 'processing'
+     SET processing_status = 'processing',
+         updated_at = now()
      WHERE id = (
        SELECT id FROM public_artifact
        WHERE processing_status = 'pending'
@@ -100,6 +103,19 @@ export async function findPendingArtifact(): Promise<{
      RETURNING id, raw_source, title, tags, summary`
   );
   return rows[0] || null;
+}
+
+// Rows left 'processing' by a worker that stopped mid-row go back to the
+// queue once their claim is this many minutes old (a row takes seconds).
+export async function reclaimStaleProcessing(minutes: number = 15): Promise<number> {
+  const { rowCount } = await pool.query(
+    `UPDATE public_artifact
+     SET processing_status = 'pending'
+     WHERE processing_status = 'processing'
+       AND updated_at < now() - make_interval(mins => $1)`,
+    [minutes]
+  );
+  return rowCount ?? 0;
 }
 
 // Whether the row still holds `rawSource`: the worker stops a pass on a
