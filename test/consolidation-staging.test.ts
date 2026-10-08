@@ -42,6 +42,7 @@ before(async () => {
 });
 
 after(async () => {
+  if (url) await (await import("../src/archive/consolidation/runner")).runsSettled();
   await appPool?.end();
   await db?.end();
   await releaseDatabase?.();
@@ -49,6 +50,8 @@ after(async () => {
 
 beforeEach(async () => {
   if (!url) return;
+  // A run the last test started, and the steps it starts, end first.
+  await (await import("../src/archive/consolidation/runner")).runsSettled();
   await db.query("TRUNCATE archive_source_item, archive_collect_run CASCADE");
 });
 

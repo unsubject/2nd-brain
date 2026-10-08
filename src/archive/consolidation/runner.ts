@@ -32,16 +32,34 @@ export type CollectRequest =
 // dead process (staging.STALE_RUN_SECONDS is the other side of this).
 const HEARTBEAT_MS = 30_000;
 
+// Each run's job until its outcome is recorded and its next step started,
+// and each next step being started.
+const inFlight = new Set<Promise<unknown>>();
+
+function track(work: Promise<unknown>): void {
+  inFlight.add(work);
+  void work.finally(() => inFlight.delete(work));
+}
+
+// Resolves once no run started here is still working, recording its
+// outcome or starting the step after it. For tests: a run must not outlive
+// the test that started it, or its next step lands in the next test's data.
+export async function runsSettled(): Promise<void> {
+  while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+}
+
 function startFollowUp(req: CollectRequest): void {
-  startCollection(req)
-    .then((id) => console.log(`[consolidation] ${req.source} run ${id} started after the previous step`))
-    .catch((err) => {
-      if (err instanceof RunAlreadyActiveError) {
-        console.log(`[consolidation] ${req.source} run not started after the previous step: ${err.message}`);
-        return;
-      }
-      console.error(`[consolidation] could not start ${req.source} run:`, describeGoogleError(err));
-    });
+  track(
+    startCollection(req)
+      .then((id) => console.log(`[consolidation] ${req.source} run ${id} started after the previous step`))
+      .catch((err) => {
+        if (err instanceof RunAlreadyActiveError) {
+          console.log(`[consolidation] ${req.source} run not started after the previous step: ${err.message}`);
+          return;
+        }
+        console.error(`[consolidation] could not start ${req.source} run:`, describeGoogleError(err));
+      })
+  );
 }
 
 // The step after run `runId` ended, so new material reaches the works and
@@ -152,7 +170,7 @@ export async function startCollection(req: CollectRequest): Promise<string> {
             ? runMatch(stats as MatchStats, progress, shouldStop)
             : runLoad(stats as LoadStats, progress, shouldStop);
 
-  job
+  const outcome = job
     .then(
       () => (stats.failed > 0 ? { ok: false, error: `${stats.failed} item(s) failed` } : { ok: true, error: null }),
       (err) => {
@@ -185,6 +203,7 @@ export async function startCollection(req: CollectRequest): Promise<string> {
       console.error(`[consolidation] could not record outcome of run ${runId}:`, describeGoogleError(err))
     )
     .finally(() => clearInterval(timer));
+  track(outcome);
 
   return runId;
 }
