@@ -28,6 +28,9 @@ export interface RateLimiterOptions {
   // Gap between calls across all workers; doubles on each new limit hit.
   minIntervalMs: number;
   maxIntervalMs: number;
+  // The gap after the first limit hit when minIntervalMs is 0 (no pacing
+  // until the API reports a limit); doubling from 0 would give 1 ms.
+  limitedIntervalMs?: number;
   // Retries per call after a limit hit; the pause doubles each time.
   retries: number;
   basePauseMs: number;
@@ -88,7 +91,10 @@ export class RateLimiter implements CallRunner {
         // Workers whose calls were already in flight hit the same limit;
         // only the first of them slows the pace and reports the pause.
         if (t >= this.pausedUntil) {
-          this.intervalMs = Math.min(this.opts.maxIntervalMs, Math.max(1, this.intervalMs) * 2);
+          this.intervalMs = Math.min(
+            this.opts.maxIntervalMs,
+            Math.max(this.opts.limitedIntervalMs ?? 1, this.intervalMs * 2)
+          );
           this.opts.onLimited?.(pause);
         }
         this.pausedUntil = Math.max(this.pausedUntil, t + pause);

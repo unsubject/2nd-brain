@@ -84,9 +84,11 @@ All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
 
 Google calls are paced and, when Google answers "quota exceeded", the whole
 run pauses (15 s, 30 s, … up to 2 min), slows down and retries the call;
-`stats.rateLimitPauses` counts the pauses. The first Gmail run, before this
-existed, lost 4,039 of 4,297 messages to Gmail's per-minute quota within 30
-seconds.
+`stats.rateLimitPauses` counts the pauses. Drive reads one file at a time,
+so it is not paced until its first limit; from then on each request waits
+250 ms (doubling on each further limit, up to 4 s), and only the limited
+request is retried. The first Gmail run, before this existed, lost 4,039 of
+4,297 messages to Gmail's per-minute quota within 30 seconds.
 
 The Google connection page lists any permission Google didn't grant (the
 consent screen lets you untick each one); connect again if Drive is listed.
