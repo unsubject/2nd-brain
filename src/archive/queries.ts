@@ -101,7 +101,13 @@ export interface ArtifactClaim {
   rawSource: string;
 }
 
-// Claims the oldest pending row under a new token, with a fresh lease.
+// Claims the oldest pending row under a new token, with a fresh lease. It
+// stamps updated_at too, as the claim did before 031: the code from before
+// 031 reclaims on updated_at alone, and it still runs while a deploy
+// starts this code, so a fresh claim on an old row must not look stranded
+// to it. (Its reclaim and its claim both leave our token on the row, so
+// our pass would go on beside one of its own.) This code reclaims on the
+// lease.
 export async function findPendingArtifact(): Promise<{
   id: string;
   raw_source: string;
@@ -114,7 +120,8 @@ export async function findPendingArtifact(): Promise<{
     `UPDATE public_artifact
      SET processing_status = 'processing',
          claim_token = gen_random_uuid(),
-         claimed_at = now()
+         claimed_at = now(),
+         updated_at = now()
      WHERE id = (
        SELECT id FROM public_artifact
        WHERE processing_status = 'pending'

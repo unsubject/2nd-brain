@@ -1570,10 +1570,28 @@ test("rows a stopped worker left in processing go back to the queue", { skip }, 
        ('default', 'essay', 'in progress', 'b', 'archive', 'reclaim:busy', 'processing', now() - interval '1 minute'),
        ('default', 'essay', 'queued', 'c', 'archive', 'reclaim:queued', 'pending', now() - interval '2 hours')`
   );
-  // A claim takes a token and a lease, and leaves updated_at alone: a fresh
-  // claim is never taken for a stranded one, however old the row.
+  // A claim takes a token and a lease, and stamps updated_at as the claim
+  // before 031 did: the reclaim of that code, which reads updated_at alone
+  // and still runs while a deploy starts this one, takes back the stranded
+  // row but not a fresh claim, however old the row.
   const claimed = await queries.findPendingArtifact();
   assert.equal(claimed?.title, "queued");
+  const before031 = await db.connect();
+  try {
+    await before031.query("BEGIN");
+    const { rows: requeued } = await before031.query(
+      `UPDATE public_artifact
+       SET processing_status = 'pending'
+       WHERE processing_status = 'processing'
+         AND updated_at < now() - make_interval(mins => $1)
+       RETURNING title`,
+      [15]
+    );
+    assert.deepEqual(requeued.map((r) => r.title).sort(), ["stranded"]);
+  } finally {
+    await before031.query("ROLLBACK");
+    before031.release();
+  }
   assert.equal(await queries.reclaimStaleProcessing(15), 1);
   const state = async () =>
     (
@@ -1585,12 +1603,15 @@ test("rows a stopped worker left in processing go back to the queue", { skip }, 
     ).rows.map((r) => [r.title, r.processing_status, r.claim_token, r.leased, r.old_update]);
   assert.deepEqual(await state(), [
     ["in progress", "processing", null, null, false],
-    ["queued", "processing", claimed!.claim_token, true, true],
+    ["queued", "processing", claimed!.claim_token, true, false],
     ["stranded", "pending", null, null, false],
   ]);
 
-  // The lease is what counts: one that ran out is taken back even when a
-  // load has touched the row since.
+  // The lease is what counts here, not updated_at: a live one is kept
+  // whatever updated_at says, and one that ran out is taken back even when
+  // a load has touched the row since.
+  await db.query("UPDATE public_artifact SET updated_at = now() - interval '2 hours' WHERE id = $1", [claimed!.id]);
+  assert.equal(await queries.reclaimStaleProcessing(15), 0);
   await db.query("UPDATE public_artifact SET claimed_at = now() - interval '1 hour', updated_at = now() WHERE id = $1", [claimed!.id]);
   assert.equal(await queries.reclaimStaleProcessing(15), 1);
   const { rows } = await db.query("SELECT processing_status, claim_token, claimed_at FROM public_artifact WHERE id = $1", [claimed!.id]);
@@ -1684,9 +1705,9 @@ test("a renewed lease is not taken back; a lost claim cannot be renewed (Codex o
   const queries = await import("../src/archive/queries");
   await db.query("DELETE FROM public_artifact");
   const id = await queuedRow("lease:c", "續租測試的正文");
-  // An old row: only the lease can keep it.
-  await db.query("UPDATE public_artifact SET updated_at = now() - interval '2 hours' WHERE id = $1", [id]);
   const a = await queries.findPendingArtifact();
+  // An old updated_at (the claim stamped it): only the lease can keep the row.
+  await db.query("UPDATE public_artifact SET updated_at = now() - interval '2 hours' WHERE id = $1", [id]);
 
   // Renewed between model steps, the claim holds however long the pass
   // has run.
@@ -1808,6 +1829,65 @@ test("resetErroredArtifacts ends the claims it requeues (Codex on #102)", { skip
   assert.deepEqual(await workerState(id), {
     processing_status: "pending", summary: null, last_error: null, claim_token: b.token, leased: true, chunks: [],
   });
+
+  // A claim of that row gets a token of its own, not the one left on it,
+  // so B stays shut out while the new pass holds the row and after it saves.
+  const c = await queries.findPendingArtifact();
+  assert.equal(c?.id, id);
+  assert.notEqual(c!.claim_token, b.token);
+  const passB = pass(b.rawSource, { summary: "B 的摘要", chunks: [chunk(0, "B 的段落")] });
+  assert.equal(await queries.renewClaim(id, b), false);
+  assert.equal(await queries.completeArtifactProcessing(id, b, passB), false);
+  assert.equal(await queries.markArtifactError(id, "B: request timed out", b), false);
+  const passC = pass(c!.raw_source, { summary: "C 的摘要", chunks: [chunk(0, "C 的段落")] });
+  assert.equal(await queries.completeArtifactProcessing(id, claimOf(c), passC), true);
+  assert.equal(await queries.completeArtifactProcessing(id, b, passB), false);
+  assert.equal(await queries.markArtifactError(id, "B: request timed out", b), false);
+  assert.deepEqual(await workerState(id), {
+    processing_status: "processed", summary: "C 的摘要", last_error: null, claim_token: null, leased: false, chunks: ["C 的段落"],
+  });
+});
+
+test("a pass whose text changed writes nothing, even when the change left its token on the row (Codex on #99 and #102)", { skip }, async () => {
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  const id = await queuedRow("lease:f", "舊文的正文");
+  const a = await queries.findPendingArtifact();
+  assert.equal(a?.id, id);
+
+  // Code that knows nothing of claims (the code before 031, still running
+  // while a deploy starts this one): its load changes the text and queues
+  // the row, then its worker claims the row, and neither clears A's token.
+  // The row is 'processing' under A's token again; only the text it holds
+  // tells A the row is no longer its own.
+  await db.query(
+    "UPDATE public_artifact SET raw_source = '新文的正文', summary = NULL, processing_status = 'pending' WHERE id = $1",
+    [id]
+  );
+  const { rows: claimedAgain } = await db.query(
+    `UPDATE public_artifact
+     SET processing_status = 'processing',
+         updated_at = now()
+     WHERE id = (
+       SELECT id FROM public_artifact
+       WHERE processing_status = 'pending'
+       ORDER BY created_at ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING id, claim_token`
+  );
+  assert.deepEqual(claimedAgain, [{ id, claim_token: a!.claim_token }]);
+
+  const passA = pass(a!.raw_source, { summary: "舊文的摘要", chunks: [chunk(0, "舊文第一段")] });
+  assert.equal(await queries.renewClaim(id, claimOf(a)), false);
+  assert.equal(await queries.completeArtifactProcessing(id, claimOf(a), passA), false);
+  assert.equal(await queries.markArtifactError(id, "A: request timed out", claimOf(a)), false);
+  assert.deepEqual(await workerState(id), {
+    processing_status: "processing", summary: null, last_error: null, claim_token: a!.claim_token, leased: true, chunks: [],
+  });
+  const { rows } = await db.query("SELECT raw_source FROM public_artifact WHERE id = $1", [id]);
+  assert.equal(rows[0].raw_source, "新文的正文");
 });
 
 // The chain collect -> extract -> match -> load (runner.nextStep), one edge
