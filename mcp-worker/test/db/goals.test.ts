@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { admin, ok, resetGoalData, seedUndertaking, TEST_DB, USER } from './helpers';
+import { admin, callTool, ok, resetGoalData, seedUndertaking, TEST_DB, USER } from './helpers';
 
 const REPAIR_SQL = readFileSync(
   fileURLToPath(new URL('../../../migrations/021_repair_double_encoded_jsonb.sql', import.meta.url).href),
@@ -62,6 +62,44 @@ describe.skipIf(!TEST_DB)('goal-system jsonb', () => {
     `;
     const c = await ok('list_pending_constitution_amendments', {});
     expect(c.amendments[0].proposed_payload).toEqual({ label: 'Domain' });
+  });
+});
+
+describe.skipIf(!TEST_DB)('propose_goal_amendment: parent domain', () => {
+  beforeEach(resetGoalData);
+
+  const smart = {
+    statement: 'Synthetic merged goal',
+    specific: 'sss',
+    measurable: 'mmm',
+    achievable: 'aaa',
+    relevant: 'rrr',
+    time_bound: 'ttt',
+    outcome_metric: 'ooo',
+  };
+
+  it('refuses to synthesize goals under a retired domain', async () => {
+    const { domainId, goalId } = await seedUndertaking();
+    const [second] = await admin<Array<{ id: string }>>`
+      INSERT INTO goals (user_id, constitution_domain_id, statement, specific, measurable, achievable, relevant, time_bound, outcome_metric)
+      VALUES (${USER}, ${domainId}, 'Second goal', 's', 'm', 'a', 'r', 't', 'metric') RETURNING id
+    `;
+    const args = {
+      kind: 'synthesize',
+      source_goal_ids: [goalId, second.id],
+      payload: { ...smart, constitution_domain_id: domainId },
+      rationale: 'These two goals reinforce each other',
+    };
+    // Retiring a domain leaves its goals active.
+    await admin`UPDATE constitution_domains SET status = 'retired' WHERE id = ${domainId}`;
+    const refused = await callTool('propose_goal_amendment', args);
+    expect(refused.isError).toBe(true);
+    expect(refused.texts[0]).toMatch(/is retired; cannot add goals under it/);
+    expect(await admin`SELECT 1 FROM goal_amendments`).toHaveLength(0);
+
+    await admin`UPDATE constitution_domains SET status = 'active' WHERE id = ${domainId}`;
+    const staged = await ok('propose_goal_amendment', args);
+    expect(staged.amendment_id).toBeTruthy();
   });
 });
 

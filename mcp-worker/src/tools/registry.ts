@@ -307,7 +307,7 @@ const definitions: ToolDefinition[] = [
           items: { type: 'string', format: 'uuid' },
           minItems: 2,
           description:
-            "Required for kind='synthesize'. Sources must all be active and share the same constitution_domain_id.",
+            "Required for kind='synthesize'. Sources must all be active and share the same constitution_domain_id, which must itself be active.",
         },
         payload: {
           type: 'object',
