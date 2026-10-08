@@ -129,7 +129,8 @@ It runs by itself after every collection that left items to extract, and
 90 s after boot (so after every deploy) the app checks whether any staged
 item has no candidate, one made by an older `EXTRACTOR_VERSION`
 (`extract/types.ts`, bumped with every rule change) or one older than the
-item (collected again since), and if so starts a run (`extract/auto.ts`;
+item (collected again since) or, for a `.docx` attachment, than the
+message whose recipients it takes, and if so starts a run (`extract/auto.ts`;
 while a collection is live it checks again every minute). If items were
 staged or changed while an extraction ran (a collection started
 alongside), it runs again before matching, whether it succeeded or

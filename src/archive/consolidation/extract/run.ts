@@ -55,6 +55,11 @@ interface Row {
 
 // An attachment row is staged without recipients: they are its message's,
 // and the column, outlet and self-draft rules need them (extract/gmail.ts).
+// `p` is a Gmail attachment's message row (none for any other item).
+const PARENT_JOIN = `LEFT JOIN archive_source_item p
+           ON s.source = 'gmail' AND s.metadata->>'kind' = 'attachment'
+          AND p.source = 'gmail' AND p.source_ref = s.metadata->>'parentMessageId'`;
+
 function stagedMetadata(r: Row): Record<string, unknown> {
   const m = r.metadata ?? {};
   return r.source === "gmail" && m.kind === "attachment" ? { ...m, to: r.parent_to, cc: r.parent_cc } : m;
@@ -129,15 +134,19 @@ export async function markDuplicateNewsletters(db: DB = pool): Promise<number> {
 
 // True when a staged item has no candidate, one made by an older
 // EXTRACTOR_VERSION, or one older than the item (re-collected since, or
-// while the extraction held it: extracted_at is when the item was read).
-// With `sinceRun`, only items staged or changed since that run started.
+// while the extraction held it: extracted_at is when the item was read) or,
+// for a Gmail attachment, than its message, whose recipients it takes.
+// With `sinceRun`, only items (or messages) staged or changed since that
+// run started.
 export async function candidatesStale(db: DB = pool, sinceRun?: string): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM archive_source_item s
+         ${PARENT_JOIN}
          LEFT JOIN archive_candidate c ON c.source_item_id = s.id
-        WHERE (c.id IS NULL OR c.extractor_version < $1 OR c.extracted_at < s.fetched_at)
-          AND ($2::uuid IS NULL OR s.fetched_at >= (SELECT started_at FROM archive_collect_run WHERE id = $2::uuid))
+        WHERE (c.id IS NULL OR c.extractor_version < $1 OR c.extracted_at < greatest(s.fetched_at, p.fetched_at))
+          AND ($2::uuid IS NULL
+               OR greatest(s.fetched_at, p.fetched_at) >= (SELECT started_at FROM archive_collect_run WHERE id = $2::uuid))
      ) AS stale`,
     [EXTRACTOR_VERSION, sinceRun ?? null]
   );
@@ -159,9 +168,7 @@ export async function runExtraction(
       `SELECT s.id, s.source, s.source_ref, s.container_ref, s.title, s.authored_at, s.raw_text, s.raw_html,
               s.metadata, p.metadata->'to' AS parent_to, p.metadata->'cc' AS parent_cc, now()::text AS read_at
          FROM archive_source_item s
-         LEFT JOIN archive_source_item p
-           ON s.source = 'gmail' AND s.metadata->>'kind' = 'attachment'
-          AND p.source = 'gmail' AND p.source_ref = s.metadata->>'parentMessageId'
+         ${PARENT_JOIN}
         WHERE s.id > $1 ORDER BY s.id LIMIT $2`,
       [after, BATCH]
     );

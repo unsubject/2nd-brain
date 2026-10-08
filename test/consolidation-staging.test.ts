@@ -785,6 +785,57 @@ test("an item rewritten after extraction read it, before its candidate was writt
   assert.equal(await run.candidatesStale(db), false);
 });
 
+test("an attachment's candidate is out of date when its message changed after it was read", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  const message = (to: string[]) =>
+    item({
+      sourceRef: "m-1",
+      title: "新稿",
+      rawText: "附上今期稿件。",
+      metadata: { kind: "message", from: "simoncf@gmail.com", to, cc: [], isSent: true },
+    });
+  await staging.upsertSourceItem(message(["forum@appledaily.com"]), db);
+  await staging.upsertSourceItem(
+    item({
+      sourceRef: "m-1#1",
+      title: "final.docx",
+      rawText: ESSAY,
+      metadata: { kind: "attachment", parentMessageId: "m-1", subject: "新稿", filename: "final.docx", isSent: true },
+    }),
+    db
+  );
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.equal(await run.candidatesStale(db), false);
+  const attachment = async () =>
+    (
+      await db.query(
+        `SELECT c.kind, c.column_name FROM archive_candidate c
+           JOIN archive_source_item s ON s.id = c.source_item_id WHERE s.source_ref = 'm-1#1'`
+      )
+    ).rows[0];
+  assert.deepEqual(await attachment(), { kind: "attachment", column_name: "蘋果論壇" });
+
+  // A refetch rewrites the message (now sent to note@ only) after the
+  // extraction read the attachment, before it read the message (a later
+  // batch): the message's candidate is current, the attachment's, made with
+  // the old recipients, is not. Its own row did not change.
+  const failedBefore = await endedRun("extract", "failed");
+  assert.equal(await staging.upsertSourceItem(message(["Notes <note@leesimon.me>"]), db), "updated");
+  await db.query(
+    `UPDATE archive_candidate SET extracted_at = clock_timestamp()
+      WHERE source_item_id = (SELECT id FROM archive_source_item WHERE source_ref = 'm-1')`
+  );
+  const failedAfter = await endedRun("extract", "failed");
+  assert.equal(await run.candidatesStale(db), true);
+  // A change since a failed run started counts; one before it doesn't.
+  assert.equal(await run.candidatesStale(db, failedBefore), true);
+  assert.equal(await run.candidatesStale(db, failedAfter), false);
+
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.equal(await run.candidatesStale(db), false);
+  assert.deepEqual(await attachment(), { kind: "self_draft", column_name: null });
+});
+
 test("runMatch groups the copies of one piece into a work with the emailed text as canonical", { skip }, async () => {
   const run = await import("../src/archive/consolidation/extract/run");
   const match = await import("../src/archive/consolidation/match/run");
