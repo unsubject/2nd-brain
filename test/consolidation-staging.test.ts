@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { Pool } from "pg";
+import { holdTestDatabase } from "./support/database-lock";
 
 const url = process.env.TEST_DATABASE_URL;
 const skip = !url ? "TEST_DATABASE_URL not set" : false;
@@ -15,6 +16,7 @@ let db: Pool;
 let staging: typeof import("../src/archive/consolidation/staging");
 let gmail: typeof import("../src/archive/consolidation/gmail");
 let appPool: import("pg").Pool | undefined;
+let releaseDatabase: (() => Promise<void>) | undefined;
 
 before(async () => {
   if (!url) return;
@@ -30,6 +32,7 @@ before(async () => {
     await db.end();
     throw new Error(`Refusing to run against ${rows[0].db}@${addr}: needs a local *_test database`);
   }
+  releaseDatabase = await holdTestDatabase(url);
   // The collectors write through the app's shared pool, which reads
   // DATABASE_URL when first imported: point it at the checked database.
   process.env.DATABASE_URL = url;
@@ -41,6 +44,7 @@ before(async () => {
 after(async () => {
   await appPool?.end();
   await db?.end();
+  await releaseDatabase?.();
 });
 
 beforeEach(async () => {
