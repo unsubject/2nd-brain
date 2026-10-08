@@ -98,7 +98,10 @@ Failed items are picked up by the next normal run: a message whose body
 couldn't be fetched is never staged, and a staged message with a `.docx`
 attachment row missing is fetched again (`stats.retriedIncomplete`).
 Only one run per source can be active. Pass `"refetch": true` to re-read
-items that are already staged.
+items that are already staged. When a collection ends, whatever its
+outcome, it starts extraction (step 2) if any staged item lacks a current
+candidate; extraction doesn't start while a Gmail or Drive collection is
+live (asked for by hand, it answers 409).
 
 Runs survive deploys. Collectors run inside the app, so a restart stops a
 run mid-way; a live run heartbeats every 30 s, so a `running` row silent for
@@ -119,10 +122,14 @@ Extraction reads only the database (no Google calls) and takes a minute or
 two. Every run rewrites every candidate, so a rule change applies to all of
 it on the next run; `archive_source_item` is never changed.
 
-It runs by itself: 90 s after boot (so after every deploy) the app checks
-whether any staged item has no candidate, or one made by an older
-`EXTRACTOR_VERSION` (`extract/types.ts`, bumped with every rule change), and
-if so starts a run (`extract/auto.ts`). The run's counts appear in the logs
+It runs by itself after every collection that left items to extract, and
+90 s after boot (so after every deploy) the app checks whether any staged
+item has no candidate, one made by an older `EXTRACTOR_VERSION`
+(`extract/types.ts`, bumped with every rule change) or one older than the
+item (collected again since), and if so starts a run (`extract/auto.ts`;
+while a collection is live it checks again every minute). If items were
+staged while an extraction ran (a collection started alongside), it runs
+again before matching. The run's counts appear in the logs
 (`[consolidation] extract run … finished: {…}`). To run it by hand:
 
 ```sh
@@ -190,7 +197,8 @@ reader-reply review and the Patreon creator check.
 
 ## Running step 3
 
-Matching runs by itself after every successful extraction (and on boot when
+Matching runs by itself after every successful extraction that left every
+staged item with a current candidate (and on boot when
 the works are older than the candidates or than `MATCHER_VERSION` in
 `match/run.ts`). It reads the candidates that extraction kept or sent to
 review, takes a few seconds, and rebuilds every work in one transaction.

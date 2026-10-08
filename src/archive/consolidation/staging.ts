@@ -114,8 +114,18 @@ export async function incompleteGmailMessages(refs: string[], db: DB = pool): Pr
 }
 
 export class RunAlreadyActiveError extends Error {
-  constructor(source: CollectorSource, message = `a ${source} collection run is already in progress`) {
+  constructor(source: CollectorSource, message = `another ${source} run is in progress`) {
     super(message);
+  }
+}
+
+// Extraction reads everything staged, so it doesn't start while a Gmail or
+// Drive collection is live; the collection starts it when it ends
+// (runner.ts). A subclass, so callers that leave an active run alone treat
+// this the same way.
+export class RunBlockedError extends RunAlreadyActiveError {
+  constructor(readonly blockedBy: CollectorSource) {
+    super("extract", `a ${blockedBy} collection run is in progress; extraction starts by itself when it ends`);
   }
 }
 
@@ -154,6 +164,17 @@ export async function startRun(
             AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
         [source]
       );
+    }
+    if (source === "extract") {
+      // Not atomic with the insert: a collection that starts in between is
+      // covered by the check at the end of the extraction (runner.ts).
+      const { rows } = await q.query<{ source: CollectorSource }>(
+        `SELECT source FROM archive_collect_run
+          WHERE source IN ('gmail', 'gdrive') AND status = 'running'
+            AND heartbeat_at >= now() - make_interval(secs => ${STALE_RUN_SECONDS})
+          LIMIT 1`
+      );
+      if (rows[0]) throw new RunBlockedError(rows[0].source);
     }
     const { rows } = await q.query<{ id: string }>(
       `INSERT INTO archive_collect_run (source, params) VALUES ($1, $2::jsonb) RETURNING id`,

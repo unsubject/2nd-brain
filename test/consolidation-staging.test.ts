@@ -391,6 +391,25 @@ test("an interrupted run whose continuation fails to start is resumed by the nex
   assert.equal(await status(), "failed");
 });
 
+test("extraction doesn't start while a collection is live", { skip }, async () => {
+  const collecting = await staging.startRun("gmail", { label: "Writing" }, db);
+  const refused = await staging.startRun("extract", {}, db).then(
+    () => null,
+    (err: unknown) => err
+  );
+  assert.ok(refused instanceof staging.RunBlockedError);
+  assert.ok(refused instanceof staging.RunAlreadyActiveError); // left alone like an active run
+  assert.equal(refused.blockedBy, "gmail");
+  assert.match(refused.message, /gmail collection run is in progress/);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM archive_collect_run WHERE source = 'extract'")).rows[0].n, 0);
+
+  // A collection whose process is gone holds nothing back.
+  await db.query(`UPDATE archive_collect_run SET heartbeat_at = now() - interval '10 minutes' WHERE id = $1`, [collecting]);
+  await staging.startRun("extract", {}, db);
+  // A collection can start during an extraction (whose end checks again).
+  await staging.startRun("gdrive", { folderIds: ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl"] }, db);
+});
+
 // Step 2 (extract) against the database. Here rather than in its own file:
 // test files run in parallel and both use archive_source_item.
 const ESSAY = [1, 2, 3, 4].map((n) => `第${n}段：${"香港經濟的問題不在於短期的周期，而在於制度的信任。".repeat(4)}`).join("\n\n");
@@ -559,7 +578,7 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   const run = await import("../src/archive/consolidation/extract/run");
   const match = await import("../src/archive/consolidation/match/run");
   const auto = await import("../src/archive/consolidation/extract/auto");
-  const stale = { candidates: () => auto.candidatesStale(db), works: () => auto.worksStale(db) };
+  const stale = { candidates: () => run.candidatesStale(db), works: () => auto.worksStale(db) };
   const started: unknown[] = [];
   const fakeStart = async (req: unknown) => {
     started.push(req);
@@ -571,7 +590,7 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   assert.deepEqual(await auto.catchUp(fakeStart, stale), { source: "extract", runId: "run-1" });
 
   await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
-  assert.equal(await auto.candidatesStale(db), false);
+  assert.equal(await run.candidatesStale(db), false);
   assert.equal(await auto.worksStale(db), true);
   assert.deepEqual(await auto.catchUp(fakeStart, stale), { source: "match", runId: "run-2" });
 
@@ -585,11 +604,43 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   await db.query("UPDATE archive_candidate SET extractor_version = extractor_version - 1 WHERE id IN (SELECT id FROM archive_candidate LIMIT 1)");
   assert.deepEqual((await auto.catchUp(fakeStart, stale))?.source, "extract");
 
-  // A run already going is left alone.
+  // An item collected again after its candidate was made.
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.equal(await run.candidatesStale(db), false);
+  await staging.upsertSourceItem(item({ sourceRef: "ack", title: "Re: 稿件", rawText: "收到，謝謝", metadata: { from: "jane@appledaily.com", isSent: false } }), db);
+  assert.equal(await run.candidatesStale(db), true);
+
+  // A run already going is left alone; a live collection is waited for.
   const busy = async () => {
     throw new staging.RunAlreadyActiveError("extract");
   };
   assert.equal(await auto.catchUp(busy, stale), null);
+  const collecting = async () => {
+    throw new staging.RunBlockedError("gmail");
+  };
+  assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail" });
+});
+
+test("the step after a run: extraction after a collection, then matching", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+
+  // A collection that left nothing to extract.
+  assert.equal(await nextStep("gmail", true, db), null);
+  // One that left items without a candidate (its own, or another
+  // collection's held back while it ran), whatever its outcome.
+  await stageForExtraction();
+  assert.deepEqual(await nextStep("gmail", true, db), { source: "extract" });
+  assert.deepEqual(await nextStep("gdrive", false, db), { source: "extract" });
+
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  assert.equal(await nextStep("gdrive", true, db), null);
+  assert.deepEqual(await nextStep("extract", true, db), { source: "match" });
+  assert.equal(await nextStep("extract", false, db), null);
+  // An item staged while the extraction ran (a collection alongside): extract again first.
+  await staging.upsertSourceItem(item({ sourceRef: "late", rawText: "遲來的一封信" }), db);
+  assert.deepEqual(await nextStep("extract", true, db), { source: "extract" });
+  assert.equal(await nextStep("match", true, db), null);
 });
 
 test("runMatch groups the copies of one piece into a work with the emailed text as canonical", { skip }, async () => {

@@ -1,10 +1,10 @@
 import { collectDrive, emptyDriveStats, type DriveCollectParams } from "./drive";
 import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
-import { pool } from "../../db/client";
+import { pool, type DB } from "../../db/client";
 import { describeGoogleError } from "../../google/errors";
-import { emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
+import { candidatesStale, emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
-import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun } from "./staging";
+import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun, type CollectorSource } from "./staging";
 
 // Set on runs started by the resume sweeper (resume.ts); stored in params.
 export interface ResumeInfo {
@@ -22,19 +22,44 @@ export type CollectRequest =
 // dead process (staging.STALE_RUN_SECONDS is the other side of this).
 const HEARTBEAT_MS = 30_000;
 
-// Start a collector in the background and return its run id at once; the
-// archive_collect_run row carries progress and the final outcome. A run
-// where any item failed ends 'failed' (with the per-item errors in stats)
-// so partial loss is never reported as success.
 function startFollowUp(req: CollectRequest): void {
   startCollection(req)
     .then((id) => console.log(`[consolidation] ${req.source} run ${id} started after the previous step`))
     .catch((err) => {
-      if (err instanceof RunAlreadyActiveError) return;
+      if (err instanceof RunAlreadyActiveError) {
+        console.log(`[consolidation] ${req.source} run not started after the previous step: ${err.message}`);
+        return;
+      }
       console.error(`[consolidation] could not start ${req.source} run:`, describeGoogleError(err));
     });
 }
 
+// The step after a run that ended, so new material reaches the works with
+// no one starting a step. A collection, whatever its outcome (what it staged
+// is good), is followed by extraction when a staged item lacks a current
+// candidate: its own items, or another collection's whose extraction it held
+// back. A successful extraction is followed by matching, or by another
+// extraction when items were staged while it ran: its scan can miss a
+// collection's rows (extraction doesn't start while a collection is live,
+// but a collection can start during an extraction).
+export async function nextStep(
+  source: CollectorSource,
+  succeeded: boolean,
+  db: DB = pool
+): Promise<CollectRequest | null> {
+  if (source === "gmail" || source === "gdrive") {
+    return (await candidatesStale(db)) ? { source: "extract" } : null;
+  }
+  if (source === "extract" && succeeded) {
+    return (await candidatesStale(db)) ? { source: "extract" } : { source: "match" };
+  }
+  return null;
+}
+
+// Start a collector in the background and return its run id at once; the
+// archive_collect_run row carries progress and the final outcome. A run
+// where any item failed ends 'failed' (with the per-item errors in stats)
+// so partial loss is never reported as success.
 export async function startCollection(req: CollectRequest): Promise<string> {
   const { source, ...params } = req;
   const runId = await startRun(source, params, pool, req.resumedFrom);
@@ -82,25 +107,28 @@ export async function startCollection(req: CollectRequest): Promise<string> {
           : runMatch(stats as MatchStats, progress, shouldStop);
 
   job
-    .then(() => {
+    .then(
+      () => (stats.failed > 0 ? { ok: false, error: `${stats.failed} item(s) failed` } : { ok: true, error: null }),
+      (err) => {
+        // Google errors carry the token request; log only the safe summary.
+        console.error(`[consolidation] ${source} run ${runId} failed:`, describeGoogleError(err));
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    )
+    .then(async ({ ok, error }) => {
+      const counts = JSON.stringify({ ...stats, errors: undefined });
       if (takenOver) {
         // The row already records the outcome (interrupted, resumed elsewhere).
-        console.log(`[consolidation] ${source} run ${runId} stopped after being taken over: ${JSON.stringify({ ...stats, errors: undefined })}`);
+        console.log(`[consolidation] ${source} run ${runId} stopped after being taken over: ${counts}`);
         return;
       }
-      const failed = stats.failed > 0;
-      console.log(`[consolidation] ${source} run ${runId} finished: ${JSON.stringify({ ...stats, errors: undefined })}`);
-      return finishRun(runId, failed ? "failed" : "succeeded", stats, failed ? `${stats.failed} item(s) failed` : null).then(
-        () => {
-          // New candidates mean the works are out of date: match next.
-          if (source === "extract" && !failed) startFollowUp({ source: "match" });
-        }
-      );
-    })
-    .catch((err) => {
-      // Google errors carry the token request; log only the safe summary.
-      console.error(`[consolidation] ${source} run ${runId} failed:`, describeGoogleError(err));
-      return finishRun(runId, "failed", stats, err instanceof Error ? err.message : String(err));
+      console.log(`[consolidation] ${source} run ${runId} finished: ${counts}`);
+      await finishRun(runId, ok ? "succeeded" : "failed", stats, error);
+      const next = await nextStep(source, ok).catch((err) => {
+        console.error(`[consolidation] could not choose the step after ${source} run ${runId}:`, describeGoogleError(err));
+        return null;
+      });
+      if (next) startFollowUp(next);
     })
     .catch((err) =>
       console.error(`[consolidation] could not record outcome of run ${runId}:`, describeGoogleError(err))

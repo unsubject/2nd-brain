@@ -11,7 +11,7 @@
 import { describeGoogleError } from "../../google/errors";
 import { pool, type DB } from "../../db/client";
 import { startCollection, type CollectRequest } from "./runner";
-import { interruptedRuns, markInterrupted, RunAlreadyActiveError, type InterruptedRun } from "./staging";
+import { interruptedRuns, markInterrupted, RunAlreadyActiveError, RunBlockedError, type InterruptedRun } from "./staging";
 
 export const MAX_RESUMES = 3;
 const FIRST_SWEEP_DELAY_MS = 30_000;
@@ -71,7 +71,13 @@ export async function resumeInterruptedRuns(
       started.push(id);
       console.log(`[consolidation] ${run.source} run ${run.id} was interrupted; resumed as ${id} (resume ${req.resumeCount})`);
     } catch (err) {
-      if (err instanceof RunAlreadyActiveError) {
+      if (err instanceof RunBlockedError) {
+        // An interrupted extraction while a collection is live: that
+        // collection starts a fresh extraction when it ends.
+        if (await markInterrupted(run.id, db)) {
+          console.log(`[consolidation] ${run.source} run ${run.id} was interrupted and is not resumed: ${err.message}`);
+        }
+      } else if (err instanceof RunAlreadyActiveError) {
         console.log(`[consolidation] ${run.source} run ${run.id} was interrupted; not resumed here: ${err.message}`);
       } else {
         console.error(

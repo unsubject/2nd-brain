@@ -105,6 +105,20 @@ export async function markDuplicateNewsletters(db: DB = pool): Promise<number> {
   return rowCount ?? 0;
 }
 
+// True when a staged item has no candidate, one made by an older
+// EXTRACTOR_VERSION, or one older than the item (re-collected since).
+export async function candidatesStale(db: DB = pool): Promise<boolean> {
+  const { rows } = await db.query<{ stale: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM archive_source_item s
+         LEFT JOIN archive_candidate c ON c.source_item_id = s.id
+        WHERE c.id IS NULL OR c.extractor_version < $1 OR c.extracted_at < s.fetched_at
+     ) AS stale`,
+    [EXTRACTOR_VERSION]
+  );
+  return rows[0].stale;
+}
+
 export async function runExtraction(
   stats: ExtractStats,
   onProgress: () => Promise<void>,
