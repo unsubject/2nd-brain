@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { candidatePairs, overlap, samePiece, shingles, units } from "../src/archive/consolidation/match/similarity";
+import { candidatePairs, overlap, samePiece, sampled, shingles, units } from "../src/archive/consolidation/match/similarity";
 import { canonicalRank, matchCandidates, type MatchCandidate } from "../src/archive/consolidation/match/cluster";
 import { parseWorkListQuery } from "../src/archive/consolidation/match/review";
 
@@ -93,6 +93,36 @@ test("a short pair with too few samples for the screen is still checked (Codex o
   assert.ok(samePiece(overlap(sa, sb)));
   assert.deepEqual(candidatePairs([sa, sb]), [[0, 1]]);
   assert.equal(matchCandidates([cand({ bodyText: a }), cand({ bodyText: b })]).works.length, 1);
+});
+
+// Sampled shingle hashes, for building index cases directly.
+const SAMPLED: number[] = [];
+for (let h = 1; SAMPLED.length < 30000; h++) if (sampled(h)) SAMPLED.push(h);
+let nextSampled = 0;
+const fresh = (n: number) => SAMPLED.slice(nextSampled, (nextSampled += n));
+const set = (...parts: number[][]) => Uint32Array.from(parts.flat()).sort();
+const paired = (pairs: [number, number][], i: number, j: number) => pairs.some(([a, b]) => a === i && b === j);
+
+test("a pair whose shared samples are all common is still checked (Codex on #98)", () => {
+  // Codex's case: 100 earlier texts each hold a rotating 50 of a 100-sample
+  // pool plus 100 unique samples; two identical texts hold the pool, so
+  // every pool sample is in 52 texts, over the cap.
+  const pool = fresh(100);
+  const earlier = Array.from({ length: 100 }, (_, k) => set(Array.from({ length: 50 }, (_, t) => pool[(k + t) % 100]), fresh(100)));
+  const sets = [...earlier, set(pool), set(pool)];
+  assert.ok(samePiece(overlap(sets[100], sets[101])));
+  assert.ok(paired(candidatePairs(sets), 100, 101));
+});
+
+test("two versions whose shared part the archive quotes widely are still checked", () => {
+  // 64% of each version is a passage also quoted in 60 longer texts (too
+  // long to be the same piece); each version has 40 samples of its own.
+  const passage = fresh(70);
+  const quoting = Array.from({ length: 60 }, () => set(passage, fresh(300)));
+  const sets = [...quoting, set(passage, fresh(40)), set(passage, fresh(40))];
+  assert.ok(samePiece(overlap(sets[60], sets[61])));
+  assert.equal(samePiece(overlap(sets[0], sets[60])), false);
+  assert.ok(paired(candidatePairs(sets), 60, 61));
 });
 
 test("a piece with more copies than the stock-phrase cap still forms one work (Codex on #98)", () => {
