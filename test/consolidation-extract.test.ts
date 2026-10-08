@@ -236,6 +236,10 @@ test("subjectDate reads 留稿 dates across the new year, and ignores far-off da
   );
   assert.equal(subjectDate("利字當頭 2019 07 30", sent), null);
   assert.equal(subjectDate("科目三 2024 02 28", sent), null); // not a column subject
+  // A day that doesn't exist is not rolled over into the next month.
+  assert.equal(subjectDate("利字當頭 2024 02 29", sent)?.toISOString().slice(0, 10), "2024-02-29");
+  assert.equal(subjectDate("利字當頭 2024 02 30", sent), null);
+  assert.equal(subjectDate("利字當頭：科目三（留稿：2月30日見報）", sent), null);
 
   const c = extractGmail(message({ title: "利字當頭：科目三（留稿：3月2日見報）", authoredAt: sent }));
   assert.equal(c.title, "科目三");
@@ -432,6 +436,14 @@ test("Drive: a date in the file name beats the file's creation date", () => {
   assert.equal(titleDate("2019-07-30 notes")?.toISOString().slice(0, 10), "2019-07-30");
   assert.equal(titleDate("20191340"), null);
   assert.equal(titleDate("123456789"), null);
+  // A day that doesn't exist is a typo: the file's creation date stands.
+  assert.equal(titleDate("利字當頭 20230231"), null);
+  assert.equal(titleDate("20230431"), null);
+  assert.equal(titleDate("20230229"), null);
+  assert.equal(titleDate("20240229")?.toISOString().slice(0, 10), "2024-02-29");
+  const typo = extractDrive(exported("gdrive", { title: "利字當頭 20230231.docx", rawText: ESSAY, rawHtml: null }, {}));
+  assert.equal(typo.dateSource, "file-created");
+  assert.equal(typo.publishedAt?.toISOString(), "2018-05-01T00:00:00.000Z");
 });
 
 test("extract dispatches on the source", () => {

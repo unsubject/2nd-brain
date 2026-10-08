@@ -156,7 +156,7 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 | gmail | `platform_copy` | drop | A Substack email: the Substack export has the post. |
 | wordpress | `post` / `page` | keep / review | Published posts kept; pages and private posts to review; drafts dropped. |
 | substack | `post` | keep | Published posts, any audience (`audience-only_paid` noted); drafts dropped. |
-| gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date. |
+| gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date (also when the name's date is a day that doesn't exist, such as `20230231`). |
 
 Cleaning an email, in order: drop Gmail's link targets (`text <https://…>`);
 cut everything from the first quote header ("On … wrote:", also as "> On …"
@@ -172,7 +172,7 @@ subject's title) appears in the first paragraphs, the text before it is the
 note to the editor (kept in `note`) and the essay starts after it.
 
 The publication date is the column date in the subject when there is one
-("留稿：12月30日見報", "利字當頭 2020 06 30", within 45 days of sending),
+("留稿：12月30日見報", "利字當頭 2020 06 30"; a real date within 45 days of sending),
 else the send date (`date_source`). The outlet follows the column (蘋果論壇 →
 蘋果日報, 壹擋專政 → 壹週刊, 金融一條針 → 爽報), else the recipients' domain.
 A piece mailed to forum@appledaily.com is a 蘋果論壇 piece even when the

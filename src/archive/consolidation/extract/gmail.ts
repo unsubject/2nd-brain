@@ -5,7 +5,7 @@
 // reader replies, forwards, drafts to self, and newsletter copies.
 
 import { candidate, type Candidate, type StagedItem } from "./types";
-import { htmlToText, normalizeText, paragraphs, textLength, unwrapSoftBreaks } from "./text";
+import { htmlToText, normalizeText, paragraphs, textLength, unwrapSoftBreaks, utcDate } from "./text";
 
 // Simon's own mailboxes: a message from one of these is his even without
 // the SENT label (copies that arrived through forwarding).
@@ -150,9 +150,11 @@ function isTitleOf(line: string, title: string): boolean {
 
 // A column's publication date often sits in the subject ("利字當頭
 // 2020 06 30", "Apple Daily Forum 20200624", "（留稿：12月30日見報）").
+// A day that doesn't exist ("2月30日") is a typo, not a date.
 export function subjectDate(subject: string | null, sentAt: Date | null): Date | null {
   if (!subject || !sentAt) return null;
-  const ok = (d: Date) => {
+  const ok = (d: Date | null) => {
+    if (!d) return null;
     const days = (d.getTime() - sentAt.getTime()) / 86_400_000;
     return days > -3 && days < 45 ? d : null;
   };
@@ -162,14 +164,12 @@ export function subjectDate(subject: string | null, sentAt: Date | null): Date |
     const day = Number(scheduled[2]);
     let year = sentAt.getUTCFullYear();
     if (month < sentAt.getUTCMonth() + 1 - 6) year += 1;
-    return ok(new Date(Date.UTC(year, month - 1, day)));
+    return ok(utcDate(year, month, day));
   }
   if (!COLUMN_PREFIX.test(cleanSubject(subject).replace(/^【/, ""))) return null;
   const m = subject.match(/(20\d{2})[\s\-./]?(\d{2})[\s\-./]?(\d{2})/);
   if (!m) return null;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return ok(new Date(Date.UTC(y, mo - 1, d)));
+  return ok(utcDate(Number(m[1]), Number(m[2]), Number(m[3])));
 }
 
 // ── Quotes, signatures and notes to the editor ──────────────────────────
