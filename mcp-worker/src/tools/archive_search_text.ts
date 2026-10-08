@@ -44,6 +44,9 @@ export type ArchiveHit = {
   published_at: string | null;
   similarity: number;
   type: 'essay' | 'episode';
+  // 'review' or 'unmatched': a piece the archive consolidation has not
+  // confirmed yet; null otherwise.
+  flag: string | null;
 };
 
 export async function runArchiveVectorSearch(
@@ -62,10 +65,11 @@ export async function runArchiveVectorSearch(
         canonical_url: string | null;
         published_at: Date | string | null;
         source_system: string;
+        flag: string | null;
         similarity: number;
       }>
     >`
-      SELECT id, title, canonical_url, published_at, source_system,
+      SELECT id, title, canonical_url, published_at, source_system, flag,
              1 - (embedding <=> ${v}::vector) AS similarity
       FROM public_artifact
       WHERE processing_status = 'processed'
@@ -86,6 +90,7 @@ export async function runArchiveVectorSearch(
             : null,
       similarity: roundTo(Number(r.similarity), 4),
       type: mapSourceSystem(r.source_system),
+      flag: r.flag ?? null,
     }));
   } finally {
     ctx.waitUntil(sql.end({ timeout: 5 }));
