@@ -49,14 +49,24 @@ function mix(x: number): number {
 // copy of a long text: at a 0.3 size ratio, banded LSH missed about 40% of
 // fully contained copies.) The screen is generous; overlap() decides.
 const SAMPLE = 8;
-// A sampled shingle in more texts than this is boilerplate or a stock
-// phrase ("香港政府"): it says nothing about which texts are the same piece.
+// A sampled shingle in more texts than this is mostly a stock phrase
+// ("香港政府"): pairing every text that has it would be quadratic and say
+// little. Its texts are linked to one representative instead (the first),
+// so a piece that really has this many copies still comes together.
 const COMMON = 50;
 const MIN_SHARED = 0.3;
+// A text with fewer samples than this is too short for sampling to be
+// reliable (a 50-character body can have none): it is checked against
+// every text of a size it could be the same piece as.
+const MIN_SAMPLES = 8;
 const ID_SPACE = 65536;
 
 function sampled(h: number): boolean {
   return mix(h) % SAMPLE === 0;
+}
+
+function bump(map: Map<number, number>, key: number): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
 }
 
 // Index pairs [i, j] (i < j) worth checking exactly.
@@ -69,32 +79,70 @@ export function candidatePairs(sets: Uint32Array[]): [number, number][] {
     for (const h of set) if (sampled(h)) entries.push(h * ID_SPACE + i);
   });
   const packed = Float64Array.from(entries).sort();
-  const useful = new Uint32Array(sets.length);
-  const shared = new Map<number, number>();
+  // Samples per text in ordinary groups and in groups over COMMON, each
+  // with the counts shared per pair: the share is judged within its kind.
+  const rare = new Uint32Array(sets.length);
+  const common = new Uint32Array(sets.length);
+  const sharedRare = new Map<number, number>();
+  const sharedCommon = new Map<number, number>();
   for (let start = 0; start < packed.length; ) {
     const hash = Math.floor(packed[start] / ID_SPACE);
     let end = start + 1;
     while (end < packed.length && Math.floor(packed[end] / ID_SPACE) === hash) end++;
-    const n = end - start;
-    if (n <= COMMON) {
+    const first = packed[start] % ID_SPACE;
+    if (end - start <= COMMON) {
       for (let x = start; x < end; x++) {
         const i = packed[x] % ID_SPACE;
-        useful[i]++;
-        for (let y = x + 1; y < end; y++) {
-          const key = i * ID_SPACE + (packed[y] % ID_SPACE);
-          shared.set(key, (shared.get(key) ?? 0) + 1);
-        }
+        rare[i]++;
+        for (let y = x + 1; y < end; y++) bump(sharedRare, i * ID_SPACE + (packed[y] % ID_SPACE));
+      }
+    } else {
+      common[first]++;
+      for (let x = start + 1; x < end; x++) {
+        const i = packed[x] % ID_SPACE;
+        common[i]++;
+        bump(sharedCommon, first * ID_SPACE + i);
       }
     }
     start = end;
   }
-  const pairs: [number, number][] = [];
-  for (const [key, count] of shared) {
-    const i = Math.floor(key / ID_SPACE);
-    const j = key % ID_SPACE;
-    if (count >= Math.max(1, Math.ceil(MIN_SHARED * Math.min(useful[i], useful[j])))) pairs.push([i, j]);
-  }
-  return pairs;
+
+  const keys = new Set<number>();
+  const screen = (shared: Map<number, number>, samples: Uint32Array) => {
+    for (const [key, count] of shared) {
+      const i = Math.floor(key / ID_SPACE);
+      const j = key % ID_SPACE;
+      if (count >= Math.max(1, Math.ceil(MIN_SHARED * Math.min(samples[i], samples[j])))) keys.add(key);
+    }
+  };
+  screen(sharedRare, rare);
+  screen(sharedCommon, common);
+
+  // Texts with too few samples: every text within the size ratio samePiece
+  // allows, found by size order.
+  const bySize = sets.map((_, i) => i).sort((a, b) => sets[a].length - sets[b].length);
+  const sizes = bySize.map((i) => sets[i].length);
+  const firstAtLeast = (n: number) => {
+    let lo = 0;
+    let hi = sizes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sizes[mid] < n) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  sets.forEach((set, i) => {
+    if (set.length === 0 || rare[i] + common[i] >= MIN_SAMPLES) return;
+    const from = firstAtLeast(Math.ceil(set.length * SAME_PIECE.sizeRatio));
+    const to = firstAtLeast(Math.floor(set.length / SAME_PIECE.sizeRatio) + 1);
+    for (let k = from; k < to; k++) {
+      const j = bySize[k];
+      if (j !== i) keys.add(Math.min(i, j) * ID_SPACE + Math.max(i, j));
+    }
+  });
+
+  return [...keys].map((key) => [Math.floor(key / ID_SPACE), key % ID_SPACE] as [number, number]);
 }
 
 export function intersection(a: Uint32Array, b: Uint32Array): number {

@@ -204,8 +204,11 @@ Drive draft joins its work, but a paragraph quoted in another essay does
 not. Likely pairs come from sampled shingles (the same 1-in-8 slice of
 hashes in every text, so a short copy's samples are all in the long text's
 samples, which a containment screen needs; banded MinHash, used at first,
-missed many short copies); each pair is then checked exactly, and pairs
-chain into works.
+missed many short copies). A sampled shingle in more than 50 texts (a
+stock phrase, or a piece with that many copies) links its texts to one
+representative rather than to each other; a text with fewer than 8
+samples is checked against every text of a size it could match. Each
+pair is then checked exactly, and pairs chain into works.
 
 Each work's canonical text, in order: the latest version emailed to a known
 outlet (Simon's decision: the last version he sent wins, not the editor's

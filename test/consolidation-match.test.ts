@@ -73,6 +73,26 @@ test("a much shorter copy contained in a longer text is always found (Codex P1 o
   }
 });
 
+test("texts too short to sample still pair: identical copies are one work (Codex on #98)", () => {
+  // One de-duplicated shingle, not in the sampled slice.
+  const tiny = "的".repeat(50);
+  assert.deepEqual(candidatePairs([shingles(tiny), shingles(essay(60)), shingles(tiny)]), [[0, 2]]);
+  for (let seed = 0; seed < 50; seed++) {
+    const short = essay(7000 + seed, 40);
+    const { works } = matchCandidates([cand({ bodyText: short }), cand({ bodyText: essay(8000 + seed) }), cand({ bodyText: short })]);
+    assert.equal(works.length, 2, `seed ${seed}`);
+  }
+});
+
+test("a piece with more copies than the stock-phrase cap still forms one work (Codex on #98)", () => {
+  const text = essay(70);
+  const copies = Array.from({ length: 60 }, () => cand({ bodyText: text }));
+  const other = cand({ bodyText: essay(71) });
+  const { works } = matchCandidates([...copies, other]);
+  assert.equal(works.length, 2);
+  assert.deepEqual(works.map((w) => w.members.length).sort((a, b) => a - b), [1, 60]);
+});
+
 test("copies across sources form one work; the last version emailed to the outlet is canonical", () => {
   const text = essay(20);
   const first = cand({ bodyText: text, authoredAt: new Date("2020-06-29T11:00:00Z") });
