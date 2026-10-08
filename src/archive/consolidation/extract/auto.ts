@@ -1,12 +1,15 @@
-// Keep candidates (step 2) and works (step 3) in step with the rules without
-// anyone starting a run: shortly after boot (so after every deploy),
-// re-extract when a staged item has no candidate yet or one made by an older
-// EXTRACTOR_VERSION (a successful extraction then starts matching by
-// itself), else re-match when the works are older than the candidates or
-// MATCHER_VERSION. When all is current this costs two queries.
+// Keep candidates (step 2), works (step 3) and their public_artifact rows
+// (step 4) in step with the rules without anyone starting a run: shortly
+// after boot (so after every deploy), re-extract when a staged item has no
+// candidate yet or one made by an older EXTRACTOR_VERSION (a successful
+// extraction then starts matching, and matching loading, by itself), else
+// re-match when the works are older than the candidates or MATCHER_VERSION,
+// else load when no load by this LOADER_VERSION has run since the works
+// were made. When all is current this costs three queries.
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
+import { LOADER_VERSION } from "../load/run";
 import { MATCHER_VERSION } from "../match/run";
 import { startCollection, type CollectRequest } from "../runner";
 import { RunAlreadyActiveError } from "../staging";
@@ -43,16 +46,43 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
   return rows[0].stale;
 }
 
+export async function loadStale(db: DB = pool): Promise<boolean> {
+  const { rows } = await db.query<{ stale: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM archive_work)
+        AND COALESCE(
+              (SELECT max(matched_at) FROM archive_work) >
+              (SELECT max(started_at) FROM archive_collect_run
+                WHERE source = 'load' AND status = 'succeeded'
+                  AND (stats->>'loaderVersion')::int = $1),
+              true) AS stale`,
+    [LOADER_VERSION]
+  );
+  return rows[0].stale;
+}
+
+const MESSAGES = {
+  extract: `candidates out of date (extractor v${EXTRACTOR_VERSION})`,
+  match: `works out of date (matcher v${MATCHER_VERSION})`,
+  load: `archive rows out of date (loader v${LOADER_VERSION})`,
+};
+
 // The step started and its run id, or null when everything was current or
 // a run is already going.
 export async function catchUp(
   start: (req: CollectRequest) => Promise<string> = startCollection,
-  stale: { candidates: () => Promise<boolean>; works: () => Promise<boolean> } = {
+  stale: { candidates: () => Promise<boolean>; works: () => Promise<boolean>; load?: () => Promise<boolean> } = {
     candidates: () => candidatesStale(),
     works: () => worksStale(),
+    load: () => loadStale(),
   }
-): Promise<{ source: "extract" | "match"; runId: string } | null> {
-  const source = (await stale.candidates()) ? "extract" : (await stale.works()) ? "match" : null;
+): Promise<{ source: "extract" | "match" | "load"; runId: string } | null> {
+  const source = (await stale.candidates())
+    ? "extract"
+    : (await stale.works())
+      ? "match"
+      : (await stale.load?.())
+        ? "load"
+        : null;
   if (!source) return null;
   try {
     return { source, runId: await start({ source }) };
@@ -66,11 +96,7 @@ export function startAutoExtraction(): void {
   setTimeout(() => {
     catchUp()
       .then((r) => {
-        if (r) {
-          console.log(
-            `[consolidation] ${r.source === "extract" ? `candidates out of date (extractor v${EXTRACTOR_VERSION})` : `works out of date (matcher v${MATCHER_VERSION})`}; ${r.source} run ${r.runId} started`
-          );
-        }
+        if (r) console.log(`[consolidation] ${MESSAGES[r.source]}; ${r.source} run ${r.runId} started`);
       })
       .catch((err) => console.error("[consolidation] catch-up check failed:", describeGoogleError(err)));
   }, DELAY_MS);

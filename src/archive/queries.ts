@@ -298,10 +298,12 @@ export async function vectorSearchChunks(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
   }[]
 > {
   const vectorStr = `[${queryEmbedding.join(",")}]`;
-  const conditions: string[] = ["pa.processing_status = 'processed'"];
+  // Rows another has replaced (archive consolidation) are left out.
+  const conditions: string[] = ["pa.processing_status = 'processed'", "pa.status = 'published'"];
   const params: unknown[] = [vectorStr, limit];
   let paramIdx = 3;
 
@@ -331,7 +333,7 @@ export async function vectorSearchChunks(
     `SELECT c.id AS chunk_id, pa.id AS artifact_id,
             c.chunk_text, c.heading_path,
             1 - (c.embedding <=> $1::vector) AS similarity,
-            pa.title, pa.type, pa.published_at, pa.tags, pa.summary
+            pa.title, pa.type, pa.published_at, pa.tags, pa.summary, pa.flag
      FROM public_artifact_chunk c
      JOIN public_artifact pa ON pa.id = c.public_artifact_id
      WHERE ${where}
@@ -364,6 +366,7 @@ export async function bm25SearchChunks(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
   }[]
 > {
   const tsQuery = query
@@ -375,7 +378,8 @@ export async function bm25SearchChunks(
 
   if (!tsQuery) return [];
 
-  const conditions: string[] = ["pa.processing_status = 'processed'"];
+  // Rows another has replaced (archive consolidation) are left out.
+  const conditions: string[] = ["pa.processing_status = 'processed'", "pa.status = 'published'"];
   const params: unknown[] = [tsQuery, limit];
   let paramIdx = 3;
 
@@ -405,7 +409,7 @@ export async function bm25SearchChunks(
     `SELECT c.id AS chunk_id, pa.id AS artifact_id,
             c.chunk_text, c.heading_path,
             ts_rank(c.fulltext_tsv, to_tsquery('english', $1)) AS rank,
-            pa.title, pa.type, pa.published_at, pa.tags, pa.summary
+            pa.title, pa.type, pa.published_at, pa.tags, pa.summary, pa.flag
      FROM public_artifact_chunk c
      JOIN public_artifact pa ON pa.id = c.public_artifact_id
      WHERE ${where}
@@ -428,6 +432,7 @@ export async function graphSearchArtifacts(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
     entity_count: number;
   }[]
 > {
@@ -435,12 +440,13 @@ export async function graphSearchArtifacts(
 
   const { rows } = await pool.query(
     `SELECT pa.id AS artifact_id, pa.title, pa.type,
-            pa.published_at, pa.tags, pa.summary,
+            pa.published_at, pa.tags, pa.summary, pa.flag,
             COUNT(DISTINCT pae.entity_ref_id) AS entity_count
      FROM public_artifact_entity pae
      JOIN public_artifact pa ON pa.id = pae.public_artifact_id
      WHERE pae.entity_ref_id = ANY($1)
        AND pa.processing_status = 'processed'
+       AND pa.status = 'published'
      GROUP BY pa.id
      ORDER BY entity_count DESC
      LIMIT $2`,

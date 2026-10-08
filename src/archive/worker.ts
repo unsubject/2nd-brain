@@ -3,6 +3,7 @@ import { analyzeArtifact, extractEntities } from "./processor";
 import { chunkArtifact } from "./chunker";
 import { batchEmbed, EMBEDDING_MODEL } from "./embeddings";
 import { normalizeMarkdown } from "./ingest/markdown";
+import { retireReplacedRows } from "./consolidation/load/run";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -106,8 +107,13 @@ async function processOne(): Promise<boolean> {
       );
     }
 
+    // 8. Rows this one replaces (archive consolidation, step 4) leave
+    // search now that it can be found instead.
+    const retired = await retireReplacedRows(artifact.id);
+
     console.log(
-      `[archive] Processed "${artifact.title}": ${chunks.length} chunks, ${entities.length} entities`
+      `[archive] Processed "${artifact.title}": ${chunks.length} chunks, ${entities.length} entities` +
+        (retired > 0 ? `, replaces ${retired} older row(s)` : "")
     );
     return true;
   } catch (err) {

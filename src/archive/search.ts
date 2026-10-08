@@ -21,6 +21,9 @@ export interface SearchResult {
   publishedAt: Date | null;
   tags: string[] | null;
   summary: string | null;
+  // 'review' or 'unmatched': searchable, but not confirmed by the archive
+  // consolidation.
+  flag: string | null;
   score: number;
   sources: string[];
 }
@@ -84,6 +87,7 @@ export async function hybridSearch(
     publishedAt: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
   };
 
   const candidates = new Map<string, CandidateInfo>();
@@ -106,6 +110,7 @@ export async function hybridSearch(
         publishedAt: r.published_at,
         tags: r.tags,
         summary: r.summary,
+        flag: r.flag,
       });
     }
   }
@@ -125,6 +130,7 @@ export async function hybridSearch(
         publishedAt: r.published_at,
         tags: r.tags,
         summary: r.summary,
+        flag: r.flag,
       });
     }
   }
@@ -144,6 +150,7 @@ export async function hybridSearch(
         publishedAt: r.published_at,
         tags: r.tags,
         summary: r.summary,
+        flag: r.flag,
       });
     }
   }
@@ -185,6 +192,7 @@ export async function hybridSearch(
       publishedAt: info.publishedAt,
       tags: info.tags,
       summary: info.summary,
+      flag: info.flag,
       score: rrfScore(ranks),
       sources,
     });

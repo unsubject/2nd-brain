@@ -601,3 +601,162 @@ test("runMatch groups the copies of one piece into a work with the emailed text 
   assert.equal(await review.getWork("00000000-0000-0000-0000-000000000000", db), null);
   assert.equal((await match.workSummary(db))[0].works, 1);
 });
+
+const OTHER = [1, 2, 3].map((n) => `第${n}節：${"市場不是完美的，但政府更不完美，所以要限制權力。".repeat(5)}`).join("\n\n");
+
+// Stage, extract and match: one published column in three copies, and one
+// Drive draft never published (a work to review).
+async function buildWorks(): Promise<void> {
+  const run = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
+  await stageForExtraction();
+  await db.query(
+    `UPDATE archive_source_item SET metadata = metadata || '{"link": "https://leesimon.me/2020/06/kemu"}'
+      WHERE source = 'wordpress'`
+  );
+  await staging.upsertSourceItem(
+    item({ source: "gdrive", sourceRef: "doc-1", title: "政府失靈", rawText: OTHER, rawHtml: null, metadata: { path: "Article Archive" } }),
+    db
+  );
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+}
+
+test("runLoad writes one row per work and points the first import's copies at it", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  // The first import: the column as mailed (with a note to the editor), an
+  // unrelated piece, the draft with a link; and a video transcript.
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status, canonical_url) VALUES
+       ('default', 'essay', '自由市場的代價', $1, 'notion', 'n1', 'processed', NULL),
+       ('default', 'essay', '無關', $2, 'notion', 'n2', 'processed', NULL),
+       ('default', 'essay', '政府失靈', $3, 'notion', 'n3', 'processed', 'https://example.org/old'),
+       ('default', 'transcript', '影片', $4, 'youtube', 'y1', 'processed', NULL)`,
+    [
+      `老總：附上今期稿件。\n\n${ESSAY}`,
+      "今天天氣很好，我們一家人去公園散步，看見很多小朋友在玩耍。".repeat(6),
+      OTHER,
+      `影片逐字稿：${ESSAY}`,
+    ]
+  );
+
+  const stats = load.emptyLoadStats();
+  await load.runLoad(stats, async () => {}, () => false, db);
+  assert.equal(stats.works, 2);
+  assert.equal(stats.inserted, 2);
+  assert.equal(stats.flaggedReview, 1);
+  assert.deepEqual(stats.legacy, { rows: 3, matched: 2, hidden: 0, waiting: 2, unmatched: 1 });
+
+  const { rows: archived } = await db.query(
+    `SELECT id, source_external_id AS ref, title, type, status, flag, processing_status, canonical_url,
+            series, outlets, published_at
+       FROM public_artifact WHERE source_system = 'archive' ORDER BY source_external_id`
+  );
+  assert.deepEqual(archived.map((a) => a.ref), ["gdrive:doc-1", "gmail:sub"]);
+  const [doc, column] = archived;
+  assert.equal(column.title, "自由市場的代價");
+  assert.equal(column.flag, null);
+  assert.equal(column.status, "published");
+  assert.equal(column.processing_status, "pending"); // the worker processes it next
+  assert.equal(column.canonical_url, "https://leesimon.me/2020/06/kemu");
+  assert.equal(column.series, "蘋果論壇");
+  assert.equal(column.outlets[0], "蘋果日報");
+  assert.equal(column.published_at.toISOString().slice(0, 10), "2020-06-24");
+  assert.equal(doc.flag, "review"); // never published
+  assert.equal(doc.canonical_url, "https://example.org/old"); // kept from the row it replaces
+
+  const old = async () =>
+    Object.fromEntries(
+      (
+        await db.query(
+          `SELECT source_external_id AS ref, status, flag, superseded_by FROM public_artifact
+            WHERE source_system <> 'archive'`
+        )
+      ).rows.map((r) => [r.ref, r])
+    );
+  let rows = await old();
+  // Replaced, but still searchable until the new row is processed.
+  assert.deepEqual([rows.n1.status, rows.n1.flag, rows.n1.superseded_by], ["published", null, column.id]);
+  assert.deepEqual([rows.n3.status, rows.n3.superseded_by], ["published", doc.id]);
+  assert.deepEqual([rows.n2.status, rows.n2.flag, rows.n2.superseded_by], ["published", "unmatched", null]);
+  assert.deepEqual([rows.y1.status, rows.y1.flag, rows.y1.superseded_by], ["published", null, null]);
+
+  // The worker processes the column: the row it replaces leaves search.
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE id = $1", [column.id]);
+  assert.equal(await load.retireReplacedRows(column.id, db), 1);
+  rows = await old();
+  assert.equal(rows.n1.status, "superseded");
+  assert.equal(rows.n3.status, "published");
+
+  // Archive rows left from an earlier load: one whose text is now a copy in
+  // the column's work, one no work has any more.
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status) VALUES
+       ('default', 'essay', '利字當頭：科目三', $1, 'archive', 'wordpress:leesimon.me:42', 'processed'),
+       ('default', 'essay', '舊', '舊文', 'archive', 'gmail:gone', 'processed')`,
+    [ESSAY]
+  );
+
+  // Loading again changes nothing that is current.
+  const again = load.emptyLoadStats();
+  await load.runLoad(again, async () => {}, () => false, db);
+  assert.equal(again.inserted, 0);
+  assert.equal(again.unchanged, 2);
+  assert.equal(again.retired, 2);
+  assert.deepEqual(again.legacy, { rows: 3, matched: 2, hidden: 1, waiting: 1, unmatched: 1 });
+  const { rows: after } = await db.query(
+    `SELECT source_external_id AS ref, status, superseded_by, processing_status
+       FROM public_artifact WHERE source_system = 'archive' ORDER BY source_external_id`
+  );
+  const byRef = Object.fromEntries(after.map((r) => [r.ref, r]));
+  assert.equal(byRef["gmail:sub"].processing_status, "processed"); // same text: not processed again
+  assert.deepEqual([byRef["wordpress:leesimon.me:42"].status, byRef["wordpress:leesimon.me:42"].superseded_by], ["superseded", column.id]);
+  assert.deepEqual([byRef["gmail:gone"].status, byRef["gmail:gone"].superseded_by], ["superseded", null]);
+  assert.equal((await old()).n1.status, "superseded");
+
+  // A changed canonical text goes back to the worker, and its old copy is
+  // searchable again until the new text is processed.
+  await db.query(`UPDATE archive_candidate SET body_text = body_text || '\n\n補記：多謝讀者指正。' WHERE id =
+                    (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
+  const third = load.emptyLoadStats();
+  await load.runLoad(third, async () => {}, () => false, db);
+  assert.equal(third.updated, 1);
+  const { rows: requeued } = await db.query("SELECT processing_status, summary FROM public_artifact WHERE id = $1", [column.id]);
+  assert.equal(requeued[0].processing_status, "pending");
+  assert.equal((await old()).n1.status, "published");
+
+  const summary = await load.loadSummary(db);
+  assert.ok(summary.some((r) => r.source_system === "archive" && r.flag === "review"));
+});
+
+test("catch-up loads when no load has run since the works were made", { skip }, async () => {
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  assert.equal(await auto.loadStale(db), false); // no works yet
+  await buildWorks();
+  assert.equal(await auto.loadStale(db), true);
+  const stale = {
+    candidates: () => auto.candidatesStale(db),
+    works: () => auto.worksStale(db),
+    load: () => auto.loadStale(db),
+  };
+  assert.deepEqual(await auto.catchUp(async () => "run-1", stale), { source: "load", runId: "run-1" });
+
+  const runId = await staging.startRun("load", {}, db);
+  const stats = load.emptyLoadStats();
+  await load.runLoad(stats, async () => {}, () => false, db);
+  await staging.finishRun(runId, "succeeded", stats, null, db);
+  assert.equal(await auto.loadStale(db), false);
+  assert.equal(await auto.catchUp(async () => "run-2", stale), null);
+
+  // New works (a later match), or a new loader version, mean load again.
+  await db.query("UPDATE archive_work SET matched_at = now() + interval '1 second'");
+  assert.equal(await auto.loadStale(db), true);
+  await db.query("UPDATE archive_work SET matched_at = now() - interval '1 hour'");
+  assert.equal(await auto.loadStale(db), false);
+  await db.query(`UPDATE archive_collect_run SET stats = stats || '{"loaderVersion": 0}' WHERE id = $1`, [runId]);
+  assert.equal(await auto.loadStale(db), true);
+});

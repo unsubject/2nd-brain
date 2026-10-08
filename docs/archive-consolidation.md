@@ -46,8 +46,10 @@ Decisions (Simon, 2026-10-04):
    final emailed version → Substack / WordPress as published → newsletter →
    Drive doc (the old `public_artifact` rows come in at step 4). See
    "Running step 3".
-4. **Load.** Write canonical works to `public_artifact` under new source
-   systems and mark the old Notion/email rows superseded (not deleted).
+4. **Load.** Write every work to `public_artifact` (source system
+   `archive`, migration `030_archive_load.sql`) and mark the old
+   Notion/email rows it replaces superseded (not deleted). See "Running
+   step 4".
 5. **Keep current.** New Substack posts arrive by email at Simon's own
    address with the full text, including paid posts, so they can be picked
    up from Gmail daily without re-exporting.
@@ -233,6 +235,54 @@ text is much changed from the canonical (Jaccard below 0.6).
 curl "$BASE/archive/consolidation/works?status=review&limit=50" -H "Authorization: Bearer $ARCHIVE_API_KEY"
 curl "$BASE/archive/consolidation/works/<id>" -H "Authorization: Bearer $ARCHIVE_API_KEY"   # with its members
 ```
+
+## Running step 4
+
+Decisions (Simon, 2026-10-08): load **every** work, the ones in review
+flagged; an old row that matches a work is superseded, one that matches
+nothing stays searchable, flagged.
+
+A load runs by itself after every successful match, and on boot when no
+load by the current `LOADER_VERSION` has run since the works were made. To
+start one by hand:
+
+```sh
+curl -X POST "$BASE/archive/consolidation/load" -H "Authorization: Bearer $ARCHIVE_API_KEY"
+```
+
+What a load writes, in one transaction:
+
+- **One row per work**, `source_system = 'archive'`, keyed by the source
+  item of the canonical text (`gmail:<message id>`, `wordpress:<host>:<id>`,
+  …). Title, first publication date, the canonical text, `series` (the
+  column, else the outlet), `outlets` (every outlet), and the link of a
+  published WordPress copy if there is one. A work in review gets
+  `flag = 'review'`. A new or changed text goes to the archive worker
+  (`processing_status = 'pending'`), which summarises, chunks and embeds it
+  as for any row; an unchanged one is left as it is.
+- **The rows it replaces** get `superseded_by` pointing at the new row:
+  - a row from the first import (any source but `youtube`) that is a copy
+    of any version of the work: the step 3 test, or, for a row the import
+    cut at 2,000 characters, at least 60% of the row found in the version;
+  - an `archive` row from an earlier load whose text is no longer a work's
+    canonical (the work changed, or the item joined another work).
+
+  Such a row leaves search (`status = 'superseded'`) only once its
+  replacement has been processed, so a piece never drops out of search
+  while its new row waits in the queue. An `archive` row that no work
+  replaces is superseded at once.
+- **Old rows that match no work** stay searchable with
+  `flag = 'unmatched'`. Video transcripts are not touched.
+
+Search leaves out superseded rows: the `/archive/search` route and the
+calendar/task linker filter on `status = 'published'`, as the MCP tools
+already did. The `/archive/search` route also returns `flag`, so a reader
+can tell a confirmed piece from one still to check. The status
+route lists `public_artifact` rows by source, status, flag and processing
+state; the run log gives works, rows inserted / changed / unchanged,
+`flaggedReview`, `retired` (archive rows replaced), and for the old rows
+how many matched, left search, wait for their replacement, or matched
+nothing.
 
 ## What is stored
 
