@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { Pool } from "pg";
 import { pool, type DB } from "../../db/client";
 
 export type ArchiveSource = "gmail" | "gdrive" | "wordpress" | "substack";
@@ -113,33 +114,59 @@ export async function incompleteGmailMessages(refs: string[], db: DB = pool): Pr
 }
 
 export class RunAlreadyActiveError extends Error {
-  constructor(source: CollectorSource) {
-    super(`a ${source} collection run is already in progress`);
+  constructor(source: CollectorSource, message = `a ${source} collection run is already in progress`) {
+    super(message);
   }
 }
 
+const INTERRUPTED = `interrupted: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)`;
+
+// Record a new 'running' run. With `replaces` (the resume sweeper), the
+// interrupted run it continues is marked failed in the same transaction, so
+// if the new row can't be written the old one stays 'running' and the next
+// sweep tries again; RunAlreadyActiveError when that run is no longer a
+// silent 'running' row (resumed by another process, or alive after all).
 export async function startRun(
   source: CollectorSource,
   params: Record<string, unknown>,
-  db: DB = pool
+  db: DB = pool,
+  replaces?: string
 ): Promise<string> {
-  await db.query(
-    `UPDATE archive_collect_run
-        SET status = 'failed', error = 'abandoned: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)',
-            finished_at = now()
-      WHERE source = $1 AND status = 'running'
-        AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
-    [source]
-  );
+  // One connection for the transaction: a pool would spread it over several.
+  const client = db instanceof Pool ? await db.connect() : null;
+  const q = client ?? db;
   try {
-    const { rows } = await db.query<{ id: string }>(
+    await q.query("BEGIN");
+    if (replaces) {
+      const { rowCount } = await q.query(
+        `UPDATE archive_collect_run SET status = 'failed', error = $2, finished_at = now()
+          WHERE id = $1 AND status = 'running'
+            AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
+        [replaces, INTERRUPTED]
+      );
+      if (!rowCount) throw new RunAlreadyActiveError(source, `run ${replaces} was already taken over, or is live again`);
+    } else {
+      await q.query(
+        `UPDATE archive_collect_run
+            SET status = 'failed', error = 'abandoned: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)',
+                finished_at = now()
+          WHERE source = $1 AND status = 'running'
+            AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
+        [source]
+      );
+    }
+    const { rows } = await q.query<{ id: string }>(
       `INSERT INTO archive_collect_run (source, params) VALUES ($1, $2::jsonb) RETURNING id`,
       [source, JSON.stringify(params)]
     );
+    await q.query("COMMIT");
     return rows[0].id;
   } catch (err) {
+    await q.query("ROLLBACK").catch(() => undefined);
     if ((err as { code?: string }).code === "23505") throw new RunAlreadyActiveError(source);
     throw err;
+  } finally {
+    client?.release();
   }
 }
 
@@ -181,19 +208,29 @@ export interface InterruptedRun {
   params: Record<string, unknown>;
 }
 
-// Mark runs whose process is gone (no heartbeat for STALE_RUN_SECONDS) as
-// failed and return them for resuming. Each row is claimed by exactly one
-// caller: a concurrent claim re-checks status after the first commits.
-export async function claimInterruptedRuns(db: DB = pool): Promise<InterruptedRun[]> {
+// Runs whose process is gone (no heartbeat for STALE_RUN_SECONDS), oldest
+// first. Reading them claims nothing: startRun(..., replaces) or
+// markInterrupted does, so each row is taken over by exactly one caller.
+export async function interruptedRuns(db: DB = pool): Promise<InterruptedRun[]> {
   const { rows } = await db.query<InterruptedRun>(
-    `UPDATE archive_collect_run
-        SET status = 'failed', finished_at = now(),
-            error = 'interrupted: no heartbeat for ${STALE_RUN_SECONDS} s (server restart?)'
+    `SELECT id, source, params FROM archive_collect_run
       WHERE status = 'running'
         AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})
-      RETURNING id, source, params`
+      ORDER BY started_at`
   );
   return rows;
+}
+
+// Mark an interrupted run failed without continuing it; false when it was
+// no longer a silent 'running' row.
+export async function markInterrupted(runId: string, db: DB = pool): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE archive_collect_run SET status = 'failed', error = $2, finished_at = now()
+      WHERE id = $1 AND status = 'running'
+        AND heartbeat_at < now() - make_interval(secs => ${STALE_RUN_SECONDS})`,
+    [runId, INTERRUPTED]
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function getStagingStatus(db: DB = pool): Promise<{

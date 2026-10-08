@@ -60,6 +60,13 @@ const item = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+// Stands in for startCollection in the resume tests: records the new run
+// the way it does, without starting a collector.
+const recordRun = (req: import("../src/archive/consolidation/runner").CollectRequest) => {
+  const { source, ...params } = req;
+  return staging.startRun(source, params, db, req.resumedFrom);
+};
+
 test("upsert inserts, then reports unchanged, then updated on a content change", { skip }, async () => {
   assert.equal(await staging.upsertSourceItem(item(), db), "inserted");
   const before = await db.query("SELECT fetched_at FROM archive_source_item");
@@ -304,24 +311,34 @@ test("heartbeat and finish leave alone a run that is no longer running", { skip 
   assert.deepEqual(rows[0], { status: "failed", error: "interrupted: test", stats: { inserted: 1 } });
 });
 
-test("claimInterruptedRuns takes only silent runs, each exactly once", { skip }, async () => {
+test("an interrupted run is taken over exactly once, and a live one not at all", { skip }, async () => {
   const silent = await staging.startRun("gmail", { label: "Writing" }, db);
   const live = await staging.startRun("gdrive", { folderIds: ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl"] }, db);
   await db.query(
     `UPDATE archive_collect_run SET heartbeat_at = now() - make_interval(secs => $2) WHERE id = $1`,
     [silent, staging.STALE_RUN_SECONDS + 5]
   );
-  const [first, second] = await Promise.all([staging.claimInterruptedRuns(db), staging.claimInterruptedRuns(db)]);
-  const claimed = [...first, ...second];
-  assert.equal(claimed.length, 1);
-  assert.equal(claimed[0].id, silent);
-  assert.equal(claimed[0].source, "gmail");
-  assert.deepEqual(claimed[0].params, { label: "Writing" });
-  const { rows } = await db.query("SELECT id, status, error FROM archive_collect_run ORDER BY started_at");
+  assert.deepEqual(await staging.interruptedRuns(db), [{ id: silent, source: "gmail", params: { label: "Writing" } }]);
+
+  // Two sweepers resume it at once: one continuation, the other is told so.
+  const resume = () => staging.startRun("gmail", { label: "Writing", resumedFrom: silent }, db, silent);
+  const results = await Promise.allSettled([resume(), resume()]);
+  const started = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  assert.equal(started.length, 1);
+  const refused = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+  assert.ok(refused.reason instanceof staging.RunAlreadyActiveError);
+
+  const { rows } = await db.query("SELECT id, status, error FROM archive_collect_run");
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
   assert.equal(byId[silent].status, "failed");
   assert.match(byId[silent].error, /^interrupted/);
+  assert.equal(byId[started[0]].status, "running");
   assert.equal(byId[live].status, "running");
+  // A live run is neither listed, nor marked, nor replaced.
+  assert.deepEqual(await staging.interruptedRuns(db), []);
+  assert.equal(await staging.markInterrupted(live, db), false);
+  await assert.rejects(staging.startRun("gdrive", {}, db, live), staging.RunAlreadyActiveError);
+  assert.equal((await db.query("SELECT status FROM archive_collect_run WHERE id = $1", [live])).rows[0].status, "running");
 });
 
 test("resumeInterruptedRuns starts the continuation of an interrupted run", { skip }, async () => {
@@ -334,26 +351,44 @@ test("resumeInterruptedRuns starts the continuation of an interrupted run", { sk
   );
   await db.query(`UPDATE archive_collect_run SET heartbeat_at = now() - interval '10 minutes'`);
   const requests: unknown[] = [];
-  const started = await resumeInterruptedRuns(
-    async (req) => {
-      requests.push(req);
-      // Stand in for startCollection: record the new run the way it does.
-      const { source, ...params } = req;
-      return staging.startRun(source, params, db);
-    },
-    () => staging.claimInterruptedRuns(db)
-  );
+  const started = await resumeInterruptedRuns(async (req) => {
+    requests.push(req);
+    return recordRun(req);
+  }, db);
   // A refetch run is continued as one: it re-reads what is staged.
   assert.deepEqual(requests, [{ source: "gmail", label: "Writing", refetch: true, resumedFrom: old, resumeCount: 1 }]);
   assert.equal(started.length, 1);
-  const { rows } = await db.query("SELECT id, source, status, params FROM archive_collect_run");
+  const { rows } = await db.query("SELECT id, source, status, error, params FROM archive_collect_run");
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
   assert.equal(byId[old].status, "failed");
   assert.equal(byId[tooOften].status, "failed");
+  assert.match(byId[tooOften].error, /^interrupted/);
   assert.equal(byId[started[0]].status, "running");
   assert.equal(byId[started[0]].params.resumedFrom, old);
   // Nothing left to resume.
-  assert.deepEqual(await resumeInterruptedRuns(async () => "x", () => staging.claimInterruptedRuns(db)), []);
+  assert.deepEqual(await resumeInterruptedRuns(async () => "x", db), []);
+});
+
+test("an interrupted run whose continuation fails to start is resumed by the next sweep", { skip }, async () => {
+  const { resumeInterruptedRuns } = await import("../src/archive/consolidation/resume");
+  const old = await staging.startRun("gmail", { label: "Writing" }, db);
+  await db.query(`UPDATE archive_collect_run SET heartbeat_at = now() - interval '10 minutes'`);
+  const status = async () => (await db.query("SELECT status FROM archive_collect_run WHERE id = $1", [old])).rows[0].status;
+
+  // The new row can't be written (here, a source the table refuses): the
+  // old run is not marked either.
+  await assert.rejects(staging.startRun("bogus" as never, {}, db, old), /check constraint/);
+  assert.equal(await status(), "running");
+  // A sweep whose start fails (say the connection drops) leaves it as it is...
+  const failing = async () => {
+    throw new Error("Connection terminated unexpectedly");
+  };
+  assert.deepEqual(await resumeInterruptedRuns(failing, db), []);
+  assert.equal(await status(), "running");
+  // ...and the next sweep resumes it.
+  const started = await resumeInterruptedRuns(recordRun, db);
+  assert.equal(started.length, 1);
+  assert.equal(await status(), "failed");
 });
 
 // Step 2 (extract) against the database. Here rather than in its own file:

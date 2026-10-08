@@ -1,5 +1,6 @@
 import { collectDrive, emptyDriveStats, type DriveCollectParams } from "./drive";
 import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
+import { pool } from "../../db/client";
 import { describeGoogleError } from "../../google/errors";
 import { emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
@@ -36,7 +37,7 @@ function startFollowUp(req: CollectRequest): void {
 
 export async function startCollection(req: CollectRequest): Promise<string> {
   const { source, ...params } = req;
-  const runId = await startRun(source, params);
+  const runId = await startRun(source, params, pool, req.resumedFrom);
   const stats =
     source === "gmail"
       ? emptyStats()

@@ -1,15 +1,17 @@
 // Resume collection runs that a restart cut short. Collectors run inside
 // the app process, so every deploy stops a run mid-way; its row stays
-// 'running' until its heartbeats stop. This sweeper marks such runs failed
-// ("interrupted") and starts a fresh run with the same settings. A normal
-// run skips everything already staged, so it continues where the old one
-// stopped; a refetch run starts its re-read over. A run is resumed at most
-// MAX_RESUMES times in a row, so one that keeps killing the process can't
-// loop.
+// 'running' until its heartbeats stop. This sweeper starts a fresh run with
+// the same settings and marks the old one failed ("interrupted") in the
+// same transaction (staging.startRun), so a start that fails leaves the old
+// run for the next sweep. A normal run skips everything already staged, so
+// it continues where the old one stopped; a refetch run starts its re-read
+// over. A run is resumed at most MAX_RESUMES times in a row, so one that
+// keeps killing the process can't loop.
 
 import { describeGoogleError } from "../../google/errors";
+import { pool, type DB } from "../../db/client";
 import { startCollection, type CollectRequest } from "./runner";
-import { claimInterruptedRuns, RunAlreadyActiveError, type InterruptedRun } from "./staging";
+import { interruptedRuns, markInterrupted, RunAlreadyActiveError, type InterruptedRun } from "./staging";
 
 export const MAX_RESUMES = 3;
 const FIRST_SWEEP_DELAY_MS = 30_000;
@@ -45,18 +47,23 @@ export function resumeRequest(run: InterruptedRun): CollectRequest | null {
   return null;
 }
 
+// `start` must record the new run with startRun(..., req.resumedFrom), as
+// startCollection does, so that taking over the old run and recording the
+// new one are one step.
 export async function resumeInterruptedRuns(
   start: (req: CollectRequest) => Promise<string> = startCollection,
-  claim: () => Promise<InterruptedRun[]> = () => claimInterruptedRuns()
+  db: DB = pool
 ): Promise<string[]> {
   const started: string[] = [];
-  for (const run of await claim()) {
+  for (const run of await interruptedRuns(db)) {
     const req = resumeRequest(run);
     if (!req) {
-      console.error(
-        `[consolidation] ${run.source} run ${run.id} was interrupted and is not resumed ` +
-          `(resumed ${MAX_RESUMES} times already, or unusable params); start it again by hand`
-      );
+      if (await markInterrupted(run.id, db)) {
+        console.error(
+          `[consolidation] ${run.source} run ${run.id} was interrupted and is not resumed ` +
+            `(resumed ${MAX_RESUMES} times already, or unusable params); start it again by hand`
+        );
+      }
       continue;
     }
     try {
@@ -65,9 +72,12 @@ export async function resumeInterruptedRuns(
       console.log(`[consolidation] ${run.source} run ${run.id} was interrupted; resumed as ${id} (resume ${req.resumeCount})`);
     } catch (err) {
       if (err instanceof RunAlreadyActiveError) {
-        console.log(`[consolidation] ${run.source} run ${run.id} was interrupted; a newer run is already active`);
+        console.log(`[consolidation] ${run.source} run ${run.id} was interrupted; not resumed here: ${err.message}`);
       } else {
-        console.error(`[consolidation] could not resume ${run.source} run ${run.id}:`, describeGoogleError(err));
+        console.error(
+          `[consolidation] could not resume ${run.source} run ${run.id} (the next sweep tries again):`,
+          describeGoogleError(err)
+        );
       }
     }
   }
