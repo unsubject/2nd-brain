@@ -6,7 +6,12 @@
 // the linker rewrite is deployed:
 //   tsx scripts/relink_journal_entries.ts
 //
-// Idempotent: re-running just re-wipes and re-emits the same link types.
+// Not a top-up: it first deletes these link types for every entry, then
+// makes one OpenAI extraction call per processed entry. The extraction varies
+// from run to run, so a re-run replaces the links rather than only adding
+// missing ones. An entry whose extraction or a matcher fails keeps only the
+// links that were found, and is counted as failed (exit code 1). Back up
+// link_edge before running it.
 
 import { pool } from "../src/db/client";
 import { generateLinksStrict } from "../src/google/linker";
@@ -63,9 +68,10 @@ async function main() {
   let failed = 0;
   for (const row of rows) {
     try {
-      // Strict variant throws on any failure so the script can count it.
-      // The default generateLinks wrapper catches internally — every
-      // iteration would look successful even when nothing got written.
+      // Strict variant throws when entity extraction or any matcher failed
+      // (after writing the links that were found) so the script can count
+      // it. The default generateLinks wrapper catches internally — every
+      // iteration would look successful even when links were missed.
       await generateLinksStrict({
         id: row.id,
         full_text: row.full_text,
