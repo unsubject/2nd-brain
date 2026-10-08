@@ -54,6 +54,53 @@ Decisions (Simon, 2026-10-04):
    address with the full text, including paid posts, so they can be picked
    up from Gmail daily without re-exporting.
 
+## How the steps run
+
+Each step runs in the background inside the app and is tracked as a run in
+`archive_collect_run` (source `gmail`, `gdrive`, `extract`, `match` or
+`load`), with at most one live run per source. Once something is
+collected, the rest follows by itself, collect → extract → match → load:
+when a run ends it starts the step after it (`runner.nextStep`):
+
+| Run that ended | Next |
+|---|---|
+| Gmail or Drive collection, whatever its outcome | extraction, if any staged item lacks a current candidate |
+| Extraction that succeeded | extraction again if items were staged or changed while it ran, else matching |
+| Extraction that failed | extraction again only if items were staged or changed while it ran, else matching |
+| Match, whatever its outcome | matching again if an extraction ended while it ran (whatever its outcome) |
+| Match that succeeded (otherwise) | loading |
+| Match that failed (otherwise) | loading if no load has read the works as they are |
+| Load that succeeded | loading again if the works are not the ones it read |
+| Load that failed | loading again only if a match succeeded while it ran |
+
+A step asked to start while a run of it is live is refused, so the live run
+checks when it ends whether something it missed arrived meanwhile: that is
+what the "again" rows are for. Extraction is also held back while a Gmail or
+Drive collection is live (it reads everything staged); the collection
+starts it when it ends. A failed run is followed again only for what came in
+while it ran, so a step that always fails doesn't start run after run. A
+failed extraction is still followed by matching, since it rewrote the
+candidates of every item it didn't fail on, and a failed match by loading
+when the works it leaves (the last successful match's) were never loaded,
+as when that match left its load to the run that failed. No step starts
+the one before it, so none of this loops. A run taken over by the resume
+sweeper (see "Running step 1") starts nothing; the run that continues it
+does when it ends.
+
+On boot (90 s after, so after every deploy and after the sweeper has
+resumed the runs it cut short) the app checks, in order, whether the
+candidates, the works or the loaded rows are out of date (a staged item
+with no candidate, one made by an older `EXTRACTOR_VERSION` or one older
+than the item; works older than the candidates or than `MATCHER_VERSION`,
+or made by a match that an extraction ended after it started; no load by
+this `LOADER_VERSION` that read the current works) and starts the first
+step that is due, which then starts the rest (`extract/auto.ts`). While a
+collection is live it waits for it, checking again every minute.
+Collection, extraction and loading can also be started by hand
+(`POST /archive/consolidation/collect`, `/extract`, `/load`; a refused
+start answers 409); matching starts after every extraction (so a run of
+extraction by hand is also how to match by hand) or on boot.
+
 ## Running step 1
 
 All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
@@ -86,9 +133,11 @@ All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
 
 Google calls are paced and, when Google answers "quota exceeded", the whole
 run pauses (15 s, 30 s, … up to 2 min), slows down and retries the call;
-`stats.rateLimitPauses` counts the pauses. The first Gmail run, before this
-existed, lost 4,039 of 4,297 messages to Gmail's per-minute quota within 30
-seconds.
+`stats.rateLimitPauses` counts the pauses. Drive reads one file at a time,
+so it is not paced until its first limit; from then on each request waits
+250 ms (doubling on each further limit, up to 4 s), and only the limited
+request is retried. The first Gmail run, before this existed, lost 4,039 of
+4,297 messages to Gmail's per-minute quota within 30 seconds.
 
 The Google connection page lists any permission Google didn't grant (the
 consent screen lets you untick each one); connect again if Drive is listed.
@@ -98,18 +147,24 @@ Failed items are picked up by the next normal run: a message whose body
 couldn't be fetched is never staged, and a staged message with a `.docx`
 attachment row missing is fetched again (`stats.retriedIncomplete`).
 Only one run per source can be active. Pass `"refetch": true` to re-read
-items that are already staged.
+items that are already staged. When a collection ends, whatever its
+outcome, it starts extraction (step 2) if any staged item lacks a current
+candidate; extraction doesn't start while a Gmail or Drive collection is
+live (asked for by hand, it answers 409).
 
 Runs survive deploys. Collectors run inside the app, so a restart stops a
 run mid-way; a live run heartbeats every 30 s, so a `running` row silent for
 2 minutes belongs to a process that is gone. A sweeper (every minute, from
-30 s after boot) marks such a run failed (`interrupted: …`) and starts a
-fresh run with the same settings and `refetch: false`, which skips what is
-already staged; the new run's params carry `resumedFrom` and `resumeCount`.
-A run is resumed at most 3 times in a row, so one that keeps crashing the
-app stops and has to be started again by hand. If a run's row is taken over
-while its old process is still alive, that process stops at its next item
-and cannot overwrite the outcome.
+30 s after boot) starts a fresh run with the same settings and marks the
+old one failed (`interrupted: …`) in the same transaction, so if the new run
+can't be recorded the old one waits for the next sweep. A normal run skips
+what is already staged, so it continues where the old one stopped; a
+`refetch` run re-reads everything again. The new run's params carry
+`resumedFrom` and `resumeCount`. A run is resumed at most 3 times in a row,
+so one that keeps crashing the app stops and has to be started again by
+hand. If a run's row is taken over while its old process is still alive,
+that process stops at its next item and can neither overwrite the outcome
+nor start the step after it: the run that continues it does that.
 
 ## Running step 2
 
@@ -117,11 +172,24 @@ Extraction reads only the database (no Google calls) and takes a minute or
 two. Every run rewrites every candidate, so a rule change applies to all of
 it on the next run; `archive_source_item` is never changed.
 
-It runs by itself: 90 s after boot (so after every deploy) the app checks
-whether any staged item has no candidate, or one made by an older
-`EXTRACTOR_VERSION` (`extract/types.ts`, bumped with every rule change), and
-if so starts a run (`extract/auto.ts`). The run's counts appear in the logs
-(`[consolidation] extract run … finished: {…}`). To run it by hand:
+It runs by itself after every collection that left items to extract, and
+90 s after boot (so after every deploy) the app checks whether any staged
+item has no candidate, one made by an older `EXTRACTOR_VERSION`
+(`extract/types.ts`, bumped with every rule change) or one older than the
+item (collected again since) or, for a `.docx` attachment, than the
+message whose recipients it takes, and if so starts a run (`extract/auto.ts`;
+while a collection is live it checks again every minute). If items were
+staged or changed while an extraction ran (a collection started
+alongside), it runs again before matching, whether it succeeded or
+failed; after a failed run only those items count, so an item that always
+fails doesn't start extraction after extraction. Matching follows either
+way, so the rest of the material reaches the works and `public_artifact`;
+the item that failed keeps its previous candidate, or has none, until the
+rules handle it (its candidate stays out of date, so every boot check and
+every collection extracts again, and fails on it again, before matching).
+A candidate is stamped with the time its item was read, so an item changed
+while the run held it counts as changed. The run's counts appear in the
+logs (`[consolidation] extract run … finished: {…}`). To run it by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"
@@ -190,10 +258,18 @@ reader-reply review and the Patreon creator check.
 
 ## Running step 3
 
-Matching runs by itself after every successful extraction (and on boot when
-the works are older than the candidates or than `MATCHER_VERSION` in
-`match/run.ts`). It reads the candidates that extraction kept or sent to
-review, takes a few seconds, and rebuilds every work in one transaction.
+Matching runs by itself after every extraction, successful or not, that
+found nothing staged or changed while it ran to extract again (and on
+boot when the works are older than the candidates or than
+`MATCHER_VERSION` in `match/run.ts`, or an extraction ended after the
+match that made them started). It reads the candidates that extraction
+kept or sent to review, takes a few seconds, and rebuilds every work in
+one transaction. An extraction that ends while a match runs can't start
+its own (one run per step), and may have written candidates after the
+match read them, so a match, whatever its outcome, runs again when one
+did, whatever that extraction's outcome; otherwise a successful match
+starts a load (step 4), and so does a failed one when the works it leaves
+(the last successful match's) have not been loaded.
 The run's counts appear in the logs (`[consolidation] match run …
 finished: {…}`): `works`, `byStatus`, `bySize` (works with 1, 2, 3–5, 6–10,
 11+ members) and the five `largest` works by title; a very large work would
@@ -251,10 +327,15 @@ Decisions (Simon, 2026-10-08): load **every** work, the ones in review
 flagged; an old row that matches a work is superseded, one that matches
 nothing stays searchable, flagged.
 
-A load runs by itself after every successful match, and on boot when no
-load by the current `LOADER_VERSION` has read the current works (an empty
-set of works included). A load that finds the works changed while it ran (a
-match finished meanwhile, whose own load it blocked) loads again. To start one by hand:
+A load runs by itself after every successful match, after a failed one
+when no load by the current `LOADER_VERSION` has read the current works (a
+failed match leaves the works of the last one that succeeded, which may
+have left its load to the run that failed), and on boot in the same case
+(an empty set of works included). A load that finds the works changed
+while it ran (a match finished meanwhile, whose own load it blocked) loads
+again; after a failed load, only when a match succeeded while it ran, so a
+load that keeps failing doesn't start run after run: the next match, the
+boot check or a run by hand tries again. To start one by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/load" -H "Authorization: Bearer $ARCHIVE_API_KEY"
