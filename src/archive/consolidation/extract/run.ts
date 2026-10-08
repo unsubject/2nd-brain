@@ -46,8 +46,18 @@ interface Row {
   raw_text: string | null;
   raw_html: string | null;
   metadata: Record<string, unknown>;
+  // For a Gmail attachment, its message's recipients (null otherwise).
+  parent_to: unknown;
+  parent_cc: unknown;
   // When the batch was read, as text: a JS Date would drop the microseconds.
   read_at: string;
+}
+
+// An attachment row is staged without recipients: they are its message's,
+// and the column, outlet and self-draft rules need them (extract/gmail.ts).
+function stagedMetadata(r: Row): Record<string, unknown> {
+  const m = r.metadata ?? {};
+  return r.source === "gmail" && m.kind === "attachment" ? { ...m, to: r.parent_to, cc: r.parent_cc } : m;
 }
 
 // extracted_at is when the item was read, not when its candidate is written,
@@ -146,9 +156,13 @@ export async function runExtraction(
   for (;;) {
     if (shouldStop()) return;
     const { rows } = await db.query<Row>(
-      `SELECT id, source, source_ref, container_ref, title, authored_at, raw_text, raw_html, metadata,
-              now()::text AS read_at
-         FROM archive_source_item WHERE id > $1 ORDER BY id LIMIT $2`,
+      `SELECT s.id, s.source, s.source_ref, s.container_ref, s.title, s.authored_at, s.raw_text, s.raw_html,
+              s.metadata, p.metadata->'to' AS parent_to, p.metadata->'cc' AS parent_cc, now()::text AS read_at
+         FROM archive_source_item s
+         LEFT JOIN archive_source_item p
+           ON s.source = 'gmail' AND s.metadata->>'kind' = 'attachment'
+          AND p.source = 'gmail' AND p.source_ref = s.metadata->>'parentMessageId'
+        WHERE s.id > $1 ORDER BY s.id LIMIT $2`,
       [after, BATCH]
     );
     if (rows.length === 0) break;
@@ -164,7 +178,7 @@ export async function runExtraction(
           authoredAt: r.authored_at,
           rawText: r.raw_text,
           rawHtml: r.raw_html,
-          metadata: r.metadata ?? {},
+          metadata: stagedMetadata(r),
         });
         stats[await writeCandidate(r.id, r.source, c, r.read_at, db)] += 1;
         stats.written += 1;

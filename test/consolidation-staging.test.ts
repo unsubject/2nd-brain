@@ -505,6 +505,62 @@ test("runExtraction writes one candidate per item and keeps one copy of each new
   assert.ok(summary.some((r) => r.source === "gmail" && r.kind === "duplicate" && r.status === "drop" && r.n === 1));
 });
 
+test("runExtraction gives a .docx attachment its message's recipients", { skip }, async () => {
+  const run = await import("../src/archive/consolidation/extract/run");
+  // As the collector stages them: the message has to/cc, its attachment
+  // row only the parent's id. Covering notes, so the messages themselves
+  // are short replies; the essays are in the attachments.
+  for (const [ref, to] of [
+    ["m-forum", ["forum@appledaily.com"]],
+    ["m-note", ["Notes <note@leesimon.me>"]],
+  ] as const) {
+    await staging.upsertSourceItem(
+      item({
+        sourceRef: ref,
+        title: "新稿",
+        rawText: "附上今期稿件。",
+        metadata: { kind: "message", from: "simoncf@gmail.com", to, cc: [], isSent: true },
+      }),
+      db
+    );
+    await staging.upsertSourceItem(
+      item({
+        sourceRef: `${ref}#1`,
+        title: "final.docx",
+        rawText: ESSAY,
+        metadata: {
+          kind: "attachment",
+          parentMessageId: ref,
+          subject: "新稿",
+          filename: "final.docx",
+          isSent: true,
+          from: "simoncf@gmail.com",
+        },
+      }),
+      db
+    );
+  }
+
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  const { rows } = await db.query(
+    `SELECT s.source_ref, c.kind, c.status, c.reasons, c.column_name, c.outlet, c.is_published
+       FROM archive_candidate c JOIN archive_source_item s ON s.id = c.source_item_id`
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.source_ref, r]));
+  assert.deepEqual(
+    [by["m-forum#1"].kind, by["m-forum#1"].status, by["m-forum#1"].column_name, by["m-forum#1"].outlet, by["m-forum#1"].is_published],
+    ["attachment", "keep", "蘋果論壇", "蘋果日報", true]
+  );
+  assert.deepEqual(
+    [by["m-note#1"].kind, by["m-note#1"].status, by["m-note#1"].reasons, by["m-note#1"].is_published],
+    ["self_draft", "drop", ["note-to-self"], false]
+  );
+  assert.equal(by["m-forum"].kind, "reply");
+  // The staged row itself is left as it was.
+  const att = await db.query("SELECT metadata FROM archive_source_item WHERE source_ref = 'm-note#1'");
+  assert.equal(att.rows[0].metadata.to, undefined);
+});
+
 test("candidate list, detail and review sample", { skip }, async () => {
   const run = await import("../src/archive/consolidation/extract/run");
   const review = await import("../src/archive/consolidation/extract/review");
@@ -706,7 +762,7 @@ test("an item rewritten after extraction read it, before its candidate was writt
   const racing = {
     query: async (sql: string, params?: unknown[]) => {
       const res = await db.query(sql, params);
-      if (!raced && /FROM archive_source_item WHERE id > \$1/.test(sql)) {
+      if (!raced && /WHERE s\.id > \$1 ORDER BY s\.id/.test(sql)) {
         raced = true;
         assert.equal(await staging.upsertSourceItem(item({ rawText: "新的內容。".repeat(20) }), db), "updated");
       }

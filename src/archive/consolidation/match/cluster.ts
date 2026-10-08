@@ -60,14 +60,29 @@ function time(d: Date | null): number {
   return d ? d.getTime() : -Infinity;
 }
 
+const isAttachment = (c: MatchCandidate) => c.kind === "attachment";
+
 export function pickCanonical(members: MatchCandidate[]): MatchCandidate {
   return [...members].sort(
     (a, b) =>
       canonicalRank(a) - canonicalRank(b) ||
       time(b.authoredAt) - time(a.authoredAt) ||
+      // One send with the essay inline and as a .docx: the message's text
+      // has its title line, note and sign-off removed, the .docx's not.
+      Number(isAttachment(a)) - Number(isAttachment(b)) ||
       b.bodyText.length - a.bodyText.length ||
       a.id.localeCompare(b.id)
   )[0];
+}
+
+// A .docx is titled by its file name ("final"): when one is canonical, a
+// title from a message (title line or subject) or a published copy is
+// better. A Drive document is named by its file too.
+function workTitle(canonical: MatchCandidate, ordered: MatchCandidate[]): string | null {
+  const better = isAttachment(canonical)
+    ? ordered.find((m) => !isAttachment(m) && m.source !== "gdrive" && m.title)?.title
+    : null;
+  return better ?? canonical.title ?? ordered.find((m) => m.title)?.title ?? null;
 }
 
 class UnionFind {
@@ -115,7 +130,7 @@ export function buildWork(members: MatchCandidate[], sets: Map<string, Uint32Arr
   }
   return {
     canonicalId: canonical.id,
-    title: canonical.title ?? ordered.find((m) => m.title)?.title ?? null,
+    title: workTitle(canonical, ordered),
     publishedAt: first?.publishedAt ?? canonical.publishedAt,
     outlet: first?.outlet ?? canonical.outlet,
     column: first?.column ?? canonical.column ?? ordered.find((m) => m.column)?.column ?? null,

@@ -163,8 +163,8 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 | Source | Kind | Status | Rule |
 |---|---|---|---|
 | gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column (`outlet-unknown`); but a `Re:` to no known outlet is more likely a conversation with a reader, so it goes to review (`reply-outside-outlets`). |
-| gmail | `attachment` | keep | His `.docx` attachment; title from the file name. |
-| gmail | `self_draft` | drop / review | Sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
+| gmail | `attachment` | keep | His `.docx` attachment; title from the file name, or from the subject when the file name is only a column and date ("利字當頭 20240220"). Column, outlet and the self-draft rule follow the message that carried it (its recipients are read from the message's row). |
+| gmail | `self_draft` | drop / review | A message, or its `.docx`, sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
 | gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
 | gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
 | gmail | `received` | drop | From anyone else: editors, readers, acknowledgements. |
@@ -173,7 +173,7 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 | gmail | `platform_copy` | drop | A Substack email: the Substack export has the post. |
 | wordpress | `post` / `page` | keep / review | Published posts kept; pages and private posts to review; drafts dropped. |
 | substack | `post` | keep | Published posts, any audience (`audience-only_paid` noted); drafts dropped. |
-| gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date. |
+| gdrive | `doc` | keep | As written; date from the file name (`利字當頭 20190730`) or else the file's creation date (also when the name's date is a day that doesn't exist, such as `20230231`). |
 
 Cleaning an email, in order: drop Gmail's link targets (`text <https://…>`);
 cut everything from the first quote header ("On … wrote:", also as "> On …"
@@ -189,12 +189,14 @@ subject's title) appears in the first paragraphs, the text before it is the
 note to the editor (kept in `note`) and the essay starts after it.
 
 The publication date is the column date in the subject when there is one
-("留稿：12月30日見報", "利字當頭 2020 06 30", within 45 days of sending),
+("留稿：12月30日見報", "利字當頭 2020 06 30"; a real date within 45 days of sending),
 else the send date (`date_source`). The outlet follows the column (蘋果論壇 →
 蘋果日報, 壹擋專政 → 壹週刊, 金融一條針 → 爽報), else the recipients' domain.
 A piece mailed to forum@appledaily.com is a 蘋果論壇 piece even when the
 subject doesn't say so. A leading "李兆富：" or "利世民：" in a subject is the
-author's name, not part of the title.
+author's name, not part of the title; a leading 投稿 followed by a separator,
+a space or a quote ("投稿：title") is a marker, but a title that starts with
+the word ("投稿文化的轉變") keeps it.
 
 These rules were checked against about 15 real messages from the label
 (2013–2024) on 2026-10-07; that pass added the 李兆富 sign-off, the older
@@ -238,10 +240,17 @@ Each work's canonical text, in order: the latest version emailed to a known
 outlet (Simon's decision: the last version he sent wins, not the editor's
 edit); the published Substack post; the published WordPress post (a page or
 private post ranks with the drafts); the newsletter issue; an email
-to an address at no known outlet; the Drive document; anything else. Its
-date is the first publication (the earliest date among published members),
-its outlet and column those of that first publication, and `outlets` lists
-every outlet a member went to.
+to an address at no known outlet; the Drive document; anything else.
+Between a message and the `.docx` it carried (one send, the essay inline
+and attached), the message wins: its title line, note and sign-off were
+removed.
+
+A work's title is its canonical's, except that a `.docx` is named by its
+file ("final"): a canonical `.docx` takes the title of the best-ranked
+message or published copy when there is one. Its date is the first
+publication (the earliest date among published members), its outlet and
+column those of that first publication, and `outlets` lists every outlet a
+member went to.
 
 A work is `review` when none of its members was published or its canonical
 candidate is itself under review; `versions-differ` notes a member whose
@@ -314,8 +323,9 @@ nothing.
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
   `isSent`, attachment list), plus one row per `.docx` attachment
-  (`<message id>#<part id>`) with its text. Long bodies that Gmail stores
-  out of line are fetched separately (`externalBodies` in the metadata).
+  (`<message id>#<part id>`) with its text (its recipients stay on the
+  message's row). Long bodies that Gmail stores out of line are fetched
+  separately (`externalBodies` in the metadata).
 - **gdrive**: one row per Google Doc (text + HTML export) or `.docx`, with its
   folder path and Drive timestamps. Unchanged files are skipped on re-runs.
 - **wordpress**: one row per post or page (`<site host>:<post id>`), HTML as

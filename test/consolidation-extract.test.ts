@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { htmlToText, textLength, unwrapSoftBreaks } from "../src/archive/consolidation/extract/text";
 import {
+  bareTitle,
   cutQuoted,
   detectOutlet,
   extractGmail,
@@ -214,6 +215,18 @@ test("an occasional piece outside the known columns is kept, with no column", ()
   assert.equal(extractGmail(message({ title: "投稿：樓市的下一步" }, { to: ["editor@example-weekly.com"] })).title, "樓市的下一步");
 });
 
+test("投稿 is removed only as a marker, not from a title that starts with the word", () => {
+  for (const marked of ["投稿：樓市的下一步", "投稿 樓市的下一步", "投稿 - 樓市的下一步", "投稿｜樓市的下一步"]) {
+    assert.equal(bareTitle(marked), "樓市的下一步", marked);
+  }
+  assert.equal(bareTitle("投稿「樓市的下一步」"), "「樓市的下一步」");
+  assert.equal(bareTitle("投稿"), "");
+  assert.equal(bareTitle("投稿文化的轉變"), "投稿文化的轉變");
+  assert.equal(bareTitle("投稿人的權利"), "投稿人的權利");
+  const c = extractGmail(message({ title: "投稿文化的轉變" }, { to: ["editor@example-weekly.com"] }));
+  assert.equal(c.title, "投稿文化的轉變");
+});
+
 test("subjectDate reads 留稿 dates across the new year, and ignores far-off dates", () => {
   const sent = new Date("2024-02-27T08:00:00Z");
   assert.equal(subjectDate("利字當頭：科目三（留稿：3月2日見報）", sent)?.toISOString().slice(0, 10), "2024-03-02");
@@ -223,6 +236,10 @@ test("subjectDate reads 留稿 dates across the new year, and ignores far-off da
   );
   assert.equal(subjectDate("利字當頭 2019 07 30", sent), null);
   assert.equal(subjectDate("科目三 2024 02 28", sent), null); // not a column subject
+  // A day that doesn't exist is not rolled over into the next month.
+  assert.equal(subjectDate("利字當頭 2024 02 29", sent)?.toISOString().slice(0, 10), "2024-02-29");
+  assert.equal(subjectDate("利字當頭 2024 02 30", sent), null);
+  assert.equal(subjectDate("利字當頭：科目三（留稿：2月30日見報）", sent), null);
 
   const c = extractGmail(message({ title: "利字當頭：科目三（留稿：3月2日見報）", authoredAt: sent }));
   assert.equal(c.title, "科目三");
@@ -269,6 +286,41 @@ test("a .docx attachment is a copy of the piece; its file name gives the title",
     message({ rawText: ESSAY }, { kind: "attachment", filename: "edited.docx", from: "jane@appledaily.com", isSent: false })
   );
   assert.equal(theirs.kind, "received");
+});
+
+test("a .docx named only by its column and date takes its title from the subject (Codex, follow-up on #96)", () => {
+  const named = (filename: string, subject: string) =>
+    extractGmail(message({ sourceRef: "msg-1#2", title: filename, rawText: ESSAY }, { kind: "attachment", filename, subject }));
+  assert.equal(named("利字當頭 20240220.docx", "利字當頭：科目三").title, "科目三");
+  // Nothing better in the subject either: the file name as it is.
+  assert.equal(named("利字當頭 20240220.docx", "利字當頭 20240220").title, "利字當頭 20240220");
+  // A file name that is a title wins over the subject.
+  assert.equal(named("科目三.docx", "新稿").title, "科目三");
+});
+
+test("an attachment follows its message's recipients: forum column, outlet, drafts to himself", () => {
+  const attachment = (to: string[], cc: string[] = []) =>
+    extractGmail(
+      message(
+        { sourceRef: "msg-1#2", title: "final.docx", rawText: ESSAY },
+        { kind: "attachment", filename: "final.docx", subject: "專業議政是擴闊泛民光譜的關鍵", to, cc }
+      )
+    );
+  const forum = attachment(["forum@appledaily.com"]);
+  assert.deepEqual([forum.kind, forum.status, forum.column, forum.outlet], ["attachment", "keep", "蘋果論壇", "蘋果日報"]);
+  assert.equal(forum.isPublished, true);
+  const editor = attachment(["Ed <editor@appledaily.com>"]);
+  assert.deepEqual([editor.kind, editor.column, editor.outlet], ["attachment", null, "蘋果日報"]);
+
+  const note = attachment(["Notes <note@leesimon.me>"], ["simoncf@gmail.com"]);
+  assert.deepEqual([note.kind, note.status, note.isPublished, note.reasons], ["self_draft", "drop", false, ["note-to-self"]]);
+  const self = attachment(["simon@unsubject.com"]);
+  assert.deepEqual(
+    [self.kind, self.status, self.isPublished, self.reasons],
+    ["self_draft", "review", false, ["sent-only-to-own-addresses"]]
+  );
+  // Copied to the notes address but sent to an editor: still a submission.
+  assert.equal(attachment(["editor@appledaily.com"], ["note@leesimon.me"]).kind, "attachment");
 });
 
 // ── Gmail: newsletters ──────────────────────────────────────────────────
@@ -394,6 +446,14 @@ test("Drive: a date in the file name beats the file's creation date", () => {
   assert.equal(titleDate("2019-07-30 notes")?.toISOString().slice(0, 10), "2019-07-30");
   assert.equal(titleDate("20191340"), null);
   assert.equal(titleDate("123456789"), null);
+  // A day that doesn't exist is a typo: the file's creation date stands.
+  assert.equal(titleDate("利字當頭 20230231"), null);
+  assert.equal(titleDate("20230431"), null);
+  assert.equal(titleDate("20230229"), null);
+  assert.equal(titleDate("20240229")?.toISOString().slice(0, 10), "2024-02-29");
+  const typo = extractDrive(exported("gdrive", { title: "利字當頭 20230231.docx", rawText: ESSAY, rawHtml: null }, {}));
+  assert.equal(typo.dateSource, "file-created");
+  assert.equal(typo.publishedAt?.toISOString(), "2018-05-01T00:00:00.000Z");
 });
 
 test("extract dispatches on the source", () => {
