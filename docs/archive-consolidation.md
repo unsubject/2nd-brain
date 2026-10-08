@@ -263,7 +263,8 @@ What a load writes, in one transaction:
   as for any row; an unchanged one is left as it is. The worker saves its
   summary, chunks, entities and shared-entity links in one transaction,
   only if the row still holds the text it processed. A load that changes
-  the text waits for that save, or leaves it writing nothing. So a text
+  the text waits for that save, or leaves it writing nothing (a save waits
+  for a running load, up to 5 minutes, rather than failing). So a text
   changed mid-way is processed again rather than overwritten, even by a
   slower pass on the old text that ends after the new one (a failure on
   the old text is not recorded against the new one either), and a row is

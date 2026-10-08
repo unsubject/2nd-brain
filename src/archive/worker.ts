@@ -48,6 +48,13 @@ async function processOne(): Promise<boolean> {
     const summaryEmbedding = embeddings[0];
     const chunkEmbeddings = embeddings.slice(1);
 
+    // A load may have changed the text meanwhile: stop before the entity
+    // calls (the save below checks again).
+    if (!(await archiveQueries.artifactHoldsText(artifact.id, artifact.raw_source))) {
+      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
+      return true;
+    }
+
     // 4. Extract entities. Each is upserted now, but the row's links to
     // them are written with the rest below.
     const entities = await extractEntities(artifact.title, cleanText);

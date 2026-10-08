@@ -844,16 +844,19 @@ async function entity(name: string): Promise<string> {
   return rows[0].id;
 }
 
-// Until `n` other sessions wait on a lock.
-async function waitForLockWait(n = 1): Promise<void> {
+// Until a session running a statement like `statement` waits on a lock
+// (other test files may wait on locks of their own).
+async function waitForLockWait(statement: string): Promise<void> {
   for (let i = 0; i < 200; i++) {
     const { rows } = await db.query(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()"
+      `SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock' AND datname = current_database() AND query LIKE $1`,
+      [statement]
     );
-    if (rows[0].n >= n) return;
+    if (rows[0].n > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error("no session waited on the lock");
+  throw new Error(`no session waited on a lock running ${statement}`);
 }
 
 test("the worker saves its result only for the text it processed (Codex on #99)", { skip }, async () => {
@@ -872,6 +875,7 @@ test("the worker saves its result only for the text it processed (Codex on #99)"
                     (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
   await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
 
+  assert.equal(await queries.artifactHoldsText(claimed!.id, claimed!.raw_source), false);
   const old = pass(claimed!.raw_source, { summary: "舊文的摘要" });
   assert.equal(await queries.completeArtifactProcessing(claimed!.id, claimed!.raw_source, old), false);
   const { rows } = await db.query("SELECT processing_status, summary, raw_source FROM public_artifact WHERE id = $1", [claimed!.id]);
@@ -881,6 +885,7 @@ test("the worker saves its result only for the text it processed (Codex on #99)"
 
   const next = await queries.findPendingArtifact();
   assert.equal(next?.id, claimed!.id);
+  assert.equal(await queries.artifactHoldsText(next!.id, next!.raw_source), true);
   assert.equal(await queries.completeArtifactProcessing(next!.id, next!.raw_source, pass(next!.raw_source)), true);
   const { rows: done } = await db.query("SELECT processing_status, last_error FROM public_artifact WHERE id = $1", [claimed!.id]);
   assert.deepEqual([done[0].processing_status, done[0].last_error], ["processed", null]);
@@ -966,10 +971,11 @@ test("a load that changes the text while a pass saves either waits for it or lea
       summary: "舊文的摘要",
       chunks: [chunk(0, "舊文第一段")],
     }));
-    await waitForLockWait();
+    await waitForLockWait("%FOR NO KEY UPDATE%");
     await other.query("COMMIT");
     assert.equal(await saving, false);
   } finally {
+    await other.query("ROLLBACK").catch(() => undefined);
     other.release();
   }
   assert.deepEqual(await state(), { processing_status: "pending", summary: null });
@@ -984,16 +990,17 @@ test("a load that changes the text while a pass saves either waits for it or lea
     await holder.query("BEGIN");
     await holder.query("SELECT 1 FROM public_artifact WHERE id = $1 FOR NO KEY UPDATE", [next!.id]);
     const saving = queries.completeArtifactProcessing(next!.id, next!.raw_source, pass(next!.raw_source, { summary: "新文的摘要" }));
-    await waitForLockWait(1);
+    await waitForLockWait("%FOR NO KEY UPDATE%");
     const changing = appPool!.query(
       "UPDATE public_artifact SET raw_source = raw_source || '（再修訂）', summary = NULL, processing_status = 'pending' WHERE id = $1",
       [next!.id]
     );
-    await waitForLockWait(2);
+    await waitForLockWait("%（再修訂）%");
     await holder.query("COMMIT");
     assert.equal(await saving, true);
     await changing;
   } finally {
+    await holder.query("ROLLBACK").catch(() => undefined);
     holder.release();
   }
   assert.deepEqual(await state(), { processing_status: "pending", summary: null });
@@ -1155,8 +1162,9 @@ test("each pass rebuilds an artifact's shared-entity links, dropping stale ones 
   }
   const [a, b, c] = ids;
   const [e1, e2, e3] = [await entity("entity-test-1"), await entity("entity-test-2"), await entity("entity-test-3")];
-  // a's entities from the earlier pass: e3 is gone from its new text.
-  for (const [artifact, ent] of [[a, e3], [b, e1], [b, e2], [c, e1], [c, e3]]) {
+  // a's entities from the earlier pass: e3 is gone from its new text. b
+  // and c hold e1 twice, as rows saved by the old worker can.
+  for (const [artifact, ent] of [[a, e3], [b, e1], [b, e1], [b, e2], [c, e1], [c, e1], [c, e3]]) {
     await db.query("INSERT INTO public_artifact_entity (public_artifact_id, entity_ref_id) VALUES ($1, $2)", [artifact, ent]);
   }
   // Links from an earlier pass on another text: to c (no longer related),

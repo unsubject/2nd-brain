@@ -102,6 +102,17 @@ export async function findPendingArtifact(): Promise<{
   return rows[0] || null;
 }
 
+// Whether the row still holds `rawSource`: the worker stops a pass on a
+// changed text before its entity calls. The save checks it again, under
+// the row's lock.
+export async function artifactHoldsText(id: string, rawSource: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2`,
+    [id, rawSource]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 // Everything one pass of the worker writes, in one transaction that first
 // locks the row and checks it still holds `claimedRawSource`, the text the
 // worker processed. A load that changes the text (and queues the row again)
@@ -139,6 +150,10 @@ export async function completeArtifactProcessing(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // A load holds every row it writes until it commits, which can take
+    // longer than the pool's 10 s statement timeout: wait for it rather
+    // than fail the row. The other statements here are short.
+    await client.query("SET LOCAL statement_timeout = '5min'");
     const { rowCount: held } = await client.query(
       `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2 FOR NO KEY UPDATE`,
       [id, claimedRawSource]
@@ -261,8 +276,10 @@ export async function markArtifactError(
 // This artifact's links to the artifacts sharing at least `minShared` of
 // its salient entities, rebuilt from its current entities: links from an
 // earlier pass (an older text, or an attempt abandoned because the text
-// changed under it) are dropped, not left beside the new ones. Runs inside
-// completeArtifactProcessing's transaction.
+// changed under it) are dropped, not left beside the new ones. Entities
+// are counted once each: rows saved before completeArtifactProcessing can
+// hold one entity twice. Runs inside completeArtifactProcessing's
+// transaction.
 async function writeSharedEntityLinks(client: PoolClient, artifactId: string, minShared: number): Promise<number> {
   await client.query(
     `DELETE FROM link_edge
@@ -274,7 +291,8 @@ async function writeSharedEntityLinks(client: PoolClient, artifactId: string, mi
        (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
      SELECT 'default', 'public_artifact', $1, 'public_artifact', r.other_artifact_id, 'shared_entities',
             NULL, r.shared_count || ' shared entities'
-       FROM (SELECT pae2.public_artifact_id AS other_artifact_id, COUNT(*) AS shared_count
+       FROM (SELECT pae2.public_artifact_id AS other_artifact_id,
+                    COUNT(DISTINCT pae1.entity_ref_id) AS shared_count
                FROM public_artifact_entity pae1
                JOIN public_artifact_entity pae2 ON pae1.entity_ref_id = pae2.entity_ref_id
               WHERE pae1.public_artifact_id = $1
@@ -282,8 +300,8 @@ async function writeSharedEntityLinks(client: PoolClient, artifactId: string, mi
                 AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
                 AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
               GROUP BY pae2.public_artifact_id
-             HAVING COUNT(*) >= $2
-              ORDER BY COUNT(*) DESC
+             HAVING COUNT(DISTINCT pae1.entity_ref_id) >= $2
+              ORDER BY COUNT(DISTINCT pae1.entity_ref_id) DESC
               LIMIT 20) r
      ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
     [artifactId, minShared]
