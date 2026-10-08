@@ -63,9 +63,10 @@ async function main() {
   let failed = 0;
   for (const row of rows) {
     try {
-      // Strict variant throws on any failure so the script can count it.
-      // The default generateLinks wrapper catches internally — every
-      // iteration would look successful even when nothing got written.
+      // Strict variant throws when any matcher failed (after writing the
+      // other matchers' links) so the script can count it. The default
+      // generateLinks wrapper catches internally — every iteration would
+      // look successful even when links were missed.
       await generateLinksStrict({
         id: row.id,
         full_text: row.full_text,
