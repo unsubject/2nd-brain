@@ -307,7 +307,7 @@ const definitions: ToolDefinition[] = [
           items: { type: 'string', format: 'uuid' },
           minItems: 2,
           description:
-            "Required for kind='synthesize'. Sources must all be active and share the same constitution_domain_id.",
+            "Required for kind='synthesize'. Sources must all be active and share the same constitution_domain_id, which must itself be active.",
         },
         payload: {
           type: 'object',
@@ -339,7 +339,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'commit_goal_amendment',
     description:
-      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending goal amendment, after reading it back to them (read_protocol('goal-amendment') Section 1B). Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
+      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending goal amendment, after reading it back to them (read_protocol('goal-amendment') Section 1B). Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap; refused if the domain, or a synthesis's source goal, is no longer active); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
     inputSchema: {
       type: 'object',
       properties: { amendment_id: { type: 'string', format: 'uuid' } },
@@ -524,7 +524,7 @@ const definitions: ToolDefinition[] = [
           type: 'string',
           minLength: 1,
           maxLength: 200,
-          description: 'Any unique string; makes retries safe (a retry with the same title and content is also recognised)',
+          description: 'Any unique string; makes retries safe (a resend within 10 minutes with the same title and the same content in every other field but captured_via, tags in any order, is also recognised)',
         },
         captured_via: {
           type: 'object',

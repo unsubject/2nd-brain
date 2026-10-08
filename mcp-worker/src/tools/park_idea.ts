@@ -82,9 +82,10 @@ const NO_CANDIDATES_NOTE =
   'The weekly garden review links it later. Embedding runs async (~30–60s).';
 
 const DEDUP_NOTE =
-  'Already filed (same idempotency key, or the same title and content within the last 10 minutes). Nothing new ' +
-  'was written. A retry returns no link_candidates: proposals saved after the first capture are still pending ' +
-  '(list_idea_links with idea_id).';
+  'Already filed (same idempotency key, or within the last 10 minutes the same title and the same content in ' +
+  "every other field; captured_via is not compared, the first capture's is kept). " +
+  'Nothing new was written. A retry returns no link_candidates: proposals saved after the first capture are ' +
+  'still pending (list_idea_links with idea_id).';
 
 export async function parkIdeaHandler(
   rawArgs: unknown,
@@ -145,8 +146,15 @@ export async function parkIdeaHandler(
       return rows[0] ?? null;
     };
     // Retry guard for clients that resend without (or with a fresh) key:
-    // the same title AND the same content filed in the last 10 minutes.
-    // A different thought under the same title is a new idea.
+    // the same title AND every captured content field identical, filed in
+    // the last 10 minutes. Any difference (another thought, framing, tag,
+    // source or capture time) is a new idea, so no content the caller sent
+    // is dropped. Title and tags compare case-insensitively, tags as a set
+    // (a regenerated call may reorder them). captured_via is provenance and
+    // not compared: a match keeps the first capture's. An omitted
+    // captured_at defaults to the insert's now(), i.e. created_at.
+    const tagSet = (arr: ReturnType<typeof textArray>) =>
+      sql`(SELECT coalesce(array_agg(lower(t) ORDER BY lower(t)), '{}') FROM unnest(${arr}) t)`;
     const sameContentRecently = async (): Promise<Existing | null> => {
       const rows = await sql<Existing[]>`
         SELECT id, title, captured_at, status, now() AS as_of
@@ -156,7 +164,13 @@ export async function parkIdeaHandler(
            AND lower(btrim(title)) = lower(${title})
            AND thoughts IS NOT DISTINCT FROM ${thoughts}
            AND why_interesting IS NOT DISTINCT FROM ${fields.why_interesting}
+           AND encountered_where IS NOT DISTINCT FROM ${fields.encountered_where}
            AND source_url IS NOT DISTINCT FROM ${fields.source_url}
+           AND source_title IS NOT DISTINCT FROM ${fields.source_title}
+           AND source_excerpt IS NOT DISTINCT FROM ${fields.source_excerpt}
+           AND framing IS NOT DISTINCT FROM ${fields.framing}
+           AND ${tagSet(sql`tags`)} = ${tagSet(textArray(sql, tags))}
+           AND captured_at = COALESCE(${args.captured_at ?? null}::timestamptz, created_at)
            AND created_at > now() - interval '10 minutes'
          ORDER BY created_at DESC
          LIMIT 1

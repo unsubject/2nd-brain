@@ -197,7 +197,7 @@ Mark only the ideas the user has actually been through. Ideas they skip stay in 
 | `orphans` | Ideas with no accepted links, reviewed or not, each with its nearest neighbours (newest first; `order: 'oldest'` for the backlog) | similarity ≥ 0.30 |
 | `near` | Tightening clusters; spotting duplicates (flagged at ≥ 0.90) | ≥ 0.50 |
 | `band` | Cross-domain analogies (`same_mechanism`, rhymes-with), tensions, inversions | 0.30–0.45 |
-| `outputs` | Matching ideas to the user's own published essays/episodes (territory); 40 ideas per page | ≥ 0.45 |
+| `outputs` | Matching ideas to the user's own published essays/episodes (territory); 40 ideas per page, and a page can have no candidates, so follow `paging.next_offset` until it is null | ≥ 0.45 |
 
 `focus_idea_id` narrows any mode to one idea — and is the way to reach any idea when the garden is large (global `near` / `band` passes cover the most recently updated ideas; the response says so in `scope_note`). `cross_domain: true` keeps only pairs with no tag in common (near / band / orphans / inbox). `orphans`, `outputs` and `inbox` page with `offset`. Ideas leave these lists as you work (an inbox idea when marked reviewed, composted or promoted; an orphan when a link to it is accepted; an `outputs` idea when its `became` is accepted), and later ideas move up. So call again with `offset` = `paging.next_offset` minus the number of ideas on the page that left the list (see the weekly garden review, Step 1).
 
@@ -293,7 +293,7 @@ The page works offline in any browser: it loads nothing from the network.
 |---|---|
 | `json` (default) | You render a graph yourself (a notebook, a graph library). `idea-map/v1`: nodes (degree, component, cluster, territory, inbox, promotion), typed edges (type, display `label`, `rationale`, timestamps), named `clusters`, stats, legend. |
 | `graphml` | The user wants Gephi, yEd or Cytoscape. |
-| `mermaid` | Chat-only rendering. Capped at 150 nodes. |
+| `mermaid` | Chat-only rendering. Capped at 150 nodes. Edges carry the display labels; proposals are dashed and end in `?`. |
 
 For `graphml` and `mermaid` the result has two text blocks: a JSON header (stats, legend), then the raw graph text. Unlike html, these three formats include outputs of any status.
 
