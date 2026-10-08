@@ -288,6 +288,16 @@ test("a .docx attachment is a copy of the piece; its file name gives the title",
   assert.equal(theirs.kind, "received");
 });
 
+test("a .docx named only by its column and date takes its title from the subject (Codex, follow-up on #96)", () => {
+  const named = (filename: string, subject: string) =>
+    extractGmail(message({ sourceRef: "msg-1#2", title: filename, rawText: ESSAY }, { kind: "attachment", filename, subject }));
+  assert.equal(named("利字當頭 20240220.docx", "利字當頭：科目三").title, "科目三");
+  // Nothing better in the subject either: the file name as it is.
+  assert.equal(named("利字當頭 20240220.docx", "利字當頭 20240220").title, "利字當頭 20240220");
+  // A file name that is a title wins over the subject.
+  assert.equal(named("科目三.docx", "新稿").title, "科目三");
+});
+
 test("an attachment follows its message's recipients: forum column, outlet, drafts to himself", () => {
   const attachment = (to: string[], cc: string[] = []) =>
     extractGmail(

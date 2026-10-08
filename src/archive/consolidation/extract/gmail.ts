@@ -449,7 +449,9 @@ function stripLinkTargets(text: string): string {
 // rules as the message that carried it.
 function extractAttachment(item: StagedItem, mine: boolean, subject: string | null, recipients: string[]): Candidate {
   const filename = (str(item.metadata.filename) ?? item.title ?? "").replace(/\.docx$/i, "").trim();
-  const title = bareTitle(filename) || filename || null;
+  // A file named only by its column and date ("利字當頭 20240220") leaves
+  // no title: the subject's, if it has one, before the bare file name.
+  const title = bareTitle(filename) || bareTitle(cleanSubject(subject)) || filename || null;
   const body = normalizeText(item.rawText ?? (item.rawHtml ? htmlToText(item.rawHtml) : ""));
   const column = detectColumn(filename, cleanSubject(subject)) ?? columnFromRecipients(recipients);
   const fromSubject = subjectDate(subject, item.authoredAt);

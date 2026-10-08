@@ -146,7 +146,7 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 | Source | Kind | Status | Rule |
 |---|---|---|---|
 | gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column (`outlet-unknown`); but a `Re:` to no known outlet is more likely a conversation with a reader, so it goes to review (`reply-outside-outlets`). |
-| gmail | `attachment` | keep | His `.docx` attachment; title from the file name. Column, outlet and the self-draft rule follow the message that carried it (its recipients are read from the message's row). |
+| gmail | `attachment` | keep | His `.docx` attachment; title from the file name, or from the subject when the file name is only a column and date ("利字當頭 20240220"). Column, outlet and the self-draft rule follow the message that carried it (its recipients are read from the message's row). |
 | gmail | `self_draft` | drop / review | A message, or its `.docx`, sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
 | gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
 | gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
@@ -222,10 +222,14 @@ Each work's canonical text, in order: the latest version emailed to a known
 outlet (Simon's decision: the last version he sent wins, not the editor's
 edit); the published Substack post; the published WordPress post (a page or
 private post ranks with the drafts); the newsletter issue; an email
-to an address at no known outlet; the Drive document; anything else. Its
-date is the first publication (the earliest date among published members),
-its outlet and column those of that first publication, and `outlets` lists
-every outlet a member went to.
+to an address at no known outlet; the Drive document; anything else.
+
+A work's title is its canonical's, except that a `.docx` is named by its
+file ("final"): a canonical `.docx` takes the title of the best-ranked
+message or published copy when there is one. Its date is the first
+publication (the earliest date among published members), its outlet and
+column those of that first publication, and `outlets` lists every outlet a
+member went to.
 
 A work is `review` when none of its members was published or its canonical
 candidate is itself under review; `versions-differ` notes a member whose

@@ -10,7 +10,7 @@ import { matchCandidates, type MatchCandidate, type Work } from "./cluster";
 
 // Bump with every change to how candidates are grouped or a canonical is
 // picked: works made by an older version are rebuilt on boot.
-export const MATCHER_VERSION = 2;
+export const MATCHER_VERSION = 3;
 
 export interface MatchStats extends CollectStats {
   candidates: number;

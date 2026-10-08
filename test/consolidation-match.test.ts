@@ -219,6 +219,35 @@ test("canonical order: emailed to an outlet, Substack, WordPress, newsletter, ot
   assert.deepEqual(ranks, [0, 1, 2, 3, 4, 5, 6]);
 });
 
+test("a .docx canonical takes its work's title from a message or published copy, not its file name (Codex, follow-up on #96)", () => {
+  // Sent as final.docx to forum@ with a covering note (dropped as a reply),
+  // later posted on Substack.
+  const text = essay(80);
+  const docx = cand({ kind: "attachment", column: "蘋果論壇", title: "final", bodyText: text });
+  const substack = cand({
+    source: "substack",
+    kind: "post",
+    outlet: "Substack",
+    column: null,
+    title: "專業議政是擴闊泛民光譜的關鍵",
+    bodyText: text,
+    publishedAt: new Date("2021-01-05T00:00:00Z"),
+    authoredAt: new Date("2021-01-05T00:00:00Z"),
+  });
+  const forum = matchCandidates([docx, substack]).works[0];
+  assert.equal(forum.canonicalId, docx.id);
+  assert.equal(forum.title, "專業議政是擴闊泛民光譜的關鍵");
+  assert.equal(forum.column, "蘋果論壇");
+
+  // A Drive document is named by its file too: the .docx keeps its own title.
+  const other = essay(81);
+  const column = cand({ kind: "attachment", title: "科目三", bodyText: other });
+  const drive = cand({ source: "gdrive", kind: "doc", outlet: null, isPublished: null, title: "利字當頭 20240220", bodyText: other });
+  const w = matchCandidates([drive, column]).works[0];
+  assert.equal(w.canonicalId, column.id);
+  assert.equal(w.title, "科目三");
+});
+
 test("an unpublished WordPress page or private post never outranks a published newsletter (Codex P2 on #97)", () => {
   const text = essay(50);
   const newsletter = cand({ source: "gmail", kind: "newsletter", outlet: "Revue", bodyText: text });
