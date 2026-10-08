@@ -128,9 +128,12 @@ item has no candidate, one made by an older `EXTRACTOR_VERSION`
 (`extract/types.ts`, bumped with every rule change) or one older than the
 item (collected again since), and if so starts a run (`extract/auto.ts`;
 while a collection is live it checks again every minute). If items were
-staged while an extraction ran (a collection started alongside), it runs
-again before matching. The run's counts appear in the logs
-(`[consolidation] extract run … finished: {…}`). To run it by hand:
+staged or changed while an extraction ran (a collection started
+alongside), it runs again before matching, whether it succeeded or
+failed; after a failed run only those items count, so an item that always
+fails waits for the next boot check or a run by hand. The run's counts
+appear in the logs (`[consolidation] extract run … finished: {…}`). To run
+it by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"

@@ -34,24 +34,30 @@ function startFollowUp(req: CollectRequest): void {
     });
 }
 
-// The step after a run that ended, so new material reaches the works with
+// The step after run `runId` ended, so new material reaches the works with
 // no one starting a step. A collection, whatever its outcome (what it staged
 // is good), is followed by extraction when a staged item lacks a current
 // candidate: its own items, or another collection's whose extraction it held
-// back. A successful extraction is followed by matching, or by another
-// extraction when items were staged while it ran: its scan can miss a
+// back. An extraction, whatever its outcome, is followed by another when
+// items were staged or changed while it ran: its scan can miss a
 // collection's rows (extraction doesn't start while a collection is live,
-// but a collection can start during an extraction).
+// but a collection can start during an extraction, and its own follow-up is
+// refused while the extraction is live). After a failed extraction only
+// those items count, so an item that always fails doesn't start run after
+// run (it waits for the boot check or a run by hand). A successful
+// extraction that left every candidate current is followed by matching.
 export async function nextStep(
   source: CollectorSource,
   succeeded: boolean,
+  runId: string,
   db: DB = pool
 ): Promise<CollectRequest | null> {
   if (source === "gmail" || source === "gdrive") {
     return (await candidatesStale(db)) ? { source: "extract" } : null;
   }
-  if (source === "extract" && succeeded) {
-    return (await candidatesStale(db)) ? { source: "extract" } : { source: "match" };
+  if (source === "extract") {
+    if (await candidatesStale(db, succeeded ? undefined : runId)) return { source: "extract" };
+    return succeeded ? { source: "match" } : null;
   }
   return null;
 }
@@ -124,7 +130,7 @@ export async function startCollection(req: CollectRequest): Promise<string> {
       }
       console.log(`[consolidation] ${source} run ${runId} finished: ${counts}`);
       await finishRun(runId, ok ? "succeeded" : "failed", stats, error);
-      const next = await nextStep(source, ok).catch((err) => {
+      const next = await nextStep(source, ok, runId).catch((err) => {
         console.error(`[consolidation] could not choose the step after ${source} run ${runId}:`, describeGoogleError(err));
         return null;
       });

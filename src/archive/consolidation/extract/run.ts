@@ -107,14 +107,16 @@ export async function markDuplicateNewsletters(db: DB = pool): Promise<number> {
 
 // True when a staged item has no candidate, one made by an older
 // EXTRACTOR_VERSION, or one older than the item (re-collected since).
-export async function candidatesStale(db: DB = pool): Promise<boolean> {
+// With `sinceRun`, only items staged or changed since that run started.
+export async function candidatesStale(db: DB = pool, sinceRun?: string): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM archive_source_item s
          LEFT JOIN archive_candidate c ON c.source_item_id = s.id
-        WHERE c.id IS NULL OR c.extractor_version < $1 OR c.extracted_at < s.fetched_at
+        WHERE (c.id IS NULL OR c.extractor_version < $1 OR c.extracted_at < s.fetched_at)
+          AND ($2::uuid IS NULL OR s.fetched_at >= (SELECT started_at FROM archive_collect_run WHERE id = $2::uuid))
      ) AS stale`,
-    [EXTRACTOR_VERSION]
+    [EXTRACTOR_VERSION, sinceRun ?? null]
   );
   return rows[0].stale;
 }

@@ -621,26 +621,67 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail" });
 });
 
+// A run that has ended, started now: nextStep reads its start.
+async function endedRun(source: string, status: "succeeded" | "failed"): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO archive_collect_run (source, status, finished_at) VALUES ($1, $2, now()) RETURNING id`,
+    [source, status]
+  );
+  return rows[0].id;
+}
+
 test("the step after a run: extraction after a collection, then matching", { skip }, async () => {
   const { nextStep } = await import("../src/archive/consolidation/runner");
   const run = await import("../src/archive/consolidation/extract/run");
+  const gmailRun = await endedRun("gmail", "succeeded");
+  const driveRun = await endedRun("gdrive", "failed");
 
   // A collection that left nothing to extract.
-  assert.equal(await nextStep("gmail", true, db), null);
+  assert.equal(await nextStep("gmail", true, gmailRun, db), null);
   // One that left items without a candidate (its own, or another
   // collection's held back while it ran), whatever its outcome.
   await stageForExtraction();
-  assert.deepEqual(await nextStep("gmail", true, db), { source: "extract" });
-  assert.deepEqual(await nextStep("gdrive", false, db), { source: "extract" });
+  assert.deepEqual(await nextStep("gmail", true, gmailRun, db), { source: "extract" });
+  assert.deepEqual(await nextStep("gdrive", false, driveRun, db), { source: "extract" });
 
+  const extractRun = await endedRun("extract", "succeeded");
   await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
-  assert.equal(await nextStep("gdrive", true, db), null);
-  assert.deepEqual(await nextStep("extract", true, db), { source: "match" });
-  assert.equal(await nextStep("extract", false, db), null);
+  assert.equal(await nextStep("gdrive", true, driveRun, db), null);
+  assert.deepEqual(await nextStep("extract", true, extractRun, db), { source: "match" });
   // An item staged while the extraction ran (a collection alongside): extract again first.
   await staging.upsertSourceItem(item({ sourceRef: "late", rawText: "遲來的一封信" }), db);
-  assert.deepEqual(await nextStep("extract", true, db), { source: "extract" });
-  assert.equal(await nextStep("match", true, db), null);
+  assert.deepEqual(await nextStep("extract", true, extractRun, db), { source: "extract" });
+  assert.equal(await nextStep("match", true, await endedRun("match", "succeeded"), db), null);
+});
+
+test("after a failed extraction, only items staged or changed while it ran start another", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  await stageForExtraction();
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  // An item an earlier run failed on: no candidate, staged before this run.
+  await db.query(
+    `DELETE FROM archive_candidate WHERE source_item_id = (SELECT id FROM archive_source_item WHERE source_ref = 'ack')`
+  );
+  const failed = await endedRun("extract", "failed");
+  // It doesn't start run after run: it waits for the boot check or a run by hand.
+  assert.equal(await run.candidatesStale(db), true);
+  assert.equal(await nextStep("extract", false, failed, db), null);
+
+  // A collection that started during the run and ended before it (its own
+  // follow-up refused, the extraction being live) staged a new item.
+  await staging.upsertSourceItem(item({ sourceRef: "late", rawText: "遲來的一封信" }), db);
+  assert.deepEqual(await nextStep("extract", false, failed, db), { source: "extract" });
+
+  // That run failed too: 'late' now predates it, so only a change made
+  // while it ran (a refetch rewriting an item) starts one more.
+  const failedAgain = await endedRun("extract", "failed");
+  assert.equal(await nextStep("extract", false, failedAgain, db), null);
+  assert.equal(
+    await staging.upsertSourceItem(item({ sourceRef: "sub", rawText: `蘋果論壇：自由市場的代價（修訂）\n\n${ESSAY}` }), db),
+    "updated"
+  );
+  assert.deepEqual(await nextStep("extract", false, failedAgain, db), { source: "extract" });
 });
 
 test("runMatch groups the copies of one piece into a work with the emailed text as canonical", { skip }, async () => {

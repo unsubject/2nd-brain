@@ -167,7 +167,8 @@ export async function startRun(
     }
     if (source === "extract") {
       // Not atomic with the insert: a collection that starts in between is
-      // covered by the check at the end of the extraction (runner.ts).
+      // covered by the check at the end of the extraction, whatever its
+      // outcome (runner.nextStep).
       const { rows } = await q.query<{ source: CollectorSource }>(
         `SELECT source FROM archive_collect_run
           WHERE source IN ('gmail', 'gdrive') AND status = 'running'
