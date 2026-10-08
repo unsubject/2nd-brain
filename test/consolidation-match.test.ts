@@ -98,7 +98,7 @@ test("a short pair with too few samples for the screen is still checked (Codex o
 // Sampled and unsampled shingle hashes, for building index cases directly.
 const SAMPLED: number[] = [];
 const UNSAMPLED: number[] = [];
-for (let h = 1; SAMPLED.length < 30000 || UNSAMPLED.length < 2000; h++) (sampled(h) ? SAMPLED : UNSAMPLED).push(h);
+for (let h = 1; SAMPLED.length < 60000 || UNSAMPLED.length < 2000; h++) (sampled(h) ? SAMPLED : UNSAMPLED).push(h);
 let nextSampled = 0;
 let nextUnsampled = 0;
 const fresh = (n: number) => SAMPLED.slice(nextSampled, (nextSampled += n));
@@ -128,6 +128,19 @@ test("the screen counts common shared samples too (Codex on #98)", () => {
   const holders = Array.from({ length: 49 }, () => set(common, fresh(200)));
   const sets = [version(), version(), ...holders];
   assert.equal(overlap(sets[0], sets[1]).containment, 0.6);
+  assert.ok(samePiece(overlap(sets[0], sets[1])));
+  assert.ok(paired(candidatePairs(sets), 0, 1));
+});
+
+test("a pair sharing only common samples is still checked (Codex on #98)", () => {
+  // Codex's case: 148 shingles each, 89 shared: 39 common samples and 50
+  // unsampled shingles. Each text's 59 ordinary samples are its own, and
+  // 39 of its 98 samples (under the fallback's 40%) are common.
+  const common = fresh(39);
+  const unsampledShared = unsampled(50);
+  const version = () => set(common, unsampledShared, fresh(59));
+  const holders = Array.from({ length: 49 }, () => set(common, fresh(200)));
+  const sets = [version(), version(), ...holders];
   assert.ok(samePiece(overlap(sets[0], sets[1])));
   assert.ok(paired(candidatePairs(sets), 0, 1));
 });

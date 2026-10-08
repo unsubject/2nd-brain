@@ -205,7 +205,10 @@ not. Likely pairs come from sampled shingles (the same 1-in-8 slice of
 hashes in every text, so a short copy's samples are all in the long text's
 samples, which a containment screen needs; banded MinHash, used at first,
 missed many short copies). Pairs are found through shared samples that
-are in at most 50 texts, then screened on all their shared samples; a
+are in at most 50 texts, then screened on all their shared samples. A
+text whose samples in over 50 texts could pass the screen by themselves
+also counts those it shares with each other text, so a pair that shares
+only such samples is found too. A
 text the index can't vouch for (fewer than 32 ordinary samples, or more
 than 40% of its samples in over 50 texts, as with a piece in many copies
 or a widely quoted passage) is checked against every text of a size it
