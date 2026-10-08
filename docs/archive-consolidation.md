@@ -146,8 +146,8 @@ one but a rule was unsure, `drop` not one) and the `reasons` behind them:
 | Source | Kind | Status | Rule |
 |---|---|---|---|
 | gmail | `submission` | keep / review | Sent by Simon (SENT label, or from one of his addresses) with at least 280 characters after cleaning. `review` when a short first paragraph that looks like a note was removed without a title line to confirm it. Pieces for outlets or columns not listed below (occasional contributions) are kept the same way, with no column (`outlet-unknown`); but a `Re:` to no known outlet is more likely a conversation with a reader, so it goes to review (`reply-outside-outlets`). |
-| gmail | `attachment` | keep | His `.docx` attachment; title from the file name. |
-| gmail | `self_draft` | drop / review | Sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
+| gmail | `attachment` | keep | His `.docx` attachment; title from the file name. Column, outlet and the self-draft rule follow the message that carried it (its recipients are read from the message's row). |
+| gmail | `self_draft` | drop / review | A message, or its `.docx`, sent only to his own addresses. Dropped when note@leesimon.me is among them (nothing sent there was published; Simon, 2026-10-06); otherwise review. |
 | gmail | `reply` | drop | His message, under 280 characters once quotes and signature are gone. |
 | gmail | `forward` | drop | Subject starts `Fwd:`; the original is staged on its own. |
 | gmail | `received` | drop | From anyone else: editors, readers, acknowledgements. |
@@ -238,8 +238,9 @@ curl "$BASE/archive/consolidation/works/<id>" -H "Authorization: Bearer $ARCHIVE
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
   `isSent`, attachment list), plus one row per `.docx` attachment
-  (`<message id>#<part id>`) with its text. Long bodies that Gmail stores
-  out of line are fetched separately (`externalBodies` in the metadata).
+  (`<message id>#<part id>`) with its text (its recipients stay on the
+  message's row). Long bodies that Gmail stores out of line are fetched
+  separately (`externalBodies` in the metadata).
 - **gdrive**: one row per Google Doc (text + HTML export) or `.docx`, with its
   folder path and Drive timestamps. Unchanged files are skipped on re-runs.
 - **wordpress**: one row per post or page (`<site host>:<post id>`), HTML as

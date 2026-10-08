@@ -358,13 +358,23 @@ function dayKey(d: Date | null): string {
   return d ? d.toISOString().slice(0, 10) : "undated";
 }
 
+// Sent only to his own addresses: a draft, not a submission. Nothing sent to
+// the notes address was published; other self-sends are unclear.
+function selfDraft(recipients: string[]): { status: "drop" | "review"; reason: string } | null {
+  if (recipients.length === 0 || !recipients.every(isOwnAddress)) return null;
+  return recipients.some((r) => emailAddress(r) === NOTE_ADDRESS)
+    ? { status: "drop", reason: "note-to-self" }
+    : { status: "review", reason: "sent-only-to-own-addresses" };
+}
+
 export function extractGmail(item: StagedItem): Candidate {
   const m = item.metadata;
   const from = str(m.from);
   const subject = str(m.subject) ?? item.title;
   const mine = m.isSent === true || (!!from && isOwnAddress(from));
 
-  if (m.kind === "attachment") return extractAttachment(item, mine, subject);
+  const recipients = [...strings(m.to), ...strings(m.cc)];
+  if (m.kind === "attachment") return extractAttachment(item, mine, subject, recipients);
 
   // Before the own-address test: Revue and Ghost sent from newsletter@ his
   // own domains, but those copies arrived as mail, never through SENT.
@@ -374,7 +384,6 @@ export function extractGmail(item: StagedItem): Candidate {
     return candidate({ kind: "received", status: "drop", reasons: ["not-from-simon"], title: cleanSubject(subject) || null });
   }
 
-  const recipients = [...strings(m.to), ...strings(m.cc)];
   const cleanSubj = cleanSubject(subject);
   if (/^\s*(fwd?|fw|轉寄)\s*[:：]/i.test(subject ?? "")) {
     return candidate({ kind: "forward", status: "drop", reasons: ["forwarded"], title: bareTitle(cleanSubj) || cleanSubj || null });
@@ -406,11 +415,9 @@ export function extractGmail(item: StagedItem): Candidate {
   if (textLength(body) < MIN_ESSAY) {
     return candidate({ ...base, kind: "reply", status: "drop", reasons: [...reasons, "short-message"] });
   }
-  if (recipients.length > 0 && recipients.every(isOwnAddress)) {
-    if (recipients.some((r) => emailAddress(r) === NOTE_ADDRESS)) {
-      return candidate({ ...base, kind: "self_draft", status: "drop", isPublished: false, reasons: [...reasons, "note-to-self"] });
-    }
-    return candidate({ ...base, kind: "self_draft", status: "review", isPublished: false, reasons: [...reasons, "sent-only-to-own-addresses"] });
+  const draft = selfDraft(recipients);
+  if (draft) {
+    return candidate({ ...base, kind: "self_draft", status: draft.status, isPublished: false, reasons: [...reasons, draft.reason] });
   }
   // A piece for an outlet or column not listed above (an occasional
   // contribution) is still a submission, just with no column. A long reply
@@ -432,22 +439,27 @@ function stripLinkTargets(text: string): string {
   return text.replace(/[ \t]*<(?:https?:\/\/|mailto:)[^<>\s]+>/g, "");
 }
 
-function extractAttachment(item: StagedItem, mine: boolean, subject: string | null): Candidate {
+// The recipients are its message's: extraction reads them from the parent
+// row (run.ts), so a .docx follows the same column, outlet and self-draft
+// rules as the message that carried it.
+function extractAttachment(item: StagedItem, mine: boolean, subject: string | null, recipients: string[]): Candidate {
   const filename = (str(item.metadata.filename) ?? item.title ?? "").replace(/\.docx$/i, "").trim();
   const title = bareTitle(filename) || filename || null;
   const body = normalizeText(item.rawText ?? (item.rawHtml ? htmlToText(item.rawHtml) : ""));
-  const column = detectColumn(filename, cleanSubject(subject));
+  const column = detectColumn(filename, cleanSubject(subject)) ?? columnFromRecipients(recipients);
   const fromSubject = subjectDate(subject, item.authoredAt);
   const base = {
     title,
     column: column?.name ?? null,
-    outlet: column?.outlet ?? null,
+    outlet: detectOutlet(recipients, column),
     publishedAt: fromSubject ?? item.authoredAt,
     dateSource: fromSubject ? "subject" : "sent",
     bodyText: body || null,
   };
   if (!mine) return candidate({ ...base, kind: "received", status: "drop", reasons: ["attachment-not-from-simon"] });
   if (textLength(body) < MIN_ESSAY) return candidate({ ...base, kind: "empty", status: "drop", reasons: ["short-attachment"] });
+  const draft = selfDraft(recipients);
+  if (draft) return candidate({ ...base, kind: "self_draft", status: draft.status, isPublished: false, reasons: [draft.reason] });
   return candidate({ ...base, kind: "attachment", status: "keep", isPublished: true });
 }
 

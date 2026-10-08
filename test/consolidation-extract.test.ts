@@ -271,6 +271,31 @@ test("a .docx attachment is a copy of the piece; its file name gives the title",
   assert.equal(theirs.kind, "received");
 });
 
+test("an attachment follows its message's recipients: forum column, outlet, drafts to himself", () => {
+  const attachment = (to: string[], cc: string[] = []) =>
+    extractGmail(
+      message(
+        { sourceRef: "msg-1#2", title: "final.docx", rawText: ESSAY },
+        { kind: "attachment", filename: "final.docx", subject: "專業議政是擴闊泛民光譜的關鍵", to, cc }
+      )
+    );
+  const forum = attachment(["forum@appledaily.com"]);
+  assert.deepEqual([forum.kind, forum.status, forum.column, forum.outlet], ["attachment", "keep", "蘋果論壇", "蘋果日報"]);
+  assert.equal(forum.isPublished, true);
+  const editor = attachment(["Ed <editor@appledaily.com>"]);
+  assert.deepEqual([editor.kind, editor.column, editor.outlet], ["attachment", null, "蘋果日報"]);
+
+  const note = attachment(["Notes <note@leesimon.me>"], ["simoncf@gmail.com"]);
+  assert.deepEqual([note.kind, note.status, note.isPublished, note.reasons], ["self_draft", "drop", false, ["note-to-self"]]);
+  const self = attachment(["simon@unsubject.com"]);
+  assert.deepEqual(
+    [self.kind, self.status, self.isPublished, self.reasons],
+    ["self_draft", "review", false, ["sent-only-to-own-addresses"]]
+  );
+  // Copied to the notes address but sent to an editor: still a submission.
+  assert.equal(attachment(["editor@appledaily.com"], ["note@leesimon.me"]).kind, "attachment");
+});
+
 // ── Gmail: newsletters ──────────────────────────────────────────────────
 
 test("a Revue issue from his own domain is a newsletter copy, wrapper removed", () => {
