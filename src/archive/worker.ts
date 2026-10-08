@@ -75,19 +75,9 @@ async function processOne(): Promise<boolean> {
     // Again before the entity calls (the save below checks once more).
     if (!(await archiveQueries.renewClaim(artifact.id, claim))) return dropped();
 
-    // 4. Extract entities. Each is upserted now, but the row's links to
-    // them are written with the rest below.
+    // 4. Extract entities. Their shared names are written with the rest
+    // below, under the claim.
     const entities = await extractEntities(artifact.title, cleanText);
-    const entityLinks = [];
-    for (const entity of entities) {
-      const entityRefId = await archiveQueries.upsertEntity(
-        "default",
-        entity.entity_type,
-        entity.display_name,
-        entity.aliases
-      );
-      entityLinks.push({ entityRefId, mentionText: entity.display_name, salience: entity.salience });
-    }
 
     // 5. Save it all at once: the result, chunks, entities, and the links
     // to artifacts sharing entities (rebuilt, so nothing from an earlier
@@ -110,7 +100,12 @@ async function processOne(): Promise<boolean> {
         endOffset: c.endOffset,
         embedding: chunkEmbeddings[i],
       })),
-      entities: entityLinks,
+      entities: entities.map((e) => ({
+        entityType: e.entity_type,
+        displayName: e.display_name,
+        aliases: e.aliases,
+        salience: e.salience,
+      })),
     });
     // The claim was lost after the last renewal.
     if (!saved) return dropped();

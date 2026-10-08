@@ -1106,7 +1106,7 @@ function pass(text: string, over: Record<string, unknown> = {}) {
     embedding: new Array(1536).fill(0),
     embeddingModel: "test",
     chunks: [] as ReturnType<typeof chunk>[],
-    entities: [] as { entityRefId: string; mentionText: string | null; salience: number | null }[],
+    entities: [] as ReturnType<typeof named>[],
     ...over,
   };
 }
@@ -1139,11 +1139,18 @@ async function claimRow(id: string): Promise<{ token: string; rawSource: string 
   return rows[0];
 }
 
+// An entity as the extractor returns it, by its shared name.
+function named(displayName: string, salience: number | null = 0.9, aliases: string[] = []) {
+  return { entityType: "concept", displayName, aliases, salience };
+}
+
+// A shared name as a test expects it: entity_ref rows outlive the tests,
+// so an existing one is reset.
 async function entity(name: string): Promise<string> {
   const { rows } = await db.query(
     `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name)
      VALUES ('default', 'concept', $1, $1)
-     ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE SET display_name = EXCLUDED.display_name
+     ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE SET display_name = EXCLUDED.display_name, aliases = NULL
      RETURNING id`,
     [name]
   );
@@ -1211,7 +1218,7 @@ test("a pass on an old text writes nothing, even after the new text's pass finis
   // pass links to it.
   assert.equal(
     await queries.completeArtifactProcessing(others[0].id, await claimRow(others[0].id), pass(others[0].raw_source, {
-      entities: [eNew1, eNew2].map((entityRefId) => ({ entityRefId, mentionText: null, salience: 0.9 })),
+      entities: [named("race-new-1"), named("race-new-2")],
     })),
     true
   );
@@ -1228,15 +1235,22 @@ test("a pass on an old text writes nothing, even after the new text's pass finis
   const newPass = pass(b!.raw_source, {
     summary: "新文的摘要",
     chunks: [chunk(0, "新文第一段"), chunk(1, "新文第二段")],
-    entities: [eNew1, eNew2].map((entityRefId) => ({ entityRefId, mentionText: null, salience: 0.9 })),
+    entities: [named("race-new-1"), named("race-new-2")],
   });
   assert.equal(await queries.completeArtifactProcessing(b!.id, claimOf(b), newPass), true);
+  // A's entities would rename a shared name and add one only its text has.
+  await db.query("DELETE FROM entity_ref WHERE normalized_name = 'only-in-old-text'");
   const oldPass = pass(a!.raw_source, {
     summary: "舊文的摘要",
     chunks: [chunk(0, "舊文第一段")],
-    entities: [{ entityRefId: eOld, mentionText: null, salience: 0.9 }],
+    entities: [named("RACE-OLD", 0.9, ["舊文別名"]), named("only-in-old-text")],
   });
   assert.equal(await queries.completeArtifactProcessing(a!.id, claimOf(a), oldPass), false);
+  // The shared names are as they were (Codex on #103).
+  const { rows: names } = await db.query(
+    "SELECT display_name, aliases FROM entity_ref WHERE id = $1 OR normalized_name = 'only-in-old-text'", [eOld]
+  );
+  assert.deepEqual(names, [{ display_name: "race-old", aliases: null }]);
 
   const { rows: row } = await db.query("SELECT processing_status, summary, raw_source FROM public_artifact WHERE id = $1", [a!.id]);
   assert.deepEqual([row[0].processing_status, row[0].summary, row[0].raw_source], ["processed", "新文的摘要", b!.raw_source]);
@@ -1489,9 +1503,9 @@ test("each pass rebuilds an artifact's shared-entity links, dropping stale ones 
 
   // The extractor named e1 twice: it counts once.
   const entities = [
-    { entityRefId: e1, mentionText: "entity-test-1", salience: 0.9 },
-    { entityRefId: e1, mentionText: "Entity-Test-1", salience: 0.8 },
-    { entityRefId: e2, mentionText: "entity-test-2", salience: null },
+    named("entity-test-1", 0.9),
+    named("Entity-Test-1", 0.8),
+    named("entity-test-2", null),
   ];
   assert.equal(await queries.completeArtifactProcessing(a, await claimRow(a), pass("entity-test:a", { entities })), true);
   const { rows: mine } = await db.query(

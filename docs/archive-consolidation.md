@@ -353,7 +353,8 @@ What a load writes, in one transaction:
   as for any row; an unchanged one is left as it is. Each time the worker
   claims a row it gets a token of its own (`claim_token`) and a lease
   (`claimed_at`), which it renews between its model steps. It saves its
-  summary, chunks, entities and shared-entity links in one transaction,
+  summary, chunks, entities (with their shared names) and shared-entity
+  links in one transaction,
   only if the row is still `processing` under its token and holds the text
   it processed; it records a failure only on the same terms. A load that
   changes the text queues the row again without the token: it waits for

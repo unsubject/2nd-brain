@@ -1,5 +1,5 @@
 import { PoolClient } from "pg";
-import { pool } from "../db/client";
+import { pool, type DB } from "../db/client";
 
 export async function upsertArtifact(params: {
   userId: string;
@@ -220,8 +220,9 @@ export async function completeArtifactProcessing(
       endOffset: number;
       embedding: number[];
     }[];
-    // entity_ref ids, upserted beforehand (upsertEntity)
-    entities: { entityRefId: string; mentionText: string | null; salience: number | null }[];
+    // The extractor's entities. Their shared names (entity_ref) are
+    // written here, under the claim.
+    entities: { entityType: string; displayName: string; aliases: string[]; salience: number | null }[];
   },
   minShared: number = 2
 ): Promise<boolean> {
@@ -282,6 +283,20 @@ export async function completeArtifactProcessing(
       );
     }
 
+    // The entities' shared names, written only under the claim, so a pass
+    // that lost it changes none of them (Codex on #103). In one order (type,
+    // then name), so two passes upserting the same names wait for each
+    // other rather than deadlock.
+    const entities = [...params.entities].sort((a, b) => {
+      const ka = `${a.entityType}\u0000${normalizedEntityName(a.displayName)}`;
+      const kb = `${b.entityType}\u0000${normalizedEntityName(b.displayName)}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+    const refIds: string[] = [];
+    for (const e of entities) {
+      refIds.push(await upsertEntity("default", e.entityType, e.displayName, e.aliases, client));
+    }
+
     // One row per entity: two names the extractor returned for the same
     // entity would otherwise count twice towards a shared link.
     await client.query(`DELETE FROM public_artifact_entity WHERE public_artifact_id = $1`, [id]);
@@ -290,12 +305,7 @@ export async function completeArtifactProcessing(
        SELECT DISTINCT ON (e.entity_ref_id) $1, e.entity_ref_id, e.mention_text, e.salience
          FROM unnest($2::uuid[], $3::text[], $4::real[]) AS e(entity_ref_id, mention_text, salience)
         ORDER BY e.entity_ref_id, e.salience DESC NULLS LAST`,
-      [
-        id,
-        params.entities.map((e) => e.entityRefId),
-        params.entities.map((e) => e.mentionText),
-        params.entities.map((e) => e.salience),
-      ]
+      [id, refIds, entities.map((e) => e.displayName), entities.map((e) => e.salience)]
     );
 
     await writeSharedEntityLinks(client, id, minShared);
@@ -303,14 +313,19 @@ export async function completeArtifactProcessing(
   });
 }
 
+function normalizedEntityName(displayName: string): string {
+  return displayName.toLowerCase().trim();
+}
+
 export async function upsertEntity(
   userId: string,
   entityType: string,
   displayName: string,
-  aliases: string[]
+  aliases: string[],
+  db: DB = pool
 ): Promise<string> {
-  const normalized = displayName.toLowerCase().trim();
-  const { rows } = await pool.query(
+  const normalized = normalizedEntityName(displayName);
+  const { rows } = await db.query(
     `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name, aliases)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE
