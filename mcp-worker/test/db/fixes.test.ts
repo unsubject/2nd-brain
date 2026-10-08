@@ -22,6 +22,56 @@ describe.skipIf(!TEST_DB)('capture fixes', () => {
     expect(keyless.deduplicated).toBe(false);
   });
 
+  it('a resend that differs in any other captured field is a new idea, and the key goes with it', async () => {
+    const full = {
+      title: 'Every field',
+      thoughts: 'same thought',
+      why_interesting: 'same why',
+      encountered_where: 'a podcast',
+      source: { url: 'https://example.com/a', title: 'Source', excerpt: 'An excerpt' },
+      framing: 'A framing',
+      tags: ['alpha', 'beta'],
+      captured_at: '2026-03-01T10:00:00Z',
+    };
+    const first = await ok('park_idea', { ...full, idempotency_key: 'k0' });
+    // An exact resend under a regenerated key is still a retry.
+    const again = await ok('park_idea', { ...full, idempotency_key: 'k0-again' });
+    expect(again).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+
+    const variants: Record<string, unknown>[] = [
+      { encountered_where: 'a book' },
+      { source: { ...full.source, title: 'Another source' } },
+      { source: { ...full.source, excerpt: 'Another excerpt' } },
+      { framing: 'Another framing' },
+      { tags: ['alpha'] },
+      { captured_at: '2026-03-02T10:00:00Z' },
+      { captured_at: undefined },
+    ];
+    const ids = new Set<string>([first.idea_id]);
+    for (const [i, v] of variants.entries()) {
+      const r = await ok('park_idea', { ...full, ...v, idempotency_key: `k${i + 1}` });
+      expect(r.deduplicated, JSON.stringify(v)).toBe(false);
+      expect(ids.has(r.idea_id), JSON.stringify(v)).toBe(false);
+      ids.add(r.idea_id);
+    }
+    const keyless = await ok('park_idea', { ...full, framing: 'Keyless framing' });
+    expect(keyless.deduplicated).toBe(false);
+    expect(ids.has(keyless.idea_id)).toBe(false);
+
+    // Only the exact resend's key was attached to the first idea.
+    const keys = await admin`
+      SELECT source_external_id FROM idea_source WHERE idea_id = ${first.idea_id} ORDER BY source_external_id
+    `;
+    expect(keys.map((r) => r.source_external_id)).toEqual(['k0', 'k0-again']);
+    const [stored] = await admin`SELECT framing, tags FROM idea WHERE id = ${keyless.idea_id}`;
+    expect(stored).toMatchObject({ framing: 'Keyless framing', tags: ['alpha', 'beta'] });
+
+    // Without captured_at, an exact keyless resend still dedups.
+    const plain = await ok('park_idea', { title: 'Plain', thoughts: 'x', tags: ['t'] });
+    const plainAgain = await ok('park_idea', { title: 'Plain', thoughts: 'x', tags: ['t'] });
+    expect(plainAgain).toMatchObject({ idea_id: plain.idea_id, deduplicated: true });
+  });
+
   it('update_idea rejects a blank title and accepts imported-length fields', async () => {
     const id = await seedIdea('Editable');
     const blank = await callTool('update_idea', { id, title: '   ' });
