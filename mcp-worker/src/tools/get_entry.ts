@@ -83,6 +83,9 @@ export async function getEntryHandler(
         LEFT JOIN entity_ref         er ON le.target_type='entity_ref'         AND er.id = le.target_id
        WHERE le.source_id = ${entry_id} AND le.source_type='journal_entry'
          AND le.confidence >= ${minConfidence}
+         -- A piece that has left search (superseded by the archive
+         -- consolidation) is not shown; its links move to its replacement.
+         AND (le.target_type <> 'public_artifact' OR a.status = 'published')
          AND (
            CASE le.target_type
              WHEN 'calendar_event_ref' THEN c.scope

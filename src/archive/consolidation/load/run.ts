@@ -359,10 +359,13 @@ export async function loadStale(db: DB = pool): Promise<boolean> {
   return rows[0].stale;
 }
 
-// Links the calendar/task linker made to a row that has left search
-// (journal echoes, shared entities) move to the row that replaced it, so
-// they keep showing the piece. A link that would point at its own source
-// is dropped.
+// Links to a row that has left search move to the row that replaced it,
+// so they keep showing the piece: those the calendar/task linker made
+// (journal echoes, shared entities; one that would point at its own source
+// is dropped), and idea links ('became', 'revisits', in any status, so a
+// rejected pair stays remembered). An idea link records the row it pointed
+// at in its history; where the idea already has that link to the
+// replacement, the old one stays as it is.
 async function moveLinks(db: DB): Promise<void> {
   await db.query(
     `WITH moved AS (
@@ -380,6 +383,26 @@ async function moveLinks(db: DB): Promise<void> {
        ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING
      )
      DELETE FROM link_edge e USING moved m WHERE e.id = m.id`
+  );
+  await db.query(
+    `WITH moved AS (
+       SELECT DISTINCT ON (l.source_idea_id, a.superseded_by, l.link_type)
+              l.id, a.id AS old_target, a.superseded_by AS target
+         FROM idea_link l
+         JOIN public_artifact a ON a.id = l.target_artifact_id
+        WHERE a.status = 'superseded' AND a.superseded_by IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM idea_link d
+                           WHERE d.source_idea_id = l.source_idea_id
+                             AND d.target_artifact_id = a.superseded_by
+                             AND d.link_type = l.link_type)
+        ORDER BY l.source_idea_id, a.superseded_by, l.link_type, (l.status = 'accepted') DESC, l.proposed_at
+     )
+     UPDATE idea_link l SET
+       target_artifact_id = m.target,
+       history = l.history || jsonb_build_array(jsonb_build_object(
+         'target_artifact_id', m.old_target, 'retargeted_at', now(), 'retargeted_by', 'archive-consolidation'))
+       FROM moved m
+      WHERE l.id = m.id`
   );
 }
 

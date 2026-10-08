@@ -1048,3 +1048,52 @@ test("each pass rebuilds an artifact's shared-entity links, dropping stale ones 
     ["a b shared_entities 2 shared entities", "b a shared_entities 2 shared entities", "entry a echoes_artifact "]
   );
 });
+
+test("idea links to an old row move to its replacement, keeping a record (Codex on #99)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  const { rows: old } = await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status)
+     VALUES ('default', 'essay', '自由市場的代價', $1, 'notion', 'n1', 'processed'),
+            ('default', 'essay', '自由市場的代價（重複）', $1, 'notion', 'n1b', 'processed') RETURNING id`,
+    [ESSAY]
+  );
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  const { rows: col } = await db.query("SELECT id FROM public_artifact WHERE source_external_id = 'gmail:sub'");
+  const columnId = col[0].id;
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE id = $1", [columnId]);
+
+  const idea = async (title: string) =>
+    (await db.query("INSERT INTO idea (user_id, title) VALUES ('entity-test-user', $1) RETURNING id", [title])).rows[0].id as string;
+  const link = async (source: string, target: string, type: string, status: string) =>
+    (
+      await db.query(
+        `INSERT INTO idea_link (user_id, source_idea_id, target_artifact_id, link_type, status, rationale, proposed_by, decided_at)
+         VALUES ('entity-test-user', $1, $2, $3, $4, '它成了這篇文章', 'gardening',
+                 CASE WHEN $4 = 'proposed' THEN NULL ELSE now() END) RETURNING id`,
+        [source, target, type, status]
+      )
+    ).rows[0].id as string;
+  const market = await idea("市場與政府");
+  const other = await idea("另一個想法");
+  // Accepted 'became' to the old row; a rejected 'revisits' (remembered);
+  // and the same 'became' to both old copies: only one can move.
+  const became = await link(market, old[0].id, "became", "accepted");
+  const rejected = await link(market, old[0].id, "revisits", "rejected");
+  const first = await link(other, old[0].id, "became", "accepted");
+  const second = await link(other, old[1].id, "became", "proposed");
+
+  assert.equal(await load.retireReplacedRows(columnId, db), 2);
+  const { rows } = await db.query("SELECT id, target_artifact_id, history FROM idea_link");
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  for (const id of [became, rejected, first]) {
+    assert.equal(byId[id].target_artifact_id, columnId);
+    assert.equal(byId[id].history.at(-1).retargeted_by, "archive-consolidation");
+  }
+  assert.equal(byId[became].history.at(-1).target_artifact_id, old[0].id);
+  // The accepted one of the pair moved; the proposed duplicate stays.
+  assert.equal(byId[second].target_artifact_id, old[1].id);
+  assert.deepEqual(byId[second].history, []);
+  await db.query("DELETE FROM idea WHERE user_id = 'entity-test-user'");
+});
