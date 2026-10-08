@@ -48,40 +48,17 @@ async function processOne(): Promise<boolean> {
     const summaryEmbedding = embeddings[0];
     const chunkEmbeddings = embeddings.slice(1);
 
-    // 4. Save artifact processing result
-    const saved = await archiveQueries.saveArtifactProcessingResult(artifact.id, artifact.raw_source, {
-      cleanText,
-      summary: finalSummary,
-      excerpt: analysis.excerpt,
-      tags: analysis.tags,
-      language: analysis.language,
-      embedding: summaryEmbedding,
-      embeddingModel: EMBEDDING_MODEL,
-    });
-
-    if (!saved) {
-      // The text changed while it was processed; the row is queued again
-      // and the next pass processes the new text.
+    // A load may have changed the text meanwhile: stop before the entity
+    // calls (the save below checks again).
+    if (!(await archiveQueries.artifactHoldsText(artifact.id, artifact.raw_source))) {
       console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
       return true;
     }
 
-    // 5. Save chunks with embeddings
-    const chunksWithEmbeddings = chunks.map((c, i) => ({
-      chunkIndex: c.chunkIndex,
-      chunkText: c.chunkText,
-      chunkTokens: c.chunkTokens,
-      headingPath: c.headingPath,
-      startOffset: c.startOffset,
-      endOffset: c.endOffset,
-      embedding: chunkEmbeddings[i],
-    }));
-    await archiveQueries.insertChunks(artifact.id, chunksWithEmbeddings);
-
-    // 6. Extract entities
+    // 4. Extract entities. Each is upserted now, but the row's links to
+    // them are written with the rest below.
     const entities = await extractEntities(artifact.title, cleanText);
-    await archiveQueries.clearArtifactEntities(artifact.id);
-
+    const entityLinks = [];
     for (const entity of entities) {
       const entityRefId = await archiveQueries.upsertEntity(
         "default",
@@ -89,21 +66,35 @@ async function processOne(): Promise<boolean> {
         entity.display_name,
         entity.aliases
       );
-      await archiveQueries.insertArtifactEntity(
-        artifact.id,
-        entityRefId,
-        entity.display_name,
-        entity.salience
-      );
+      entityLinks.push({ entityRefId, mentionText: entity.display_name, salience: entity.salience });
     }
 
-    // 7. Cross-link artifacts sharing entities (rebuilt, so nothing from an
-    // earlier pass or an abandoned attempt stays)
-    await archiveQueries.replaceSharedEntityLinks(artifact.id, 2);
-
-    // 8. Done: the row can be found, and the rows it replaces (archive
-    // consolidation, step 4) leave search.
-    if (!(await archiveQueries.finishArtifactProcessing(artifact.id, artifact.raw_source))) {
+    // 5. Save it all at once: the result, chunks, entities, and the links
+    // to artifacts sharing entities (rebuilt, so nothing from an earlier
+    // pass stays). Then the row can be found, and the rows it replaces
+    // (archive consolidation, step 4) leave search.
+    const saved = await archiveQueries.completeArtifactProcessing(artifact.id, artifact.raw_source, {
+      cleanText,
+      summary: finalSummary,
+      excerpt: analysis.excerpt,
+      tags: analysis.tags,
+      language: analysis.language,
+      embedding: summaryEmbedding,
+      embeddingModel: EMBEDDING_MODEL,
+      chunks: chunks.map((c, i) => ({
+        chunkIndex: c.chunkIndex,
+        chunkText: c.chunkText,
+        chunkTokens: c.chunkTokens,
+        headingPath: c.headingPath,
+        startOffset: c.startOffset,
+        endOffset: c.endOffset,
+        embedding: chunkEmbeddings[i],
+      })),
+      entities: entityLinks,
+    });
+    if (!saved) {
+      // The text changed while it was processed; the row is queued again
+      // and the next pass processes the new text.
       console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
       return true;
     }
