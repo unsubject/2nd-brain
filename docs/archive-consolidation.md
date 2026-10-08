@@ -206,7 +206,7 @@ hashes in every text, so a short copy's samples are all in the long text's
 samples, which a containment screen needs; banded MinHash, used at first,
 missed many short copies). A sampled shingle in more than 50 texts (a
 stock phrase, or a piece with that many copies) links its texts to one
-representative rather than to each other; a text with fewer than 8
+representative rather than to each other; a text with fewer than 32
 samples is checked against every text of a size it could match. Each
 pair is then checked exactly, and pairs chain into works.
 

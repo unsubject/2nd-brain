@@ -55,10 +55,12 @@ const SAMPLE = 8;
 // so a piece that really has this many copies still comes together.
 const COMMON = 50;
 const MIN_SHARED = 0.3;
-// A text with fewer samples than this is too short for sampling to be
-// reliable (a 50-character body can have none): it is checked against
-// every text of a size it could be the same piece as.
-const MIN_SAMPLES = 8;
+// A text with fewer samples than this is too short for the 30% screen to
+// be reliable (a 50-character body can have none; at 9 samples a pair at
+// 64% containment can share only 2): it is checked against every text of
+// a size it could be the same piece as. From 32 samples up, a pair at the
+// 60% containment limit falls under the screen with p ≈ 3e-5.
+const MIN_SAMPLES = 32;
 const ID_SPACE = 65536;
 
 function sampled(h: number): boolean {

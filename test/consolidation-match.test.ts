@@ -84,6 +84,17 @@ test("texts too short to sample still pair: identical copies are one work (Codex
   }
 });
 
+test("a short pair with too few samples for the screen is still checked (Codex on #98)", () => {
+  // Codex's case: 47 shingles each, 64% containment, 9 samples each of
+  // which only 2 are shared, under the 30% screen.
+  const a = essay(16252, 50);
+  const b = a.slice(0, 33) + essay(507817, 17);
+  const [sa, sb] = [shingles(a), shingles(b)];
+  assert.ok(samePiece(overlap(sa, sb)));
+  assert.deepEqual(candidatePairs([sa, sb]), [[0, 1]]);
+  assert.equal(matchCandidates([cand({ bodyText: a }), cand({ bodyText: b })]).works.length, 1);
+});
+
 test("a piece with more copies than the stock-phrase cap still forms one work (Codex on #98)", () => {
   const text = essay(70);
   const copies = Array.from({ length: 60 }, () => cand({ bodyText: text }));
