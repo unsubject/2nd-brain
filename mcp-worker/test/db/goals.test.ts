@@ -65,7 +65,7 @@ describe.skipIf(!TEST_DB)('goal-system jsonb', () => {
   });
 });
 
-describe.skipIf(!TEST_DB)('propose_goal_amendment: parent domain', () => {
+describe.skipIf(!TEST_DB)('goal amendments: parent domain', () => {
   beforeEach(resetGoalData);
 
   const smart = {
@@ -100,6 +100,55 @@ describe.skipIf(!TEST_DB)('propose_goal_amendment: parent domain', () => {
     await admin`UPDATE constitution_domains SET status = 'active' WHERE id = ${domainId}`;
     const staged = await ok('propose_goal_amendment', args);
     expect(staged.amendment_id).toBeTruthy();
+  });
+
+  it('re-checks the domain and the sources at commit, after the cooldown', async () => {
+    const { domainId, goalId } = await seedUndertaking();
+    const [second] = await admin<Array<{ id: string }>>`
+      INSERT INTO goals (user_id, constitution_domain_id, statement, specific, measurable, achievable, relevant, time_bound, outcome_metric)
+      VALUES (${USER}, ${domainId}, 'Second goal', 's', 'm', 'a', 'r', 't', 'metric') RETURNING id
+    `;
+    // Proposed while everything was active; the 72h cooldown has elapsed.
+    const stage = async (kind: 'new' | 'synthesize', sources: string[]) => {
+      const [row] = await admin<Array<{ id: string }>>`
+        INSERT INTO goal_amendments (user_id, kind, source_goal_ids, proposed_payload, rationale, proposed_at)
+        VALUES (${USER}, ${kind}, ${`{${sources.join(',')}}`}::uuid[],
+                ${admin.json({ ...smart, constitution_domain_id: domainId })}, 'r', now() - interval '4 days')
+        RETURNING id
+      `;
+      return row.id;
+    };
+    const synth = await stage('synthesize', [goalId, second.id]);
+    const fresh = await stage('new', []);
+    const goals = () => admin`SELECT id, status FROM goals ORDER BY statement`;
+    const before = await goals();
+
+    // A domain retire committed during the cooldown.
+    await admin`UPDATE constitution_domains SET status = 'retired' WHERE id = ${domainId}`;
+    for (const amendment_id of [synth, fresh]) {
+      const refused = await callTool('commit_goal_amendment', { amendment_id });
+      expect(refused.isError).toBe(true);
+      expect(refused.texts[0]).toMatch(/^invalid_state: Domain .* is retired; cannot add goals under it/);
+    }
+    expect(await goals()).toEqual(before);
+
+    // A source goal that ended during the cooldown is not relabelled 'merged'.
+    await admin`UPDATE constitution_domains SET status = 'active' WHERE id = ${domainId}`;
+    await admin`UPDATE goals SET status = 'achieved' WHERE id = ${second.id}`;
+    const ended = await callTool('commit_goal_amendment', { amendment_id: synth });
+    expect(ended.isError).toBe(true);
+    expect(ended.texts[0]).toMatch(/^invalid_state: Source goals are no longer all active/);
+    expect((await goals()).find((g) => g.id === second.id)!.status).toBe('achieved');
+
+    await admin`UPDATE goals SET status = 'active' WHERE id = ${second.id}`;
+    const committed = await ok('commit_goal_amendment', { amendment_id: synth });
+    const after = await admin`SELECT id, status, merged_into_id FROM goals WHERE id IN ${admin([goalId, second.id])}`;
+    expect(after.map((g) => [g.status, g.merged_into_id])).toEqual([
+      ['merged', committed.goal_id],
+      ['merged', committed.goal_id],
+    ]);
+    const statuses = await admin`SELECT status FROM goal_amendments ORDER BY kind`;
+    expect(statuses.map((r) => r.status)).toEqual(['proposed', 'committed']);
   });
 });
 

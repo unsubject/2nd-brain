@@ -339,7 +339,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'commit_goal_amendment',
     description:
-      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending goal amendment, after reading it back to them (read_protocol('goal-amendment') Section 1B). Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
+      "NEVER call autonomously: ONLY when the user explicitly asks to commit a pending goal amendment, after reading it back to them (read_protocol('goal-amendment') Section 1B). Apply a previously-proposed goal amendment. Refuses unless 72h cooldown has elapsed. No founding bypass at this layer. 'new'/'synthesize' insert (subject to 3-per-domain cap; refused if the domain, or a synthesis's source goal, is no longer active); 'amend' COALESCE-updates; 'achieve' marks status='achieved'; 'abandon' marks status='abandoned'. Returns {ok, goal_id, kind}.",
     inputSchema: {
       type: 'object',
       properties: { amendment_id: { type: 'string', format: 'uuid' } },

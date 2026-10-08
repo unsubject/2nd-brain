@@ -106,6 +106,8 @@ Before drafting a `new`:
 
 For `synthesize`: all source goals must be active AND share the same `constitution_domain_id`, and that domain must itself be active (retiring or merging a domain leaves its goals active, but nothing new goes under it). Cross-domain synthesis is a constitution-level concern — do that via constitution amendment first.
 
+`propose_goal_amendment` checks these rules, and `commit_goal_amendment` checks again after the cooldown: a `new` or `synthesize` whose domain was retired or merged in the meantime, or a `synthesize` whose source goal was achieved or abandoned in the meantime, is refused (`invalid_state`) and nothing changes.
+
 For `amend`: `constitution_domain_id` is immutable. To re-parent a goal, `abandon` + `new` under the new domain.
 
 ### Step 3 — Write the SMART breakdown
