@@ -84,7 +84,7 @@ test("one failing matcher keeps the other matchers' links, then reports the fail
     assert.deepEqual(rows.map((r) => r.link_type), ["mentions_entity", "relates_to_task"]);
     // ...and the failure is still reported, naming the matcher.
     assert.ok(err instanceof AggregateError, `expected an AggregateError, got ${String(err)}`);
-    assert.match(err.message, /artifacts matcher\(s\) failed/);
+    assert.match(err.message, /artifacts matcher failed/);
     assert.equal(err.errors.length, 1);
     assert.match(String(err.errors[0]), /NaN not allowed in vector/);
 
@@ -92,6 +92,45 @@ test("one failing matcher keeps the other matchers' links, then reports the fail
     await assert.rejects(linker.generateLinksStrict(entry, entities), AggregateError);
     const again = await db.query("SELECT count(*)::int AS n FROM link_edge WHERE source_id = $1", [entry.id]);
     assert.equal(again.rows[0].n, 2);
+  } finally {
+    await db.query("DELETE FROM link_edge WHERE source_id = $1", [entry.id]);
+  }
+});
+
+test("a failed entity extraction keeps the other links, then is reported like a failed matcher", { skip }, async () => {
+  await db.query(
+    `INSERT INTO task_ref (user_id, external_task_id, external_list_id, title, status)
+     VALUES ('default', $1, 'list-1', 'Draft quarterly budget review', 'needsAction')`,
+    [TASK_ID]
+  );
+  const entry = {
+    id: randomUUID(),
+    full_text: "Spent the morning on the quarterly budget with the foundation.",
+    tags: [],
+    created_at: new Date("2026-01-15T10:00:00Z"),
+    embedding: [],
+  };
+  const extractionDown = async (): Promise<never> => {
+    throw new Error("synthetic extraction outage");
+  };
+
+  try {
+    const err: unknown = await linker.generateLinksStrict(entry, extractionDown).then(
+      () => null,
+      (e: unknown) => e
+    );
+    // The task matcher does not need entities, so its link is written...
+    const { rows } = await db.query(
+      "SELECT link_type FROM link_edge WHERE source_type = 'journal_entry' AND source_id = $1",
+      [entry.id]
+    );
+    assert.deepEqual(rows.map((r) => r.link_type), ["relates_to_task"]);
+    // ...but the entry is not reported as fully linked: the relink backfill
+    // has to count it as failed.
+    assert.ok(err instanceof AggregateError, `expected an AggregateError, got ${String(err)}`);
+    assert.match(err.message, /entity extraction failed/);
+    assert.equal(err.errors.length, 1);
+    assert.match(String(err.errors[0]), /synthetic extraction outage/);
   } finally {
     await db.query("DELETE FROM link_edge WHERE source_id = $1", [entry.id]);
   }
