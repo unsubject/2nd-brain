@@ -6,6 +6,7 @@ import { candidatesStale, emptyExtractStats, runExtraction, type ExtractStats } 
 import { emptyLoadStats, loadStale, runLoad, type LoadStats } from "./load/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
 import {
+  endedSince,
   finishRun,
   heartbeatRun,
   RunAlreadyActiveError,
@@ -52,23 +53,31 @@ function startFollowUp(req: CollectRequest): void {
 // - A collection, whatever its outcome (what it staged is good), is
 //   followed by extraction when a staged item lacks a current candidate:
 //   its own items, or another collection's whose extraction it held back.
-// - An extraction, whatever its outcome, is followed by another when items
-//   were staged or changed while it ran: its scan can miss a collection's
-//   rows (extraction doesn't start while a collection is live, but a
-//   collection can start during an extraction, and its own follow-up is
-//   refused while the extraction is live). After a failed extraction only
-//   those items count, so an item that always fails doesn't start run after
-//   run (it waits for the boot check or a run by hand). A successful
-//   extraction that left every candidate current is followed by matching.
-// - A match, whatever its outcome, is followed by another when an
-//   extraction succeeded while it ran: that extraction's own match was
-//   refused, and this one may have read the candidates before it. Else a
-//   successful match (new works) is followed by loading.
+// - An extraction is followed by another when items were staged or changed
+//   while it ran: its scan can miss a collection's rows (extraction doesn't
+//   start while a collection is live, but a collection can start during an
+//   extraction, and its own follow-up is refused while the extraction is
+//   live). After a failed extraction only those items count, so an item
+//   that always fails doesn't start extraction after extraction. Otherwise
+//   it is followed by matching, whatever its outcome: a failed extraction
+//   still rewrote the candidates of every item it didn't fail on, and an
+//   earlier extraction may have left its own match to this one.
+// - A match is followed by another when an extraction ended while it ran,
+//   whatever that extraction's outcome: its own match was refused, and
+//   this one may have read the candidates before it wrote them. Otherwise
+//   a successful match (new works) is followed by loading, and so is a
+//   failed one when the works are not the ones the last load read
+//   (loadStale): it leaves the works of the last match that succeeded,
+//   which may have left its load to the failed one (run again for an
+//   extraction, as above).
 // - A load is followed by another when a match ended while it ran, whose
 //   own load it refused: after a successful load, whenever the works are
 //   not the ones it read (loadStale); after a failed one, only when a match
 //   succeeded while it ran, so a load that always fails doesn't start run
 //   after run.
+//
+// No step starts the one before it, and a step runs again only for what
+// the step before it wrote while it ran, so none of this loops.
 export async function nextStep(
   source: CollectorSource,
   succeeded: boolean,
@@ -80,11 +89,10 @@ export async function nextStep(
     case "gdrive":
       return (await candidatesStale(db)) ? { source: "extract" } : null;
     case "extract":
-      if (await candidatesStale(db, succeeded ? undefined : runId)) return { source: "extract" };
-      return succeeded ? { source: "match" } : null;
+      return (await candidatesStale(db, succeeded ? undefined : runId)) ? { source: "extract" } : { source: "match" };
     case "match":
-      if (await succeededSince("extract", runId, db)) return { source: "match" };
-      return succeeded ? { source: "load" } : null;
+      if (await endedSince("extract", runId, db)) return { source: "match" };
+      return succeeded || (await loadStale(db)) ? { source: "load" } : null;
     case "load":
       return (succeeded ? await loadStale(db) : await succeededSince("match", runId, db)) ? { source: "load" } : null;
   }

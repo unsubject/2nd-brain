@@ -66,9 +66,10 @@ when a run ends it starts the step after it (`runner.nextStep`):
 |---|---|
 | Gmail or Drive collection, whatever its outcome | extraction, if any staged item lacks a current candidate |
 | Extraction that succeeded | extraction again if items were staged or changed while it ran, else matching |
-| Extraction that failed | extraction again only if items were staged or changed while it ran |
-| Match, whatever its outcome | matching again if an extraction succeeded while it ran |
+| Extraction that failed | extraction again only if items were staged or changed while it ran, else matching |
+| Match, whatever its outcome | matching again if an extraction ended while it ran (whatever its outcome) |
 | Match that succeeded (otherwise) | loading |
+| Match that failed (otherwise) | loading if no load has read the works as they are |
 | Load that succeeded | loading again if the works are not the ones it read |
 | Load that failed | loading again only if a match succeeded while it ran |
 
@@ -77,21 +78,28 @@ checks when it ends whether something it missed arrived meanwhile: that is
 what the "again" rows are for. Extraction is also held back while a Gmail or
 Drive collection is live (it reads everything staged); the collection
 starts it when it ends. A failed run is followed again only for what came in
-while it ran, so a step that always fails doesn't start run after run. A run
-taken over by the resume sweeper (see "Running step 1") starts nothing; the
-run that continues it does when it ends.
+while it ran, so a step that always fails doesn't start run after run. A
+failed extraction is still followed by matching, since it rewrote the
+candidates of every item it didn't fail on, and a failed match by loading
+when the works it leaves (the last successful match's) were never loaded,
+as when that match left its load to the run that failed. No step starts
+the one before it, so none of this loops. A run taken over by the resume
+sweeper (see "Running step 1") starts nothing; the run that continues it
+does when it ends.
 
 On boot (90 s after, so after every deploy and after the sweeper has
 resumed the runs it cut short) the app checks, in order, whether the
 candidates, the works or the loaded rows are out of date (a staged item
 with no candidate, one made by an older `EXTRACTOR_VERSION` or one older
-than the item; works older than the candidates or than `MATCHER_VERSION`;
-no load by this `LOADER_VERSION` that read the current works) and starts
-the first step that is due, which then starts the rest (`extract/auto.ts`). While a
+than the item; works older than the candidates or than `MATCHER_VERSION`,
+or made by a match that an extraction ended after it started; no load by
+this `LOADER_VERSION` that read the current works) and starts the first
+step that is due, which then starts the rest (`extract/auto.ts`). While a
 collection is live it waits for it, checking again every minute.
 Collection, extraction and loading can also be started by hand
 (`POST /archive/consolidation/collect`, `/extract`, `/load`; a refused
-start answers 409); matching starts only after an extraction or on boot.
+start answers 409); matching starts after every extraction (so a run of
+extraction by hand is also how to match by hand) or on boot.
 
 ## Running step 1
 
@@ -174,10 +182,14 @@ while a collection is live it checks again every minute). If items were
 staged or changed while an extraction ran (a collection started
 alongside), it runs again before matching, whether it succeeded or
 failed; after a failed run only those items count, so an item that always
-fails waits for the next boot check or a run by hand. A candidate is
-stamped with the time its item was read, so an item changed while the run
-held it counts as changed. The run's counts appear in the logs
-(`[consolidation] extract run … finished: {…}`). To run it by hand:
+fails doesn't start extraction after extraction. Matching follows either
+way, so the rest of the material reaches the works and `public_artifact`;
+the item that failed keeps its previous candidate, or has none, until the
+rules handle it (its candidate stays out of date, so every boot check and
+every collection extracts again, and fails on it again, before matching).
+A candidate is stamped with the time its item was read, so an item changed
+while the run held it counts as changed. The run's counts appear in the
+logs (`[consolidation] extract run … finished: {…}`). To run it by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/extract" -H "Authorization: Bearer $ARCHIVE_API_KEY"
@@ -246,14 +258,18 @@ reader-reply review and the Patreon creator check.
 
 ## Running step 3
 
-Matching runs by itself after every successful extraction that left every
-staged item with a current candidate (and on boot when
-the works are older than the candidates or than `MATCHER_VERSION` in
-`match/run.ts`). It reads the candidates that extraction kept or sent to
-review, takes a few seconds, and rebuilds every work in one transaction.
-An extraction that succeeds while a match runs can't start its own (one
-run per step), so a match, whatever its outcome, runs again when one did;
-otherwise a successful match starts a load (step 4).
+Matching runs by itself after every extraction, successful or not, that
+found nothing staged or changed while it ran to extract again (and on
+boot when the works are older than the candidates or than
+`MATCHER_VERSION` in `match/run.ts`, or an extraction ended after the
+match that made them started). It reads the candidates that extraction
+kept or sent to review, takes a few seconds, and rebuilds every work in
+one transaction. An extraction that ends while a match runs can't start
+its own (one run per step), and may have written candidates after the
+match read them, so a match, whatever its outcome, runs again when one
+did, whatever that extraction's outcome; otherwise a successful match
+starts a load (step 4), and so does a failed one when the works it leaves
+(the last successful match's) have not been loaded.
 The run's counts appear in the logs (`[consolidation] match run …
 finished: {…}`): `works`, `byStatus`, `bySize` (works with 1, 2, 3–5, 6–10,
 11+ members) and the five `largest` works by title; a very large work would
@@ -311,12 +327,15 @@ Decisions (Simon, 2026-10-08): load **every** work, the ones in review
 flagged; an old row that matches a work is superseded, one that matches
 nothing stays searchable, flagged.
 
-A load runs by itself after every successful match, and on boot when no
-load by the current `LOADER_VERSION` has read the current works (an empty
-set of works included). A load that finds the works changed while it ran (a
-match finished meanwhile, whose own load it blocked) loads again; after a
-failed load, only when a match succeeded while it ran, so a load that keeps
-failing waits for the boot check or a run by hand. To start one by hand:
+A load runs by itself after every successful match, after a failed one
+when no load by the current `LOADER_VERSION` has read the current works (a
+failed match leaves the works of the last one that succeeded, which may
+have left its load to the run that failed), and on boot in the same case
+(an empty set of works included). A load that finds the works changed
+while it ran (a match finished meanwhile, whose own load it blocked) loads
+again; after a failed load, only when a match succeeded while it ran, so a
+load that keeps failing doesn't start run after run: the next match, the
+boot check or a run by hand tries again. To start one by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/load" -H "Authorization: Bearer $ARCHIVE_API_KEY"

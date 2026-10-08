@@ -3,12 +3,15 @@
 // after boot (so after every deploy), re-extract when a staged item has no
 // candidate yet, one made by an older EXTRACTOR_VERSION or one older than
 // the item, else re-match when the works are older than the candidates or
-// MATCHER_VERSION, else load when no load by this LOADER_VERSION has read
-// the works as they are. Only the first step due is started: each step
-// starts the next when it ends (runner.nextStep), so a successful
-// extraction is followed by matching and loading. When all is current this
-// costs three queries. Collections start extraction themselves when they
-// end; this check covers what a deploy or a rule change left behind.
+// MATCHER_VERSION (worksStale), else load when no load by this
+// LOADER_VERSION has read the works as they are. Only the first step due
+// is started: each step starts the next when it ends (runner.nextStep), so
+// an extraction is followed by matching and loading, even one that failed
+// on an item (whose candidate then stays out of date, so this check
+// extracts again on every boot until the rules handle it). When all is
+// current this costs three queries. Collections start extraction
+// themselves when they end; this check covers what a deploy or a rule
+// change left behind.
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
@@ -28,6 +31,13 @@ export { candidatesStale, loadStale };
 const DELAY_MS = 90_000;
 const RECHECK_MS = 60_000;
 
+// The works are out of date: made by an older MATCHER_VERSION, missing a
+// kept candidate, older than a candidate, or made by a match that started
+// before an extraction ended. The step after such a match runs it again
+// (runner.nextStep); the last check covers a restart that cut that short.
+// Comparing times can miss that case: extracted_at is when an item was
+// read, which can be before matched_at although its candidate was written
+// after the match read the candidates.
 export async function worksStale(db: DB = pool): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
     `SELECT COALESCE(
@@ -36,7 +46,13 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
          SELECT 1 FROM archive_candidate c
           WHERE c.status IN ('keep', 'review')
             AND NOT EXISTS (SELECT 1 FROM archive_work_member m WHERE m.candidate_id = c.id))
-       OR (SELECT max(extracted_at) FROM archive_candidate) > (SELECT min(matched_at) FROM archive_work),
+       OR (SELECT max(extracted_at) FROM archive_candidate) > (SELECT min(matched_at) FROM archive_work)
+       OR EXISTS (
+         SELECT 1 FROM archive_collect_run e
+          WHERE e.source = 'extract' AND e.status <> 'running'
+            AND e.finished_at >= coalesce(
+                  (SELECT max(started_at) FROM archive_collect_run WHERE source = 'match' AND status = 'succeeded'),
+                  '-infinity')),
        false) AS stale`,
     [MATCHER_VERSION]
   );

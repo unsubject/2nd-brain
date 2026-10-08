@@ -257,17 +257,27 @@ export async function markInterrupted(runId: string, db: DB = pool): Promise<boo
   return (rowCount ?? 0) > 0;
 }
 
-// True when a `source` run succeeded after run `runId` started: one that
-// ended while `runId` was live, so the step it starts after itself was
-// refused if `runId` is that step (one run per source).
+// True when a `source` run ended after run `runId` started: one that ended
+// while `runId` was live, so the step it starts after itself was refused if
+// `runId` is that step (one run per source). A run taken over as
+// interrupted counts as ended when it was taken over.
+export async function endedSince(source: CollectorSource, runId: string, db: DB = pool): Promise<boolean> {
+  return runEndedSince(source, runId, ["succeeded", "failed"], db);
+}
+
+// The same, counting only runs that succeeded.
 export async function succeededSince(source: CollectorSource, runId: string, db: DB = pool): Promise<boolean> {
+  return runEndedSince(source, runId, ["succeeded"], db);
+}
+
+async function runEndedSince(source: CollectorSource, runId: string, statuses: string[], db: DB): Promise<boolean> {
   const { rows } = await db.query<{ found: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM archive_collect_run
-        WHERE source = $1 AND status = 'succeeded'
+        WHERE source = $1 AND status = ANY($3)
           AND finished_at >= (SELECT started_at FROM archive_collect_run WHERE id = $2)
      ) AS found`,
-    [source, runId]
+    [source, runId, statuses]
   );
   return rows[0].found;
 }

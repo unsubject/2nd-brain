@@ -721,12 +721,13 @@ test("the step after a run: extraction after a collection, then matching", { ski
   // An item staged while the extraction ran (a collection alongside): extract again first.
   await staging.upsertSourceItem(item({ sourceRef: "late", rawText: "遲來的一封信" }), db);
   assert.deepEqual(await nextStep("extract", true, extractRun, db), { source: "extract" });
-  // A successful match is followed by loading; a failed one by nothing.
+  // A successful match is followed by loading; a failed one by nothing
+  // here (no works were ever made, so there are none to load).
   assert.deepEqual(await nextStep("match", true, await endedRun("match", "succeeded"), db), { source: "load" });
   assert.equal(await nextStep("match", false, await endedRun("match", "failed"), db), null);
 });
 
-test("after a failed extraction, only items staged or changed while it ran start another", { skip }, async () => {
+test("after a failed extraction, only items staged or changed while it ran start another; else matching", { skip }, async () => {
   const { nextStep } = await import("../src/archive/consolidation/runner");
   const run = await import("../src/archive/consolidation/extract/run");
   await stageForExtraction();
@@ -736,9 +737,10 @@ test("after a failed extraction, only items staged or changed while it ran start
     `DELETE FROM archive_candidate WHERE source_item_id = (SELECT id FROM archive_source_item WHERE source_ref = 'ack')`
   );
   const failed = await endedRun("extract", "failed");
-  // It doesn't start run after run: it waits for the boot check or a run by hand.
+  // It doesn't start extraction after extraction; the candidates the run
+  // did write go on to matching.
   assert.equal(await run.candidatesStale(db), true);
-  assert.equal(await nextStep("extract", false, failed, db), null);
+  assert.deepEqual(await nextStep("extract", false, failed, db), { source: "match" });
 
   // A collection that started during the run and ended before it (its own
   // follow-up refused, the extraction being live) staged a new item.
@@ -748,7 +750,7 @@ test("after a failed extraction, only items staged or changed while it ran start
   // That run failed too: 'late' now predates it, so only a change made
   // while it ran (a refetch rewriting an item) starts one more.
   const failedAgain = await endedRun("extract", "failed");
-  assert.equal(await nextStep("extract", false, failedAgain, db), null);
+  assert.deepEqual(await nextStep("extract", false, failedAgain, db), { source: "match" });
   assert.equal(
     await staging.upsertSourceItem(item({ sourceRef: "sub", rawText: `蘋果論壇：自由市場的代價（修訂）\n\n${ESSAY}` }), db),
     "updated"
@@ -1436,19 +1438,203 @@ test("the step after a match: load, or match again when an extraction ended whil
   assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
   assert.equal(await nextStep("match", false, failed, db), null);
 
-  // A failed extraction while they ran started no match: nothing changes.
+  // An extraction that ended while they ran had its own match refused, and
+  // they may have read the candidates before it wrote them: match again
+  // before loading, whatever their outcome or its. A failed extraction
+  // counts too, since it rewrote every candidate but those it failed on.
   await endedRun("extract", "failed");
-  assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
-  assert.equal(await nextStep("match", false, failed, db), null);
-
-  // An extraction that succeeded while they ran had its own match refused,
-  // and they may have read the candidates before it: match again before
-  // loading, whatever their outcome.
-  await endedRun("extract", "succeeded");
   assert.deepEqual(await nextStep("match", true, matched, db), { source: "match" });
   assert.deepEqual(await nextStep("match", false, failed, db), { source: "match" });
+  await endedRun("extract", "succeeded");
+  assert.deepEqual(await nextStep("match", true, matched, db), { source: "match" });
   // The match started after it loads.
   assert.deepEqual(await nextStep("match", true, await endedRun("match", "succeeded"), db), { source: "load" });
+});
+
+// A db on which writing the candidate of item `ref` always fails, as for an
+// item the rules can't handle: the extraction goes on and ends 'failed'.
+async function failingOn(ref: string): Promise<Pool> {
+  const { rows } = await db.query<{ id: string }>("SELECT id FROM archive_source_item WHERE source_ref = $1", [ref]);
+  return {
+    query: (sql: string, params?: unknown[]) =>
+      /INSERT INTO archive_candidate/.test(sql) && params?.[0] === rows[0].id
+        ? Promise.reject(new Error(`cannot extract ${ref}`))
+        : db.query(sql, params),
+  } as unknown as Pool;
+}
+
+test("an extraction that left its match to a re-run that failed is still matched (review F1)", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  await stageForExtraction();
+
+  // The first extraction succeeds, but a collection staged an item while it
+  // ran: it extracts again instead of matching.
+  const first = await endedRun("extract", "succeeded");
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  await staging.upsertSourceItem(item({ sourceRef: "bad", rawText: "壞的" }), db);
+  assert.deepEqual(await nextStep("extract", true, first, db), { source: "extract" });
+
+  // The second fails on that item. Nothing was staged while it ran, so no
+  // third, but the first one's candidates and its own still reach the works.
+  const second = await endedRun("extract", "failed");
+  const stats = run.emptyExtractStats();
+  await run.runExtraction(stats, async () => {}, () => false, await failingOn("bad"));
+  assert.equal(stats.failed, 1);
+  assert.equal(stats.written, 5);
+  assert.equal(await auto.worksStale(db), true);
+  assert.deepEqual(await nextStep("extract", false, second, db), { source: "match" });
+
+  const matched = await endedRun("match", "succeeded");
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+  assert.equal(await auto.worksStale(db), false);
+  assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
+});
+
+test("an item that always fails extraction holds back neither matching nor loading (review F2)", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  const load = await import("../src/archive/consolidation/load/run");
+  await stageForExtraction();
+  await staging.upsertSourceItem(item({ sourceRef: "bad", rawText: "壞的" }), db);
+  const stale = { candidates: () => run.candidatesStale(db), works: () => auto.worksStale(db), load: () => load.loadStale(db) };
+  const started: unknown[] = [];
+  const fakeStart = async (req: unknown) => {
+    started.push(req);
+    return `run-${started.length}`;
+  };
+
+  // The boot check and every collection start an extraction (the item has
+  // no candidate), and it fails on that item every time...
+  assert.deepEqual(await auto.catchUp(fakeStart, stale), { source: "extract", runId: "run-1" });
+  const collection = await endedRun("gmail", "succeeded");
+  assert.deepEqual(await nextStep("gmail", true, collection, db), { source: "extract" });
+  for (let i = 0; i < 2; i++) {
+    const failed = await endedRun("extract", "failed");
+    const stats = run.emptyExtractStats();
+    await run.runExtraction(stats, async () => {}, () => false, await failingOn("bad"));
+    assert.equal(stats.failed, 1);
+    assert.equal(await run.candidatesStale(db), true);
+    // ...but the other items move on: matching follows (it starts no
+    // extraction, so this can't loop), then loading.
+    assert.deepEqual(await nextStep("extract", false, failed, db), { source: "match" });
+    const matched = await endedRun("match", "succeeded");
+    assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
+  }
+});
+
+test("a match whose re-run failed still has its works loaded (review F1)", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const load = await import("../src/archive/consolidation/load/run");
+  await buildWorks();
+  // A load that read the works as they are now, as runLoad records it.
+  const loaded = () =>
+    db.query(
+      `INSERT INTO archive_collect_run (source, status, finished_at, stats)
+       SELECT 'load', 'succeeded', now(),
+              jsonb_build_object('loaderVersion', $1::int, 'worksMatchedAt', (SELECT max(matched_at)::text FROM archive_work))`,
+      [load.LOADER_VERSION]
+    );
+
+  // The first match succeeds, but an extraction ended while it ran: it
+  // matches again instead of loading.
+  const first = await endedRun("match", "succeeded");
+  await endedRun("extract", "succeeded");
+  assert.deepEqual(await nextStep("match", true, first, db), { source: "match" });
+
+  // The second fails: the first one's works stand, and no load has read
+  // them, so they are loaded now.
+  const second = await endedRun("match", "failed");
+  assert.equal(await load.loadStale(db), true);
+  assert.deepEqual(await nextStep("match", false, second, db), { source: "load" });
+
+  // Once a load has read them, a failed match starts nothing.
+  await loaded();
+  assert.equal(await load.loadStale(db), false);
+  assert.equal(await nextStep("match", false, await endedRun("match", "failed"), db), null);
+});
+
+test("a match that read the candidates before a failed extraction rewrote them runs again (review F3)", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  await stageForExtraction();
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+  await staging.upsertSourceItem(item({ sourceRef: "bad", rawText: "壞的" }), db);
+  const failing = await failingOn("bad");
+
+  // A refetch rewrites the column, and an extraction (failing on 'bad')
+  // rewrites its candidate after the match read the candidates, before it
+  // wrote the works. The match on a connection of its own, as writeWorks
+  // runs a transaction on what it is given unless it is a pool.
+  const matchRun = await endedRun("match", "succeeded");
+  let extractRun: string | undefined;
+  const conn = await db.connect();
+  const racing = {
+    query: async (sql: string, params?: unknown[]) => {
+      const res = await conn.query(sql, params);
+      if (!extractRun && /FROM archive_candidate c JOIN archive_source_item s/.test(sql)) {
+        assert.equal(
+          await staging.upsertSourceItem(
+            item({
+              sourceRef: "sub",
+              title: "Apple Daily Forum 20200624",
+              authoredAt: new Date("2020-06-22T09:00:00Z"),
+              rawText: `蘋果論壇：自由市場的代價（修訂）\n\n${ESSAY}`,
+              metadata: { kind: "message", from: "simoncf@gmail.com", to: ["forum@appledaily.com"], isSent: true },
+            }),
+            db
+          ),
+          "updated"
+        );
+        extractRun = await endedRun("extract", "failed");
+        const stats = run.emptyExtractStats();
+        await run.runExtraction(stats, async () => {}, () => false, failing);
+        assert.equal(stats.failed, 1);
+      }
+      return res;
+    },
+  } as unknown as Pool;
+  try {
+    await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, racing);
+  } finally {
+    conn.release();
+  }
+  assert.ok(extractRun);
+  const title = async () =>
+    (
+      await db.query(
+        `SELECT w.title FROM archive_work w
+           JOIN archive_candidate c ON c.id = w.canonical_candidate_id
+           JOIN archive_source_item s ON s.id = c.source_item_id WHERE s.source_ref = 'sub'`
+      )
+    ).rows[0].title as string;
+  assert.ok(!(await title()).includes("修訂"));
+  // The candidate was stamped when it was read, before the works were
+  // written, so comparing the times doesn't show it: the step after the
+  // match matches again, and so would the boot check, from the runs.
+  assert.equal(
+    (
+      await db.query(
+        "SELECT (SELECT max(extracted_at) FROM archive_candidate) > (SELECT min(matched_at) FROM archive_work) AS newer"
+      )
+    ).rows[0].newer,
+    false
+  );
+  assert.equal(await auto.worksStale(db), true);
+  assert.deepEqual(await nextStep("match", true, matchRun, db), { source: "match" });
+  // The extraction's own follow-up is a match too (refused while this one
+  // was live).
+  assert.deepEqual(await nextStep("extract", false, extractRun, db), { source: "match" });
+  const again = await endedRun("match", "succeeded");
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+  assert.ok((await title()).includes("修訂"));
+  assert.equal(await auto.worksStale(db), false);
+  assert.deepEqual(await nextStep("match", true, again, db), { source: "load" });
 });
 
 test("the step after a load: another when a match ended while it ran", { skip }, async () => {
