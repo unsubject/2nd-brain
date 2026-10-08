@@ -632,10 +632,13 @@ export function toMermaid(map: IdeaMap): string {
     const a = idFor.get(e.source);
     const b = idFor.get(e.target);
     if (!a || !b) continue;
+    // Edges carry the display label (contradicts, extends, rhymes-with…),
+    // as in every other view; the JSON header's legend maps it to the type.
+    const cap = mermaidLabel(e.label);
     if (e.status === 'proposed') {
-      lines.push(e.directed ? `  ${a} -.->|${e.type}?| ${b}` : `  ${a} -.-|${e.type}?| ${b}`);
+      lines.push(e.directed ? `  ${a} -.->|${cap}?| ${b}` : `  ${a} -.-|${cap}?| ${b}`);
     } else {
-      lines.push(e.directed ? `  ${a} -->|${e.type}| ${b}` : `  ${a} ---|${e.type}| ${b}`);
+      lines.push(e.directed ? `  ${a} -->|${cap}| ${b}` : `  ${a} ---|${cap}| ${b}`);
     }
   }
   lines.push('  classDef frontier fill:#eef4ff,stroke:#4a6fa5');

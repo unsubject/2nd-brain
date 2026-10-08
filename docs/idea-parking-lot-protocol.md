@@ -293,7 +293,7 @@ The page works offline in any browser: it loads nothing from the network.
 |---|---|
 | `json` (default) | You render a graph yourself (a notebook, a graph library). `idea-map/v1`: nodes (degree, component, cluster, territory, inbox, promotion), typed edges (type, display `label`, `rationale`, timestamps), named `clusters`, stats, legend. |
 | `graphml` | The user wants Gephi, yEd or Cytoscape. |
-| `mermaid` | Chat-only rendering. Capped at 150 nodes. |
+| `mermaid` | Chat-only rendering. Capped at 150 nodes. Edges carry the display labels; proposals are dashed and end in `?`. |
 
 For `graphml` and `mermaid` the result has two text blocks: a JSON header (stats, legend), then the raw graph text. Unlike html, these three formats include outputs of any status.
 
