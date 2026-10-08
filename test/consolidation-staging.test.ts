@@ -996,3 +996,55 @@ test("retiring an old row and moving its links succeed or fail together (Codex o
   const { rows: links } = await db.query("SELECT target_id FROM link_edge WHERE source_type = 'journal_entry'");
   assert.deepEqual(links.map((l) => l.target_id), [col[0].id]);
 });
+
+test("each pass rebuilds an artifact's shared-entity links, dropping stale ones (Codex on #99)", { skip }, async () => {
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  await db.query("DELETE FROM link_edge WHERE target_type = 'public_artifact' OR source_type = 'public_artifact'");
+  const ids: string[] = [];
+  for (const ref of ["a", "b", "c"]) {
+    const { rows } = await db.query(
+      `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status)
+       VALUES ('default', 'essay', $1, $1, 'archive', $1, 'processed') RETURNING id`,
+      [`entity-test:${ref}`]
+    );
+    ids.push(rows[0].id);
+  }
+  const [a, b, c] = ids;
+  const entity = async (name: string) =>
+    (
+      await db.query(
+        `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name)
+         VALUES ('default', 'concept', $1, $1)
+         ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE SET display_name = EXCLUDED.display_name
+         RETURNING id`,
+        [name]
+      )
+    ).rows[0].id as string;
+  const [e1, e2] = [await entity("entity-test-1"), await entity("entity-test-2")];
+  for (const [artifact, ent] of [[a, e1], [a, e2], [b, e1], [b, e2], [c, e1]]) {
+    await db.query("INSERT INTO public_artifact_entity (public_artifact_id, entity_ref_id) VALUES ($1, $2)", [artifact, ent]);
+  }
+  // Links from an earlier pass on another text: to c (no longer related),
+  // and to b with a stale count. Links into a are someone else's.
+  await db.query(
+    `INSERT INTO link_edge (user_id, source_type, source_id, target_type, target_id, link_type, explanation) VALUES
+       ('default', 'public_artifact', $1, 'public_artifact', $3, 'shared_entities', '3 shared entities'),
+       ('default', 'public_artifact', $1, 'public_artifact', $2, 'shared_entities', '5 shared entities'),
+       ('default', 'public_artifact', $2, 'public_artifact', $1, 'shared_entities', '2 shared entities'),
+       ('default', 'journal_entry', '11111111-1111-1111-1111-111111111111', 'public_artifact', $1, 'echoes_artifact', NULL)`,
+    [a, b, c]
+  );
+
+  assert.equal(await queries.replaceSharedEntityLinks(a, 2), 1);
+  const { rows } = await db.query(
+    `SELECT source_id, target_id, link_type, explanation FROM link_edge
+      WHERE source_id = $1 OR target_id = $1 ORDER BY link_type, source_id`,
+    [a]
+  );
+  const name = (id: string) => (id === a ? "a" : id === b ? "b" : id === c ? "c" : "entry");
+  assert.deepEqual(
+    rows.map((r) => [name(r.source_id), name(r.target_id), r.link_type, r.explanation].join(" ")).sort(),
+    ["a b shared_entities 2 shared entities", "b a shared_entities 2 shared entities", "entry a echoes_artifact "]
+  );
+});

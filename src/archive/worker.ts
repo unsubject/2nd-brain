@@ -97,22 +97,9 @@ async function processOne(): Promise<boolean> {
       );
     }
 
-    // 7. Cross-link artifacts sharing entities
-    const related = await archiveQueries.findArtifactsSharingEntities(
-      artifact.id,
-      2
-    );
-    for (const rel of related) {
-      await archiveQueries.insertLinkEdge(
-        "public_artifact",
-        artifact.id,
-        "public_artifact",
-        rel.other_artifact_id,
-        "shared_entities",
-        null,
-        `${rel.shared_count} shared entities`
-      );
-    }
+    // 7. Cross-link artifacts sharing entities (rebuilt, so nothing from an
+    // earlier pass or an abandoned attempt stays)
+    await archiveQueries.replaceSharedEntityLinks(artifact.id, 2);
 
     // 8. Done: the row can be found, and the rows it replaces (archive
     // consolidation, step 4) leave search.

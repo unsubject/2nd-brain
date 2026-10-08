@@ -258,45 +258,46 @@ export async function markArtifactError(
   );
 }
 
-export async function findArtifactsSharingEntities(
-  artifactId: string,
-  minShared: number = 2
-): Promise<{ other_artifact_id: string; shared_count: number }[]> {
-  const { rows } = await pool.query(
-    `SELECT pae2.public_artifact_id AS other_artifact_id,
-            COUNT(*) AS shared_count
-     FROM public_artifact_entity pae1
-     JOIN public_artifact_entity pae2
-       ON pae1.entity_ref_id = pae2.entity_ref_id
-     WHERE pae1.public_artifact_id = $1
-       AND pae2.public_artifact_id != $1
-       AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
-       AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
-     GROUP BY pae2.public_artifact_id
-     HAVING COUNT(*) >= $2
-     ORDER BY COUNT(*) DESC
-     LIMIT 20`,
-    [artifactId, minShared]
-  );
-  return rows;
-}
-
-export async function insertLinkEdge(
-  sourceType: string,
-  sourceId: string,
-  targetType: string,
-  targetId: string,
-  linkType: string,
-  confidence: number | null,
-  explanation: string | null
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO link_edge
-       (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
-     VALUES ('default', $1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
-    [sourceType, sourceId, targetType, targetId, linkType, confidence, explanation]
-  );
+// This artifact's links to the artifacts sharing at least `minShared` of
+// its salient entities, rebuilt from its current entities: links from an
+// earlier pass (an older text, or an attempt abandoned because the text
+// changed under it) are dropped, not left beside the new ones.
+export async function replaceSharedEntityLinks(artifactId: string, minShared: number = 2): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM link_edge
+        WHERE source_type = 'public_artifact' AND source_id = $1 AND link_type = 'shared_entities'`,
+      [artifactId]
+    );
+    const { rowCount } = await client.query(
+      `INSERT INTO link_edge
+         (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
+       SELECT 'default', 'public_artifact', $1, 'public_artifact', r.other_artifact_id, 'shared_entities',
+              NULL, r.shared_count || ' shared entities'
+         FROM (SELECT pae2.public_artifact_id AS other_artifact_id, COUNT(*) AS shared_count
+                 FROM public_artifact_entity pae1
+                 JOIN public_artifact_entity pae2 ON pae1.entity_ref_id = pae2.entity_ref_id
+                WHERE pae1.public_artifact_id = $1
+                  AND pae2.public_artifact_id != $1
+                  AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
+                  AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
+                GROUP BY pae2.public_artifact_id
+               HAVING COUNT(*) >= $2
+                ORDER BY COUNT(*) DESC
+                LIMIT 20) r
+       ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
+      [artifactId, minShared]
+    );
+    await client.query("COMMIT");
+    return rowCount ?? 0;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Search queries ---
