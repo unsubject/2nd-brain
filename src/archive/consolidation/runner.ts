@@ -5,7 +5,14 @@ import { describeGoogleError } from "../../google/errors";
 import { candidatesStale, emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
 import { emptyLoadStats, loadStale, runLoad, type LoadStats } from "./load/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
-import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun, type CollectorSource } from "./staging";
+import {
+  finishRun,
+  heartbeatRun,
+  RunAlreadyActiveError,
+  startRun,
+  succeededSince,
+  type CollectorSource,
+} from "./staging";
 
 // Set on runs started by the resume sweeper (resume.ts); stored in params.
 export interface ResumeInfo {
@@ -53,10 +60,15 @@ function startFollowUp(req: CollectRequest): void {
 //   those items count, so an item that always fails doesn't start run after
 //   run (it waits for the boot check or a run by hand). A successful
 //   extraction that left every candidate current is followed by matching.
-// - A successful match (new works) is followed by loading.
-// - A successful load is followed by another when the works are not the
-//   ones it read (loadStale): a match that ended while it ran could not
-//   start its own.
+// - A match, whatever its outcome, is followed by another when an
+//   extraction succeeded while it ran: that extraction's own match was
+//   refused, and this one may have read the candidates before it. Else a
+//   successful match (new works) is followed by loading.
+// - A load is followed by another when a match ended while it ran, whose
+//   own load it refused: after a successful load, whenever the works are
+//   not the ones it read (loadStale); after a failed one, only when a match
+//   succeeded while it ran, so a load that always fails doesn't start run
+//   after run.
 export async function nextStep(
   source: CollectorSource,
   succeeded: boolean,
@@ -71,9 +83,10 @@ export async function nextStep(
       if (await candidatesStale(db, succeeded ? undefined : runId)) return { source: "extract" };
       return succeeded ? { source: "match" } : null;
     case "match":
+      if (await succeededSince("extract", runId, db)) return { source: "match" };
       return succeeded ? { source: "load" } : null;
     case "load":
-      return succeeded && (await loadStale(db)) ? { source: "load" } : null;
+      return (succeeded ? await loadStale(db) : await succeededSince("match", runId, db)) ? { source: "load" } : null;
   }
 }
 

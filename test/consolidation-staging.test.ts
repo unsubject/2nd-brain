@@ -1327,3 +1327,108 @@ test("idea links to an old row move to its replacement, keeping a record (Codex 
   assert.deepEqual(byId[second].history, []);
   await db.query("DELETE FROM idea WHERE user_id = 'entity-test-user'");
 });
+
+// The chain collect -> extract -> match -> load (runner.nextStep), one edge
+// at a time. The edges from collections and extraction are tested above.
+
+test("an extraction held back by a live collection starts when that collection ends", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const run = await import("../src/archive/consolidation/extract/run");
+  const gmailRun = await staging.startRun("gmail", { label: "Writing" }, db);
+  const driveRun = await staging.startRun("gdrive", { folderIds: ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl"] }, db);
+  await stageForExtraction();
+
+  // Gmail ends: extraction is due, but Drive is still collecting.
+  await staging.finishRun(gmailRun, "succeeded", {}, null, db);
+  assert.deepEqual(await nextStep("gmail", true, gmailRun, db), { source: "extract" });
+  const refused = await staging.startRun("extract", {}, db).then(
+    () => null,
+    (err: unknown) => err
+  );
+  assert.ok(refused instanceof staging.RunBlockedError);
+  assert.equal(refused.blockedBy, "gdrive");
+
+  // Drive ends, even failed: Gmail's items still lack candidates, so it
+  // starts the extraction Gmail could not.
+  await staging.finishRun(driveRun, "failed", {}, "1 item(s) failed", db);
+  assert.deepEqual(await nextStep("gdrive", false, driveRun, db), { source: "extract" });
+  const extractRun = await staging.startRun("extract", {}, db);
+  await run.runExtraction(run.emptyExtractStats(), async () => {}, () => false, db);
+
+  // A collection starts during the extraction, stages an item the scan has
+  // passed and ends first: its own extraction is refused...
+  const lateRun = await staging.startRun("gmail", { label: "Writing" }, db);
+  await staging.upsertSourceItem(item({ sourceRef: "late", rawText: "遲來的一封信" }), db);
+  await staging.finishRun(lateRun, "succeeded", {}, null, db);
+  assert.deepEqual(await nextStep("gmail", true, lateRun, db), { source: "extract" });
+  const busy = await staging.startRun("extract", {}, db).then(
+    () => null,
+    (err: unknown) => err
+  );
+  assert.ok(busy instanceof staging.RunAlreadyActiveError);
+  assert.ok(!(busy instanceof staging.RunBlockedError));
+  // ...so the extraction runs again when it ends, before any matching.
+  await staging.finishRun(extractRun, "succeeded", {}, null, db);
+  assert.deepEqual(await nextStep("extract", true, extractRun, db), { source: "extract" });
+});
+
+test("the step after a match: load, or match again when an extraction ended while it ran", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  // The extraction that started these matches ended before they started.
+  await endedRun("extract", "succeeded");
+  const matched = await endedRun("match", "succeeded");
+  const failed = await endedRun("match", "failed");
+  assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
+  assert.equal(await nextStep("match", false, failed, db), null);
+
+  // A failed extraction while they ran started no match: nothing changes.
+  await endedRun("extract", "failed");
+  assert.deepEqual(await nextStep("match", true, matched, db), { source: "load" });
+  assert.equal(await nextStep("match", false, failed, db), null);
+
+  // An extraction that succeeded while they ran had its own match refused,
+  // and they may have read the candidates before it: match again before
+  // loading, whatever their outcome.
+  await endedRun("extract", "succeeded");
+  assert.deepEqual(await nextStep("match", true, matched, db), { source: "match" });
+  assert.deepEqual(await nextStep("match", false, failed, db), { source: "match" });
+  // The match started after it loads.
+  assert.deepEqual(await nextStep("match", true, await endedRun("match", "succeeded"), db), { source: "load" });
+});
+
+test("the step after a load: another when a match ended while it ran", { skip }, async () => {
+  const { nextStep } = await import("../src/archive/consolidation/runner");
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  const loadNow = async () => {
+    const runId = await staging.startRun("load", {}, db);
+    const stats = load.emptyLoadStats();
+    await load.runLoad(stats, async () => {}, () => false, db);
+    await staging.finishRun(runId, "succeeded", stats, null, db);
+    return runId;
+  };
+
+  // It read the current works: nothing follows.
+  const loaded = await loadNow();
+  assert.equal(await nextStep("load", true, loaded, db), null);
+  // A match wrote new works after the load read them: load again.
+  await db.query("UPDATE archive_work SET matched_at = clock_timestamp()");
+  assert.deepEqual(await nextStep("load", true, loaded, db), { source: "load" });
+  assert.equal(await nextStep("load", true, await loadNow(), db), null);
+
+  // A failed load leaves the works unloaded, but doesn't start run after
+  // run: the match before it doesn't count...
+  await endedRun("match", "succeeded");
+  const failed = await endedRun("load", "failed");
+  await db.query("UPDATE archive_work SET matched_at = clock_timestamp()");
+  assert.equal(await load.loadStale(db), true);
+  assert.equal(await nextStep("load", false, failed, db), null);
+  // ...one that succeeded while it ran, whose own load it refused, does.
+  await endedRun("match", "succeeded");
+  assert.deepEqual(await nextStep("load", false, failed, db), { source: "load" });
+  // A failed match while it ran started no load.
+  const failedAgain = await endedRun("load", "failed");
+  await endedRun("match", "failed");
+  assert.equal(await nextStep("load", false, failedAgain, db), null);
+});

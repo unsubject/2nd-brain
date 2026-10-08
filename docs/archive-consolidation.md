@@ -210,6 +210,9 @@ staged item with a current candidate (and on boot when
 the works are older than the candidates or than `MATCHER_VERSION` in
 `match/run.ts`). It reads the candidates that extraction kept or sent to
 review, takes a few seconds, and rebuilds every work in one transaction.
+An extraction that succeeds while a match runs can't start its own (one
+run per step), so a match, whatever its outcome, runs again when one did;
+otherwise a successful match starts a load (step 4).
 The run's counts appear in the logs (`[consolidation] match run …
 finished: {…}`): `works`, `byStatus`, `bySize` (works with 1, 2, 3–5, 6–10,
 11+ members) and the five `largest` works by title; a very large work would
@@ -270,7 +273,9 @@ nothing stays searchable, flagged.
 A load runs by itself after every successful match, and on boot when no
 load by the current `LOADER_VERSION` has read the current works (an empty
 set of works included). A load that finds the works changed while it ran (a
-match finished meanwhile, whose own load it blocked) loads again. To start one by hand:
+match finished meanwhile, whose own load it blocked) loads again; after a
+failed load, only when a match succeeded while it ran, so a load that keeps
+failing waits for the boot check or a run by hand. To start one by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/load" -H "Authorization: Bearer $ARCHIVE_API_KEY"
