@@ -22,7 +22,7 @@ describe.skipIf(!TEST_DB)('capture fixes', () => {
     expect(keyless.deduplicated).toBe(false);
   });
 
-  it('a resend that differs in any other captured field is a new idea, and the key goes with it', async () => {
+  it('a resend that differs in any other captured content is a new idea, and the key goes with it', async () => {
     const full = {
       title: 'Every field',
       thoughts: 'same thought',
@@ -37,6 +37,18 @@ describe.skipIf(!TEST_DB)('capture fixes', () => {
     // An exact resend under a regenerated key is still a retry.
     const again = await ok('park_idea', { ...full, idempotency_key: 'k0-again' });
     expect(again).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+    // Tags are compared as a case-insensitive set, so a regenerated call
+    // that reorders or re-cases them is still a retry.
+    const reordered = await ok('park_idea', { ...full, tags: ['BETA', 'alpha'], idempotency_key: 'k0-reordered' });
+    expect(reordered).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+    // captured_via (which client and model) is provenance, not compared:
+    // the first capture's is kept.
+    const otherClient = await ok('park_idea', {
+      ...full,
+      captured_via: { client: 'another-client', model: 'another-model' },
+      idempotency_key: 'k0-other-client',
+    });
+    expect(otherClient).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
 
     const variants: Record<string, unknown>[] = [
       { encountered_where: 'a book' },
@@ -62,7 +74,7 @@ describe.skipIf(!TEST_DB)('capture fixes', () => {
     const keys = await admin`
       SELECT source_external_id FROM idea_source WHERE idea_id = ${first.idea_id} ORDER BY source_external_id
     `;
-    expect(keys.map((r) => r.source_external_id)).toEqual(['k0', 'k0-again']);
+    expect(keys.map((r) => r.source_external_id)).toEqual(['k0', 'k0-again', 'k0-other-client', 'k0-reordered']);
     const [stored] = await admin`SELECT framing, tags FROM idea WHERE id = ${keyless.idea_id}`;
     expect(stored).toMatchObject({ framing: 'Keyless framing', tags: ['alpha', 'beta'] });
 

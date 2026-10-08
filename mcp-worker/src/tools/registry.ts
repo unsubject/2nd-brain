@@ -524,7 +524,7 @@ const definitions: ToolDefinition[] = [
           type: 'string',
           minLength: 1,
           maxLength: 200,
-          description: 'Any unique string; makes retries safe (a resend within 10 minutes with the same title and every other field identical is also recognised)',
+          description: 'Any unique string; makes retries safe (a resend within 10 minutes with the same title and the same content in every other field but captured_via, tags in any order, is also recognised)',
         },
         captured_via: {
           type: 'object',
