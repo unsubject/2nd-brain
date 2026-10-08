@@ -166,9 +166,10 @@ describe('serialisers', () => {
     expect(mmd).toContain('#quot;chips#quot;');
     expect(mmd).not.toMatch(/Line one\n/);
     expect(mmd).toContain('…');
-    expect(mmd).toMatch(/n\d+ ---\|tension_with\| n\d+/);
-    expect(mmd).toMatch(/n\d+ -->\|part_of\| n\d+/);
-    expect(mmd).toMatch(/n\d+ -\.->\|part_of\?\| n\d+/);
+    expect(mmd).toMatch(/n\d+ ---\|contradicts\| n\d+/);
+    expect(mmd).toMatch(/n\d+ -->\|part-of\| n\d+/);
+    expect(mmd).toMatch(/n\d+ -\.->\|part-of\?\| n\d+/);
+    expect(mmd).not.toMatch(/tension_with|part_of/);
     expect(mmd).toMatch(/n\d+\{\{"A synthesis"\}\}/);
     expect(mmd).toContain('classDef frontier');
   });
@@ -253,8 +254,11 @@ describe('clusters (Louvain) and the additive v1 fields', () => {
     expect(xml).toContain('<data key="e_label">contradicts</data>');
     expect(xml).toContain('<data key="n_inbox">true</data>');
     expect(xml).not.toContain('>null<');
-    // Mermaid keeps the stored type names.
-    expect(toMermaid(m)).toMatch(/\|tension_with\|/);
+    // Mermaid shows the display labels too, never the stored type names.
+    const mmd = toMermaid(m);
+    expect(mmd).toMatch(/ ---\|contradicts\| /);
+    expect(mmd).toMatch(/ -\.->\|mechanism-for\?\| /);
+    expect(mmd).not.toMatch(/tension_with|mechanism_for/);
   });
 });
 

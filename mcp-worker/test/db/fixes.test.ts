@@ -22,6 +22,68 @@ describe.skipIf(!TEST_DB)('capture fixes', () => {
     expect(keyless.deduplicated).toBe(false);
   });
 
+  it('a resend that differs in any other captured content is a new idea, and the key goes with it', async () => {
+    const full = {
+      title: 'Every field',
+      thoughts: 'same thought',
+      why_interesting: 'same why',
+      encountered_where: 'a podcast',
+      source: { url: 'https://example.com/a', title: 'Source', excerpt: 'An excerpt' },
+      framing: 'A framing',
+      tags: ['alpha', 'beta'],
+      captured_at: '2026-03-01T10:00:00Z',
+    };
+    const first = await ok('park_idea', { ...full, idempotency_key: 'k0' });
+    // An exact resend under a regenerated key is still a retry.
+    const again = await ok('park_idea', { ...full, idempotency_key: 'k0-again' });
+    expect(again).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+    // Tags are compared as a case-insensitive set, so a regenerated call
+    // that reorders or re-cases them is still a retry.
+    const reordered = await ok('park_idea', { ...full, tags: ['BETA', 'alpha'], idempotency_key: 'k0-reordered' });
+    expect(reordered).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+    // captured_via (which client and model) is provenance, not compared:
+    // the first capture's is kept.
+    const otherClient = await ok('park_idea', {
+      ...full,
+      captured_via: { client: 'another-client', model: 'another-model' },
+      idempotency_key: 'k0-other-client',
+    });
+    expect(otherClient).toMatchObject({ idea_id: first.idea_id, deduplicated: true });
+
+    const variants: Record<string, unknown>[] = [
+      { encountered_where: 'a book' },
+      { source: { ...full.source, title: 'Another source' } },
+      { source: { ...full.source, excerpt: 'Another excerpt' } },
+      { framing: 'Another framing' },
+      { tags: ['alpha'] },
+      { captured_at: '2026-03-02T10:00:00Z' },
+      { captured_at: undefined },
+    ];
+    const ids = new Set<string>([first.idea_id]);
+    for (const [i, v] of variants.entries()) {
+      const r = await ok('park_idea', { ...full, ...v, idempotency_key: `k${i + 1}` });
+      expect(r.deduplicated, JSON.stringify(v)).toBe(false);
+      expect(ids.has(r.idea_id), JSON.stringify(v)).toBe(false);
+      ids.add(r.idea_id);
+    }
+    const keyless = await ok('park_idea', { ...full, framing: 'Keyless framing' });
+    expect(keyless.deduplicated).toBe(false);
+    expect(ids.has(keyless.idea_id)).toBe(false);
+
+    // Only the exact resend's key was attached to the first idea.
+    const keys = await admin`
+      SELECT source_external_id FROM idea_source WHERE idea_id = ${first.idea_id} ORDER BY source_external_id
+    `;
+    expect(keys.map((r) => r.source_external_id)).toEqual(['k0', 'k0-again', 'k0-other-client', 'k0-reordered']);
+    const [stored] = await admin`SELECT framing, tags FROM idea WHERE id = ${keyless.idea_id}`;
+    expect(stored).toMatchObject({ framing: 'Keyless framing', tags: ['alpha', 'beta'] });
+
+    // Without captured_at, an exact keyless resend still dedups.
+    const plain = await ok('park_idea', { title: 'Plain', thoughts: 'x', tags: ['t'] });
+    const plainAgain = await ok('park_idea', { title: 'Plain', thoughts: 'x', tags: ['t'] });
+    expect(plainAgain).toMatchObject({ idea_id: plain.idea_id, deduplicated: true });
+  });
+
   it('update_idea rejects a blank title and accepts imported-length fields', async () => {
     const id = await seedIdea('Editable');
     const blank = await callTool('update_idea', { id, title: '   ' });
@@ -209,6 +271,30 @@ describe.skipIf(!TEST_DB)('gardening fixes', () => {
     expect(p2.paging.next_offset).toBeNull();
     expect(p2.candidates).toHaveLength(2);
     expect(p2.candidates[0].artifact.id).toBe(x);
+  });
+
+  it('outputs mode keeps paging past a page with no candidates', async () => {
+    const x = await seedArtifact('Essay', axis(0));
+    // The 40 newest ideas are orthogonal to the essay; the 2 oldest match it.
+    for (let i = 0; i < 40; i++) {
+      const id = await seedIdea(`Far ${String(i).padStart(2, '0')}`, {
+        captured_at: `2026-02-${String((i % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      });
+      await setEmbedding(id, axis(10 + i));
+    }
+    for (let i = 0; i < 2; i++) {
+      const id = await seedIdea(`Near ${i}`, { captured_at: `2026-01-0${i + 1}T00:00:00Z` });
+      await setEmbedding(id, mix(0, 3 + i, 0.8 - i * 0.1));
+    }
+    const p1 = await ok('garden_ideas', { mode: 'outputs' });
+    expect(p1.candidates).toEqual([]);
+    expect(p1.paging.next_offset).toBe(40);
+    const p2 = await ok('garden_ideas', { mode: 'outputs', offset: p1.paging.next_offset });
+    expect(p2.candidates.map((c: any) => [c.a.title, c.artifact.id])).toEqual([
+      ['Near 0', x],
+      ['Near 1', x],
+    ]);
+    expect(p2.paging.next_offset).toBeNull();
   });
 
   it('band mode with a focus idea and near mode via nearest neighbours', async () => {

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { admin, BASE, env, form, resetAuthData, rpcRaw, TEST_DB, TOKEN, workerFetch } from './helpers';
 import { pkceS256 } from '../../src/auth/crypto';
 import { hashToken } from '../../src/auth/tokens';
+import { REFUSED_LOGS_PER_MINUTE } from '../../src/oauth/register';
 
 afterAll(() => admin.end({ timeout: 5 }));
 
@@ -416,6 +417,22 @@ describe.skipIf(!TEST_DB)('OAuth: tokens', () => {
       const line = warn.mock.calls.map((c) => c.join(' ')).find((l) => l.includes('[register] refused'));
       expect(line).toContain('https://unknown-agent.example/oauth/cb');
       expect(line).toContain('Unknown Agent');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('throttles the refusal log, so a flood of bad registrations cannot bury it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const flood = 3 * REFUSED_LOGS_PER_MINUTE;
+      for (let i = 0; i < flood; i++) {
+        expect((await register([`https://junk-${i}.example/cb`], 'Junk')).status).toBe(400);
+      }
+      const lines = warn.mock.calls.filter((c) => String(c[0]).includes('[register] refused'));
+      // One window, or two if the flood straddles a minute boundary.
+      expect(lines.length).toBeLessThanOrEqual(2 * REFUSED_LOGS_PER_MINUTE);
+      expect(await admin`SELECT 1 FROM mcp_client`).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }

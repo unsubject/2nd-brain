@@ -373,32 +373,53 @@ async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
   });
 }
 
-// Core link-generation: throws on any failure (DB error, OpenAI failure
-// outside the entity-extraction branch, etc). Callers in the live worker
-// path use generateLinks() which catches and logs; the backfill script
-// uses this directly so it can count failures and exit non-zero.
-export async function generateLinksStrict(entry: LinkableEntry): Promise<void> {
+// Core link-generation. The matchers run side by side and the links of
+// every one that succeeded are written; if any failed (a DB error, say), or
+// entity extraction failed (so the entity-driven matchers found nothing),
+// this then throws, naming them. Callers in the live worker path use
+// generateLinks() which catches and logs; the backfill script uses this
+// directly so it can count failures and exit non-zero. insertLinks skips
+// links that already exist, so re-running an entry is safe.
+export async function generateLinksStrict(
+  entry: LinkableEntry,
+  extractEntities: typeof extractEntitiesFromJournal = extractEntitiesFromJournal
+): Promise<void> {
   // One LLM call up front; reused by every entity-driven matcher.
   let entities: ExtractedEntity[] = [];
+  const failed: string[] = [];
+  const reasons: unknown[] = [];
   try {
-    entities = await extractEntitiesFromJournal(entry.full_text, entry.tags);
+    entities = await extractEntities(entry.full_text, entry.tags);
   } catch (err) {
     // Entity extraction failure shouldn't kill embedding-based linkers —
-    // log and proceed with an empty entity list.
+    // log and proceed with an empty entity list. It is still reported at
+    // the end: the entry is missing its entity-driven links.
+    failed.push("entity extraction");
+    reasons.push(err);
     console.error(
       `[linker] entity extraction failed for entry ${entry.id}, continuing without entity-driven links:`,
       err
     );
   }
 
-  const results = await Promise.all([
-    linkMentionedContacts(entry, entities),
-    linkNearbyCalendarEvents(entry, entities),
-    linkMentionedEntities(entry, entities),
-    linkRelatedTasks(entry),
-    linkRelatedArtifacts(entry),
-  ]);
-  const links = results.flat();
+  const matchers: Array<[string, Promise<LinkRow[]>]> = [
+    ["contacts", linkMentionedContacts(entry, entities)],
+    ["calendar", linkNearbyCalendarEvents(entry, entities)],
+    ["entities", linkMentionedEntities(entry, entities)],
+    ["tasks", linkRelatedTasks(entry)],
+    ["artifacts", linkRelatedArtifacts(entry)],
+  ];
+  // allSettled, not all: one failing matcher must not discard the links
+  // the others found.
+  const settled = await Promise.allSettled(matchers.map(([, run]) => run));
+  const links: LinkRow[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === "fulfilled") links.push(...result.value);
+    else {
+      failed.push(`${matchers[i][0]} matcher`);
+      reasons.push(result.reason);
+    }
+  });
   await insertLinks(links);
   if (links.length > 0) {
     const byType: Record<string, number> = {};
@@ -410,6 +431,12 @@ export async function generateLinksStrict(entry: LinkableEntry): Promise<void> {
       .join(", ");
     console.log(
       `[linker] entry ${entry.id}: ${links.length} link(s) written (${breakdown})`
+    );
+  }
+  if (failed.length > 0) {
+    throw new AggregateError(
+      reasons,
+      `[linker] entry ${entry.id}: ${failed.join(", ")} failed; the links found were written`
     );
   }
 }

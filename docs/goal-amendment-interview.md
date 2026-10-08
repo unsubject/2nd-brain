@@ -104,7 +104,9 @@ Before drafting a `new`:
 - Verify the target domain has fewer than 3 active goals (`list_goals(constitution_domain_id=<id>)` and count). The DB enforces the cap with a trigger; the proposal will succeed but `commit_goal_amendment` will fail if the cap is reached at commit time.
 - Default to `amend` over `new` when a closely-related active goal exists in the same domain.
 
-For `synthesize`: all source goals must be active AND share the same `constitution_domain_id`. Cross-domain synthesis is a constitution-level concern — do that via constitution amendment first.
+For `synthesize`: all source goals must be active AND share the same `constitution_domain_id`, and that domain must itself be active (retiring or merging a domain leaves its goals active, but nothing new goes under it). Cross-domain synthesis is a constitution-level concern — do that via constitution amendment first.
+
+`propose_goal_amendment` checks these rules, and `commit_goal_amendment` checks again after the cooldown: a `new` or `synthesize` whose domain was retired or merged in the meantime, or a `synthesize` whose source goal was achieved or abandoned in the meantime, is refused (`invalid_state`) and nothing changes.
 
 For `amend`: `constitution_domain_id` is immutable. To re-parent a goal, `abandon` + `new` under the new domain.
 
