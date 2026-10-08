@@ -329,6 +329,7 @@ async function linkRelatedArtifacts(entry: LinkableEntry): Promise<LinkRow[]> {
      JOIN public_artifact a ON a.id = c.public_artifact_id
      WHERE c.embedding IS NOT NULL
        AND a.processing_status = 'processed'
+       AND a.status = 'published'
      ORDER BY c.embedding <=> $1::vector
      LIMIT 30`,
     [vectorStr]

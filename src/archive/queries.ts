@@ -101,8 +101,14 @@ export async function findPendingArtifact(): Promise<{
   return rows[0] || null;
 }
 
+// Saved only if the row still holds `claimedRawSource`, the text the worker
+// processed: a re-sync that changed the text meanwhile (and queued the row
+// again) must not be overwritten with results for the old text. Returns
+// whether it saved. The row stays 'processing' until finishArtifactProcessing,
+// once its chunks and entities are in too.
 export async function saveArtifactProcessingResult(
   id: string,
+  claimedRawSource: string,
   params: {
     cleanText: string;
     summary: string;
@@ -112,9 +118,9 @@ export async function saveArtifactProcessingResult(
     embedding: number[];
     embeddingModel: string;
   }
-): Promise<void> {
+): Promise<boolean> {
   const vectorStr = `[${params.embedding.join(",")}]`;
-  await pool.query(
+  const { rowCount } = await pool.query(
     `UPDATE public_artifact
      SET clean_text = $2,
          summary = $3,
@@ -123,10 +129,8 @@ export async function saveArtifactProcessingResult(
          language = $6,
          embedding = $7::vector,
          embedding_model = $8,
-         processing_status = 'processed',
-         last_error = NULL,
          updated_at = now()
-     WHERE id = $1`,
+     WHERE id = $1 AND raw_source = $9`,
     [
       id,
       params.cleanText,
@@ -136,8 +140,10 @@ export async function saveArtifactProcessingResult(
       params.language,
       vectorStr,
       params.embeddingModel,
+      claimedRawSource,
     ]
   );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function insertChunks(
@@ -220,59 +226,78 @@ export async function clearArtifactEntities(artifactId: string): Promise<void> {
   );
 }
 
+// The last step: the row is complete and can be found. Like the save, only
+// for the text the worker claimed.
+export async function finishArtifactProcessing(id: string, claimedRawSource: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE public_artifact
+     SET processing_status = 'processed',
+         last_error = NULL,
+         updated_at = now()
+     WHERE id = $1 AND raw_source = $2`,
+    [id, claimedRawSource]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// With `claimedRawSource`, recorded only if the row still holds that text:
+// a failed attempt on an old text must not mark the new one, queued
+// meanwhile, as failed.
 export async function markArtifactError(
   id: string,
-  errorMessage: string
+  errorMessage: string,
+  claimedRawSource: string | null = null
 ): Promise<void> {
   await pool.query(
     `UPDATE public_artifact
      SET processing_status = 'error',
          last_error = $2,
          updated_at = now()
-     WHERE id = $1`,
-    [id, errorMessage]
+     WHERE id = $1 AND ($3::text IS NULL OR raw_source = $3)`,
+    [id, errorMessage, claimedRawSource]
   );
 }
 
-export async function findArtifactsSharingEntities(
-  artifactId: string,
-  minShared: number = 2
-): Promise<{ other_artifact_id: string; shared_count: number }[]> {
-  const { rows } = await pool.query(
-    `SELECT pae2.public_artifact_id AS other_artifact_id,
-            COUNT(*) AS shared_count
-     FROM public_artifact_entity pae1
-     JOIN public_artifact_entity pae2
-       ON pae1.entity_ref_id = pae2.entity_ref_id
-     WHERE pae1.public_artifact_id = $1
-       AND pae2.public_artifact_id != $1
-       AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
-       AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
-     GROUP BY pae2.public_artifact_id
-     HAVING COUNT(*) >= $2
-     ORDER BY COUNT(*) DESC
-     LIMIT 20`,
-    [artifactId, minShared]
-  );
-  return rows;
-}
-
-export async function insertLinkEdge(
-  sourceType: string,
-  sourceId: string,
-  targetType: string,
-  targetId: string,
-  linkType: string,
-  confidence: number | null,
-  explanation: string | null
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO link_edge
-       (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
-     VALUES ('default', $1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
-    [sourceType, sourceId, targetType, targetId, linkType, confidence, explanation]
-  );
+// This artifact's links to the artifacts sharing at least `minShared` of
+// its salient entities, rebuilt from its current entities: links from an
+// earlier pass (an older text, or an attempt abandoned because the text
+// changed under it) are dropped, not left beside the new ones.
+export async function replaceSharedEntityLinks(artifactId: string, minShared: number = 2): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM link_edge
+        WHERE source_type = 'public_artifact' AND source_id = $1 AND link_type = 'shared_entities'`,
+      [artifactId]
+    );
+    const { rowCount } = await client.query(
+      `INSERT INTO link_edge
+         (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
+       SELECT 'default', 'public_artifact', $1, 'public_artifact', r.other_artifact_id, 'shared_entities',
+              NULL, r.shared_count || ' shared entities'
+         FROM (SELECT pae2.public_artifact_id AS other_artifact_id, COUNT(*) AS shared_count
+                 FROM public_artifact_entity pae1
+                 JOIN public_artifact_entity pae2 ON pae1.entity_ref_id = pae2.entity_ref_id
+                WHERE pae1.public_artifact_id = $1
+                  AND pae2.public_artifact_id != $1
+                  AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
+                  AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
+                GROUP BY pae2.public_artifact_id
+               HAVING COUNT(*) >= $2
+                ORDER BY COUNT(*) DESC
+                LIMIT 20) r
+       ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
+      [artifactId, minShared]
+    );
+    await client.query("COMMIT");
+    return rowCount ?? 0;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Search queries ---
@@ -298,10 +323,12 @@ export async function vectorSearchChunks(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
   }[]
 > {
   const vectorStr = `[${queryEmbedding.join(",")}]`;
-  const conditions: string[] = ["pa.processing_status = 'processed'"];
+  // Rows another has replaced (archive consolidation) are left out.
+  const conditions: string[] = ["pa.processing_status = 'processed'", "pa.status = 'published'"];
   const params: unknown[] = [vectorStr, limit];
   let paramIdx = 3;
 
@@ -331,7 +358,7 @@ export async function vectorSearchChunks(
     `SELECT c.id AS chunk_id, pa.id AS artifact_id,
             c.chunk_text, c.heading_path,
             1 - (c.embedding <=> $1::vector) AS similarity,
-            pa.title, pa.type, pa.published_at, pa.tags, pa.summary
+            pa.title, pa.type, pa.published_at, pa.tags, pa.summary, pa.flag
      FROM public_artifact_chunk c
      JOIN public_artifact pa ON pa.id = c.public_artifact_id
      WHERE ${where}
@@ -364,6 +391,7 @@ export async function bm25SearchChunks(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
   }[]
 > {
   const tsQuery = query
@@ -375,7 +403,8 @@ export async function bm25SearchChunks(
 
   if (!tsQuery) return [];
 
-  const conditions: string[] = ["pa.processing_status = 'processed'"];
+  // Rows another has replaced (archive consolidation) are left out.
+  const conditions: string[] = ["pa.processing_status = 'processed'", "pa.status = 'published'"];
   const params: unknown[] = [tsQuery, limit];
   let paramIdx = 3;
 
@@ -405,7 +434,7 @@ export async function bm25SearchChunks(
     `SELECT c.id AS chunk_id, pa.id AS artifact_id,
             c.chunk_text, c.heading_path,
             ts_rank(c.fulltext_tsv, to_tsquery('english', $1)) AS rank,
-            pa.title, pa.type, pa.published_at, pa.tags, pa.summary
+            pa.title, pa.type, pa.published_at, pa.tags, pa.summary, pa.flag
      FROM public_artifact_chunk c
      JOIN public_artifact pa ON pa.id = c.public_artifact_id
      WHERE ${where}
@@ -428,6 +457,7 @@ export async function graphSearchArtifacts(
     published_at: Date | null;
     tags: string[] | null;
     summary: string | null;
+    flag: string | null;
     entity_count: number;
   }[]
 > {
@@ -435,12 +465,13 @@ export async function graphSearchArtifacts(
 
   const { rows } = await pool.query(
     `SELECT pa.id AS artifact_id, pa.title, pa.type,
-            pa.published_at, pa.tags, pa.summary,
+            pa.published_at, pa.tags, pa.summary, pa.flag,
             COUNT(DISTINCT pae.entity_ref_id) AS entity_count
      FROM public_artifact_entity pae
      JOIN public_artifact pa ON pa.id = pae.public_artifact_id
      WHERE pae.entity_ref_id = ANY($1)
        AND pa.processing_status = 'processed'
+       AND pa.status = 'published'
      GROUP BY pa.id
      ORDER BY entity_count DESC
      LIMIT $2`,
