@@ -204,12 +204,14 @@ Drive draft joins its work, but a paragraph quoted in another essay does
 not. Likely pairs come from sampled shingles (the same 1-in-8 slice of
 hashes in every text, so a short copy's samples are all in the long text's
 samples, which a containment screen needs; banded MinHash, used at first,
-missed many short copies). Sampled shingles in more than 50 texts (stock
-phrases) aren't counted; a text the screen can't vouch for (fewer than 32
-ordinary samples, or more than 40% of its samples that common, as with a
-piece in over 50 copies or a widely quoted passage) is checked against
-every text of a size it could match. Each pair is then checked exactly,
-and pairs chain into works.
+missed many short copies). Pairs are found through shared samples that
+are in at most 50 texts, then screened on all their shared samples; a
+text the index can't vouch for (fewer than 32 ordinary samples, or more
+than 40% of its samples in over 50 texts, as with a piece in many copies
+or a widely quoted passage) is checked against every text of a size it
+could match. A pair at the 60% limit is then missed only by sampling
+noise (about 3 in 100,000). Each pair is checked exactly, and pairs chain
+into works.
 
 Each work's canonical text, in order: the latest version emailed to a known
 outlet (Simon's decision: the last version he sent wins, not the editor's

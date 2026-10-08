@@ -50,18 +50,21 @@ function mix(x: number): number {
 // fully contained copies.) The screen is generous; overlap() decides.
 const SAMPLE = 8;
 // A sampled shingle in more texts than this is common: mostly a stock
-// phrase ("香港政府"), whose pairs would be quadratic to count and say
-// little. The screen counts only the other (ordinary) samples.
+// phrase ("香港政府"). Its texts aren't paired with each other (quadratic,
+// and it says little); a pair found through an ordinary sample then counts
+// its common samples too, so the screen judges all shared samples.
 const COMMON = 50;
 const MIN_SHARED = 0.3;
-// The screen can't vouch for a text with fewer ordinary samples than
-// MIN_SAMPLES (too short: a 50-character body can have none, and at 9 a
-// pair at 64% containment can share only 2), nor for one whose samples are
-// more than MAX_COMMON common: a 60% overlap made of common shingles
-// leaves almost nothing to count (a piece with over 50 copies, or text the
-// archive quotes widely). Such a text is checked against every text of a
-// size it could be the same piece as. Otherwise a pair at the 60%
-// containment limit falls under the screen with p ≈ 3e-5 (32 samples).
+// Pairs are found only through shared ordinary samples, so the index can't
+// vouch for a text with fewer of them than MIN_SAMPLES (too short: a
+// 50-character body can have none), nor for one whose samples are more than
+// MAX_COMMON common (a piece with over 50 copies, or a passage the archive
+// quotes widely, can share nothing ordinary). Such a text is checked against
+// every text of a size it could be the same piece as. For the rest, a pair
+// at the 60% containment limit is missed only by sampling noise: with 32
+// samples, p ≈ 3e-5. (Checking every pair exactly took over two minutes for
+// 4,300 texts; a 25% cutoff sent most texts of a stock-phrase-heavy corpus
+// to the fallback, 5.7M checks.)
 const MIN_SAMPLES = 32;
 const MAX_COMMON = 0.4;
 const ID_SPACE = 65536;
@@ -84,9 +87,11 @@ export function candidatePairs(sets: Uint32Array[]): [number, number][] {
     for (const h of set) if (sampled(h)) entries.push(h * ID_SPACE + i);
   });
   const packed = Float64Array.from(entries).sort();
-  // Ordinary and common samples per text, and ordinary samples shared per pair.
+  // Ordinary and common samples per text (the common ones listed, in hash
+  // order), and ordinary samples shared per pair.
   const rare = new Uint32Array(sets.length);
   const common = new Uint32Array(sets.length);
+  const commonOf: number[][] = sets.map(() => []);
   const shared = new Map<number, number>();
   for (let start = 0; start < packed.length; ) {
     const hash = Math.floor(packed[start] / ID_SPACE);
@@ -97,6 +102,7 @@ export function candidatePairs(sets: Uint32Array[]): [number, number][] {
       const i = packed[x] % ID_SPACE;
       if (isCommon) {
         common[i]++;
+        commonOf[i].push(hash);
         continue;
       }
       rare[i]++;
@@ -105,11 +111,14 @@ export function candidatePairs(sets: Uint32Array[]): [number, number][] {
     start = end;
   }
 
+  const commonSets = commonOf.map((list) => Uint32Array.from(list));
   const keys = new Set<number>();
-  for (const [key, count] of shared) {
+  for (const [key, ordinary] of shared) {
     const i = Math.floor(key / ID_SPACE);
     const j = key % ID_SPACE;
-    if (count >= Math.max(1, Math.ceil(MIN_SHARED * Math.min(rare[i], rare[j])))) keys.add(key);
+    const all = ordinary + intersection(commonSets[i], commonSets[j]);
+    const samples = Math.min(rare[i] + common[i], rare[j] + common[j]);
+    if (all >= Math.max(1, Math.ceil(MIN_SHARED * samples))) keys.add(key);
   }
 
   // Texts the screen can't vouch for: every text within the size ratio

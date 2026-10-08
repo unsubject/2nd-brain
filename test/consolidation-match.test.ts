@@ -95,11 +95,14 @@ test("a short pair with too few samples for the screen is still checked (Codex o
   assert.equal(matchCandidates([cand({ bodyText: a }), cand({ bodyText: b })]).works.length, 1);
 });
 
-// Sampled shingle hashes, for building index cases directly.
+// Sampled and unsampled shingle hashes, for building index cases directly.
 const SAMPLED: number[] = [];
-for (let h = 1; SAMPLED.length < 30000; h++) if (sampled(h)) SAMPLED.push(h);
+const UNSAMPLED: number[] = [];
+for (let h = 1; SAMPLED.length < 30000 || UNSAMPLED.length < 2000; h++) (sampled(h) ? SAMPLED : UNSAMPLED).push(h);
 let nextSampled = 0;
+let nextUnsampled = 0;
 const fresh = (n: number) => SAMPLED.slice(nextSampled, (nextSampled += n));
+const unsampled = (n: number) => UNSAMPLED.slice(nextUnsampled, (nextUnsampled += n));
 const set = (...parts: number[][]) => Uint32Array.from(parts.flat()).sort();
 const paired = (pairs: [number, number][], i: number, j: number) => pairs.some(([a, b]) => a === i && b === j);
 
@@ -112,6 +115,21 @@ test("a pair whose shared samples are all common is still checked (Codex on #98)
   const sets = [...earlier, set(pool), set(pool)];
   assert.ok(samePiece(overlap(sets[100], sets[101])));
   assert.ok(paired(candidatePairs(sets), 100, 101));
+});
+
+test("the screen counts common shared samples too (Codex on #98)", () => {
+  // Codex's case: 100 shingles each, 60 shared; each text has 20 shared
+  // common samples and 32 ordinary ones of which only 9 are shared (under
+  // 30% of 32), and 38.5% of its samples common (under the fallback's 40%).
+  const common = fresh(20);
+  const ordinaryShared = fresh(9);
+  const unsampledShared = unsampled(31);
+  const version = () => set(common, ordinaryShared, fresh(23), unsampledShared, unsampled(17));
+  const holders = Array.from({ length: 49 }, () => set(common, fresh(200)));
+  const sets = [version(), version(), ...holders];
+  assert.equal(overlap(sets[0], sets[1]).containment, 0.6);
+  assert.ok(samePiece(overlap(sets[0], sets[1])));
+  assert.ok(paired(candidatePairs(sets), 0, 1));
 });
 
 test("two versions whose shared part the archive quotes widely are still checked", () => {
