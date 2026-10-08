@@ -285,8 +285,9 @@ What a load writes, in one transaction:
 
 Search leaves out superseded rows: the `/archive/search` route and the
 calendar/task linker filter on `status = 'published'`, as the MCP tools
-already did. The `/archive/search` route also returns `flag`, so a reader
-can tell a confirmed piece from one still to check. The status
+already did. The `/archive/search` route and the MCP `archive_search_text`
+tool also return `flag`, so a reader can tell a confirmed piece from one
+still to check. The status
 route lists `public_artifact` rows by source, status, flag and processing
 state; the run log gives works, rows inserted / changed / unchanged,
 `flaggedReview`, `retired` (archive rows replaced), and for the old rows
