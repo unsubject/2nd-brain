@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RateLimiter, isRateLimitError, unlimited } from "../src/archive/consolidation/ratelimit";
+import { driveRateLimiter, emptyDriveStats, listTree } from "../src/archive/consolidation/drive";
 
 // The error the first Gmail run hit, shaped like a GaxiosError.
 const quota = () =>
@@ -148,6 +149,85 @@ test("RateLimiter counts one pause when several in-flight calls hit the same lim
   assert.deepEqual(await Promise.all([a, b]), ["ok", "ok"]);
   assert.deepEqual(pauses, [1000]);
   assert.equal(limiter.currentIntervalMs, 200);
+});
+
+test("RateLimiter with no pace takes limitedIntervalMs on the first limit, then doubles", async () => {
+  const time = fakeTime();
+  const limiter = new RateLimiter({
+    minIntervalMs: 0,
+    limitedIntervalMs: 250,
+    maxIntervalMs: 1_000,
+    retries: 3,
+    basePauseMs: 1000,
+    maxPauseMs: 3000,
+    sleep: time.sleep,
+    now: time.now,
+  });
+  const limitedOnce = () => {
+    let calls = 0;
+    return async () => {
+      if (++calls === 1) throw quota();
+      return "ok";
+    };
+  };
+  await limiter.run(async () => "unpaced");
+  assert.equal(limiter.currentIntervalMs, 0);
+  await limiter.run(limitedOnce());
+  assert.equal(limiter.currentIntervalMs, 250);
+  await limiter.run(limitedOnce());
+  assert.equal(limiter.currentIntervalMs, 500);
+});
+
+// Drive answers a listing page with a quota error once.
+function fakeDrive() {
+  const calls: string[] = [];
+  let limited = false;
+  const file = (id: string, name: string) => ({ id, name, mimeType: "application/vnd.google-apps.document" });
+  const drive = {
+    files: {
+      get: async ({ fileId }: { fileId: string }) => {
+        calls.push(`get ${fileId}`);
+        return { data: { id: fileId, name: "Archive" } };
+      },
+      list: async ({ q, pageToken }: { q: string; pageToken?: string }) => {
+        const folder = /'([^']+)' in parents/.exec(q)![1];
+        calls.push(`list ${folder} ${pageToken ?? "-"}`);
+        if (folder === "sub") return { data: { files: [file("c", "c")] } };
+        if (!pageToken) {
+          return {
+            data: {
+              files: [{ id: "sub", name: "Sub", mimeType: "application/vnd.google-apps.folder" }, file("a", "a")],
+              nextPageToken: "p2",
+            },
+          };
+        }
+        if (!limited) {
+          limited = true;
+          throw quota();
+        }
+        return { data: { files: [file("b", "b")] } };
+      },
+    },
+  };
+  return { drive, calls };
+}
+
+test("listTree paces each Drive request and retries only the limited page", async () => {
+  const time = fakeTime();
+  const stats = emptyDriveStats();
+  const limiter = driveRateLimiter(stats, () => {}, { sleep: time.sleep, now: time.now });
+  const { drive, calls } = fakeDrive();
+  const files = await listTree(drive as never, ["root"], limiter);
+  assert.deepEqual(
+    files.map((f) => f.path),
+    ["Archive/a", "Archive/b", "Archive/Sub/c"]
+  );
+  // The root and the first page are not requested again.
+  assert.deepEqual(calls, ["get root", "list root -", "list root p2", "list root p2", "list sub -"]);
+  assert.equal(stats.rateLimitPauses, 1);
+  // Unpaced until the limit; then one pause and a 250 ms gap per request.
+  assert.deepEqual(time.sleeps, [15_000, 250]);
+  assert.equal(limiter.currentIntervalMs, 250);
 });
 
 test("unlimited runs the call as is", async () => {

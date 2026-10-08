@@ -16,7 +16,7 @@ import mammoth from "mammoth";
 import { pool } from "../../db/client";
 import { getAuthenticatedClient } from "../../google/auth";
 import { count, recordError, type CollectStats } from "./gmail";
-import { RateLimiter } from "./ratelimit";
+import { RateLimiter, type CallRunner, type RateLimiterOptions } from "./ratelimit";
 import { upsertSourceItem } from "./staging";
 import { buildSubstackExport, isWantedSubstackEntry, readZipEntries } from "./substack";
 import { parseWxr } from "./wxr";
@@ -82,12 +82,14 @@ export function isScopeError(err: unknown): boolean {
   );
 }
 
-async function listTree(drive: Drive, rootIds: string[]): Promise<DriveFile[]> {
+// Each request takes its own limiter slot, so a limited page is retried on
+// its own and the pace applies between requests.
+export async function listTree(drive: Drive, rootIds: string[], limiter: CallRunner): Promise<DriveFile[]> {
   const files: DriveFile[] = [];
   const seen = new Set<string>();
   const queue: { id: string; path: string }[] = [];
   for (const id of rootIds) {
-    const { data } = await drive.files.get({ fileId: id, fields: "id,name", supportsAllDrives: true });
+    const { data } = await limiter.run(() => drive.files.get({ fileId: id, fields: "id,name", supportsAllDrives: true }));
     queue.push({ id, path: data.name ?? id });
   }
   while (queue.length > 0) {
@@ -96,14 +98,16 @@ async function listTree(drive: Drive, rootIds: string[]): Promise<DriveFile[]> {
     seen.add(folder.id);
     let pageToken: string | undefined;
     do {
-      const { data } = await drive.files.list({
-        q: `'${folder.id}' in parents and trashed = false`,
-        fields: "nextPageToken, files(id, name, mimeType, createdTime, modifiedTime, size)",
-        pageSize: 1000,
-        pageToken,
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-      });
+      const { data } = await limiter.run(() =>
+        drive.files.list({
+          q: `'${folder.id}' in parents and trashed = false`,
+          fields: "nextPageToken, files(id, name, mimeType, createdTime, modifiedTime, size)",
+          pageSize: 1000,
+          pageToken,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        })
+      );
       for (const f of data.files ?? []) {
         if (!f.id || !f.mimeType) continue;
         const path = `${folder.path}/${f.name ?? f.id}`;
@@ -128,26 +132,28 @@ async function listTree(drive: Drive, rootIds: string[]): Promise<DriveFile[]> {
   return files;
 }
 
-async function exportText(drive: Drive, fileId: string, mimeType: string): Promise<string> {
-  const res = await drive.files.export({ fileId, mimeType }, { responseType: "text" });
+async function exportText(drive: Drive, fileId: string, mimeType: string, limiter: CallRunner): Promise<string> {
+  const res = await limiter.run(() => drive.files.export({ fileId, mimeType }, { responseType: "text" }));
   return String(res.data);
 }
 
-async function download(drive: Drive, fileId: string): Promise<Buffer> {
-  const res = await drive.files.get(
-    { fileId, alt: "media", supportsAllDrives: true },
-    { responseType: "arraybuffer" }
+async function download(drive: Drive, fileId: string, limiter: CallRunner): Promise<Buffer> {
+  const res = await limiter.run(() =>
+    drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" })
   );
   return Buffer.from(res.data as ArrayBuffer);
 }
 
-async function downloadToTemp(drive: Drive, fileId: string, dir: string): Promise<string> {
+async function downloadToTemp(drive: Drive, fileId: string, dir: string, limiter: CallRunner): Promise<string> {
   const path = join(dir, `${fileId}.zip`);
-  const res = await drive.files.get(
-    { fileId, alt: "media", supportsAllDrives: true },
-    { responseType: "stream" }
-  );
-  await pipeline(res.data as Readable, createWriteStream(path));
+  // A limit arrives on the request, before any bytes; a retry rewrites the file.
+  await limiter.run(async () => {
+    const res = await drive.files.get(
+      { fileId, alt: "media", supportsAllDrives: true },
+      { responseType: "stream" }
+    );
+    await pipeline(res.data as Readable, createWriteStream(path));
+  });
   return path;
 }
 
@@ -163,10 +169,10 @@ function fileMetadata(f: DriveFile, extra: Record<string, unknown> = {}): Record
   };
 }
 
-async function collectGoogleDoc(drive: Drive, f: DriveFile, stats: DriveStats): Promise<void> {
+async function collectGoogleDoc(drive: Drive, f: DriveFile, stats: DriveStats, limiter: CallRunner): Promise<void> {
   const [text, html] = await Promise.all([
-    exportText(drive, f.id, "text/plain"),
-    exportText(drive, f.id, "text/html"),
+    exportText(drive, f.id, "text/plain", limiter),
+    exportText(drive, f.id, "text/html", limiter),
   ]);
   count(
     stats,
@@ -183,8 +189,8 @@ async function collectGoogleDoc(drive: Drive, f: DriveFile, stats: DriveStats): 
   );
 }
 
-async function collectDocx(drive: Drive, f: DriveFile, stats: DriveStats): Promise<void> {
-  const buffer = await download(drive, f.id);
+async function collectDocx(drive: Drive, f: DriveFile, stats: DriveStats, limiter: CallRunner): Promise<void> {
+  const buffer = await download(drive, f.id, limiter);
   const [{ value: text }, { value: html }] = await Promise.all([
     mammoth.extractRawText({ buffer }),
     mammoth.convertToHtml({ buffer }),
@@ -204,8 +210,8 @@ async function collectDocx(drive: Drive, f: DriveFile, stats: DriveStats): Promi
   );
 }
 
-async function collectWordPress(drive: Drive, f: DriveFile, stats: DriveStats): Promise<boolean> {
-  const xml = (await download(drive, f.id)).toString("utf8");
+async function collectWordPress(drive: Drive, f: DriveFile, stats: DriveStats, limiter: CallRunner): Promise<boolean> {
+  const xml = (await download(drive, f.id, limiter)).toString("utf8");
   if (!/<rss[\s>]/.test(xml) || !/wordpress\.org\/export/.test(xml)) return false;
   const wxr = parseWxr(xml);
   let host = "wordpress";
@@ -255,10 +261,10 @@ async function collectWordPress(drive: Drive, f: DriveFile, stats: DriveStats): 
   return true;
 }
 
-async function collectSubstack(drive: Drive, f: DriveFile, stats: DriveStats): Promise<boolean> {
+async function collectSubstack(drive: Drive, f: DriveFile, stats: DriveStats, limiter: CallRunner): Promise<boolean> {
   const dir = await mkdtemp(join(tmpdir(), "substack-"));
   try {
-    const path = await downloadToTemp(drive, f.id, dir);
+    const path = await downloadToTemp(drive, f.id, dir, limiter);
     const entries = await readZipEntries(path, isWantedSubstackEntry);
     if (![...entries.keys()].some((n) => /(^|\/)posts\.csv$/.test(n))) return false;
     const exp = buildSubstackExport(entries);
@@ -333,6 +339,29 @@ async function stagedModifiedTimes(): Promise<Map<string, string>> {
   return new Map(rows.filter((r) => r.modified).map((r) => [r.source_ref, r.modified!]));
 }
 
+// Files are read one at a time, so no pacing until Drive reports a limit;
+// then a pause, and 250 ms between requests from there on (doubling on each
+// further limit). Each request is paced and retried on its own.
+export function driveRateLimiter(
+  stats: DriveStats,
+  onPause: () => void = () => {},
+  clock: Pick<RateLimiterOptions, "sleep" | "now"> = {}
+): RateLimiter {
+  return new RateLimiter({
+    ...clock,
+    minIntervalMs: 0,
+    limitedIntervalMs: 250,
+    maxIntervalMs: 4_000,
+    retries: 6,
+    basePauseMs: 15_000,
+    maxPauseMs: 120_000,
+    onLimited: () => {
+      stats.rateLimitPauses += 1;
+      onPause();
+    },
+  });
+}
+
 export async function collectDrive(
   params: DriveCollectParams,
   stats: DriveStats,
@@ -341,24 +370,11 @@ export async function collectDrive(
 ): Promise<void> {
   const auth = await getAuthenticatedClient();
   const drive = google.drive({ version: "v3", auth });
-  // Files are read one at a time, so no pacing until Drive reports a limit;
-  // then the file is retried after a pause (an export file is re-read whole,
-  // which is safe: every write is an idempotent upsert).
-  const limiter = new RateLimiter({
-    minIntervalMs: 0,
-    maxIntervalMs: 1_000,
-    retries: 6,
-    basePauseMs: 15_000,
-    maxPauseMs: 120_000,
-    onLimited: () => {
-      stats.rateLimitPauses += 1;
-      void onProgress();
-    },
-  });
+  const limiter = driveRateLimiter(stats, () => void onProgress());
 
   let files: DriveFile[];
   try {
-    files = await limiter.run(() => listTree(drive, params.folderIds));
+    files = await listTree(drive, params.folderIds, limiter);
   } catch (err) {
     if (isScopeError(err)) {
       throw new Error("Google Drive access not granted yet: re-authorise once at /auth/google");
@@ -379,17 +395,17 @@ export async function collectDrive(
         if (f.modifiedTime && staged.get(f.id) === f.modifiedTime) {
           stats.skippedUnchanged += 1;
         } else if (f.mimeType === GDOC) {
-          await limiter.run(() => collectGoogleDoc(drive, f, stats));
+          await collectGoogleDoc(drive, f, stats, limiter);
         } else {
-          await limiter.run(() => collectDocx(drive, f, stats));
+          await collectDocx(drive, f, stats, limiter);
         }
       } else if (isXml) {
-        if (!(await limiter.run(() => collectWordPress(drive, f, stats)))) {
+        if (!(await collectWordPress(drive, f, stats, limiter))) {
           stats.skippedByType["xml (not a WordPress export)"] =
             (stats.skippedByType["xml (not a WordPress export)"] ?? 0) + 1;
         }
       } else if (isZip) {
-        if (!(await limiter.run(() => collectSubstack(drive, f, stats)))) {
+        if (!(await collectSubstack(drive, f, stats, limiter))) {
           stats.skippedByType["zip (not a Substack export)"] =
             (stats.skippedByType["zip (not a Substack export)"] ?? 0) + 1;
         }

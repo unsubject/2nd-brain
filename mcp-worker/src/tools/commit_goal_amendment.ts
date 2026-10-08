@@ -90,6 +90,20 @@ export async function commitGoalAmendmentHandler(
 
       if (a.kind === 'new' || a.kind === 'synthesize') {
         ensureFullGoalPayload(payload);
+        // The proposal checked the domain, but a retire or merge can commit
+        // during the cooldown; nothing new goes under an inactive domain.
+        // FOR SHARE holds off a concurrent retire until this commits.
+        const domain = await tx<Array<{ status: string }>>`
+          SELECT status, now() AS as_of FROM constitution_domains
+           WHERE id = ${payload.constitution_domain_id} AND user_id = ${env.BRAIN_USER_ID}
+           FOR SHARE
+        `;
+        if (domain[0]?.status !== 'active') {
+          throw new HandlerError(
+            'invalid_state',
+            `Domain ${payload.constitution_domain_id} is ${domain[0]?.status ?? 'not found'}; cannot add goals under it`,
+          );
+        }
         const ins = await tx<Array<{ id: string }>>`
           INSERT INTO goals (
             user_id, constitution_domain_id, statement,
@@ -121,14 +135,23 @@ export async function commitGoalAmendmentHandler(
             );
           }
           const sourceLiteral = `{${sourceList.join(',')}}`;
-          await tx`
+          // Only still-active sources merge: one achieved or abandoned
+          // during the cooldown keeps its status, and the commit fails.
+          const merged = await tx`
             UPDATE goals
                SET status = 'merged',
                    merged_into_id = ${resultGoalId},
                    last_amended_at = now()
              WHERE id = ANY(${sourceLiteral}::uuid[])
                AND user_id = ${env.BRAIN_USER_ID}
+               AND status = 'active'
           `;
+          if (merged.count !== sourceList.length) {
+            throw new HandlerError(
+              'invalid_state',
+              'Source goals are no longer all active; cannot merge them',
+            );
+          }
         }
       } else if (a.kind === 'amend') {
         if (!a.goal_id) {

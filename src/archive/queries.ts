@@ -1,3 +1,4 @@
+import { PoolClient } from "pg";
 import { pool } from "../db/client";
 
 export async function upsertArtifact(params: {
@@ -101,12 +102,27 @@ export async function findPendingArtifact(): Promise<{
   return rows[0] || null;
 }
 
-// Saved only if the row still holds `claimedRawSource`, the text the worker
-// processed: a re-sync that changed the text meanwhile (and queued the row
-// again) must not be overwritten with results for the old text. Returns
-// whether it saved. The row stays 'processing' until finishArtifactProcessing,
-// once its chunks and entities are in too.
-export async function saveArtifactProcessingResult(
+// Whether the row still holds `rawSource`: the worker stops a pass on a
+// changed text before its entity calls. The save checks it again, under
+// the row's lock.
+export async function artifactHoldsText(id: string, rawSource: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2`,
+    [id, rawSource]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// Everything one pass of the worker writes, in one transaction that first
+// locks the row and checks it still holds `claimedRawSource`, the text the
+// worker processed. A load that changes the text (and queues the row again)
+// either waits for the commit or leaves this pass writing nothing. So the
+// results for an old text never land beside, or after, those for the new
+// one, even when a second worker processes the new text meanwhile and
+// finishes first (Codex on #99). The lock is the one an update takes, so a
+// load pointing an older row at this one (superseded_by) need not wait.
+// Returns whether it saved. A saved row is 'processed' and can be found.
+export async function completeArtifactProcessing(
   id: string,
   claimedRawSource: string,
   params: {
@@ -117,70 +133,105 @@ export async function saveArtifactProcessingResult(
     language: string;
     embedding: number[];
     embeddingModel: string;
-  }
+    chunks: {
+      chunkIndex: number;
+      chunkText: string;
+      chunkTokens: number;
+      headingPath: string[];
+      startOffset: number;
+      endOffset: number;
+      embedding: number[];
+    }[];
+    // entity_ref ids, upserted beforehand (upsertEntity)
+    entities: { entityRefId: string; mentionText: string | null; salience: number | null }[];
+  },
+  minShared: number = 2
 ): Promise<boolean> {
-  const vectorStr = `[${params.embedding.join(",")}]`;
-  const { rowCount } = await pool.query(
-    `UPDATE public_artifact
-     SET clean_text = $2,
-         summary = $3,
-         excerpt = $4,
-         tags = $5,
-         language = $6,
-         embedding = $7::vector,
-         embedding_model = $8,
-         updated_at = now()
-     WHERE id = $1 AND raw_source = $9`,
-    [
-      id,
-      params.cleanText,
-      params.summary,
-      params.excerpt,
-      params.tags,
-      params.language,
-      vectorStr,
-      params.embeddingModel,
-      claimedRawSource,
-    ]
-  );
-  return (rowCount ?? 0) > 0;
-}
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // A load holds every row it writes until it commits, which can take
+    // longer than the pool's 10 s statement timeout: wait for it rather
+    // than fail the row. The other statements here are short.
+    await client.query("SET LOCAL statement_timeout = '5min'");
+    const { rowCount: held } = await client.query(
+      `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2 FOR NO KEY UPDATE`,
+      [id, claimedRawSource]
+    );
+    if (!held) {
+      await client.query("ROLLBACK");
+      return false;
+    }
 
-export async function insertChunks(
-  artifactId: string,
-  chunks: {
-    chunkIndex: number;
-    chunkText: string;
-    chunkTokens: number;
-    headingPath: string[];
-    startOffset: number;
-    endOffset: number;
-    embedding: number[];
-  }[]
-): Promise<void> {
-  await pool.query(
-    `DELETE FROM public_artifact_chunk WHERE public_artifact_id = $1`,
-    [artifactId]
-  );
-
-  for (const chunk of chunks) {
-    const vectorStr = `[${chunk.embedding.join(",")}]`;
-    await pool.query(
-      `INSERT INTO public_artifact_chunk
-         (public_artifact_id, chunk_index, chunk_text, chunk_tokens,
-          heading_path, start_offset, end_offset, embedding)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)`,
+    await client.query(
+      `UPDATE public_artifact
+       SET clean_text = $2,
+           summary = $3,
+           excerpt = $4,
+           tags = $5,
+           language = $6,
+           embedding = $7::vector,
+           embedding_model = $8,
+           processing_status = 'processed',
+           last_error = NULL,
+           updated_at = now()
+       WHERE id = $1`,
       [
-        artifactId,
-        chunk.chunkIndex,
-        chunk.chunkText,
-        chunk.chunkTokens,
-        chunk.headingPath,
-        chunk.startOffset,
-        chunk.endOffset,
-        vectorStr,
+        id,
+        params.cleanText,
+        params.summary,
+        params.excerpt,
+        params.tags,
+        params.language,
+        `[${params.embedding.join(",")}]`,
+        params.embeddingModel,
       ]
     );
+
+    await client.query(`DELETE FROM public_artifact_chunk WHERE public_artifact_id = $1`, [id]);
+    for (const chunk of params.chunks) {
+      await client.query(
+        `INSERT INTO public_artifact_chunk
+           (public_artifact_id, chunk_index, chunk_text, chunk_tokens,
+            heading_path, start_offset, end_offset, embedding)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)`,
+        [
+          id,
+          chunk.chunkIndex,
+          chunk.chunkText,
+          chunk.chunkTokens,
+          chunk.headingPath,
+          chunk.startOffset,
+          chunk.endOffset,
+          `[${chunk.embedding.join(",")}]`,
+        ]
+      );
+    }
+
+    // One row per entity: two names the extractor returned for the same
+    // entity would otherwise count twice towards a shared link.
+    await client.query(`DELETE FROM public_artifact_entity WHERE public_artifact_id = $1`, [id]);
+    await client.query(
+      `INSERT INTO public_artifact_entity (public_artifact_id, entity_ref_id, mention_text, salience)
+       SELECT DISTINCT ON (e.entity_ref_id) $1, e.entity_ref_id, e.mention_text, e.salience
+         FROM unnest($2::uuid[], $3::text[], $4::real[]) AS e(entity_ref_id, mention_text, salience)
+        ORDER BY e.entity_ref_id, e.salience DESC NULLS LAST`,
+      [
+        id,
+        params.entities.map((e) => e.entityRefId),
+        params.entities.map((e) => e.mentionText),
+        params.entities.map((e) => e.salience),
+      ]
+    );
+
+    await writeSharedEntityLinks(client, id, minShared);
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -204,42 +255,6 @@ export async function upsertEntity(
   return rows[0].id;
 }
 
-export async function insertArtifactEntity(
-  artifactId: string,
-  entityRefId: string,
-  mentionText: string | null,
-  salience: number | null
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO public_artifact_entity
-       (public_artifact_id, entity_ref_id, mention_text, salience)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (public_artifact_id, entity_ref_id, mention_offset) DO NOTHING`,
-    [artifactId, entityRefId, mentionText, salience]
-  );
-}
-
-export async function clearArtifactEntities(artifactId: string): Promise<void> {
-  await pool.query(
-    `DELETE FROM public_artifact_entity WHERE public_artifact_id = $1`,
-    [artifactId]
-  );
-}
-
-// The last step: the row is complete and can be found. Like the save, only
-// for the text the worker claimed.
-export async function finishArtifactProcessing(id: string, claimedRawSource: string): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `UPDATE public_artifact
-     SET processing_status = 'processed',
-         last_error = NULL,
-         updated_at = now()
-     WHERE id = $1 AND raw_source = $2`,
-    [id, claimedRawSource]
-  );
-  return (rowCount ?? 0) > 0;
-}
-
 // With `claimedRawSource`, recorded only if the row still holds that text:
 // a failed attempt on an old text must not mark the new one, queued
 // meanwhile, as failed.
@@ -261,43 +276,37 @@ export async function markArtifactError(
 // This artifact's links to the artifacts sharing at least `minShared` of
 // its salient entities, rebuilt from its current entities: links from an
 // earlier pass (an older text, or an attempt abandoned because the text
-// changed under it) are dropped, not left beside the new ones.
-export async function replaceSharedEntityLinks(artifactId: string, minShared: number = 2): Promise<number> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      `DELETE FROM link_edge
-        WHERE source_type = 'public_artifact' AND source_id = $1 AND link_type = 'shared_entities'`,
-      [artifactId]
-    );
-    const { rowCount } = await client.query(
-      `INSERT INTO link_edge
-         (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
-       SELECT 'default', 'public_artifact', $1, 'public_artifact', r.other_artifact_id, 'shared_entities',
-              NULL, r.shared_count || ' shared entities'
-         FROM (SELECT pae2.public_artifact_id AS other_artifact_id, COUNT(*) AS shared_count
-                 FROM public_artifact_entity pae1
-                 JOIN public_artifact_entity pae2 ON pae1.entity_ref_id = pae2.entity_ref_id
-                WHERE pae1.public_artifact_id = $1
-                  AND pae2.public_artifact_id != $1
-                  AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
-                  AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
-                GROUP BY pae2.public_artifact_id
-               HAVING COUNT(*) >= $2
-                ORDER BY COUNT(*) DESC
-                LIMIT 20) r
-       ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
-      [artifactId, minShared]
-    );
-    await client.query("COMMIT");
-    return rowCount ?? 0;
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
+// changed under it) are dropped, not left beside the new ones. Entities
+// are counted once each: rows saved before completeArtifactProcessing can
+// hold one entity twice. Runs inside completeArtifactProcessing's
+// transaction.
+async function writeSharedEntityLinks(client: PoolClient, artifactId: string, minShared: number): Promise<number> {
+  await client.query(
+    `DELETE FROM link_edge
+      WHERE source_type = 'public_artifact' AND source_id = $1 AND link_type = 'shared_entities'`,
+    [artifactId]
+  );
+  const { rowCount } = await client.query(
+    `INSERT INTO link_edge
+       (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation)
+     SELECT 'default', 'public_artifact', $1, 'public_artifact', r.other_artifact_id, 'shared_entities',
+            NULL, r.shared_count || ' shared entities'
+       FROM (SELECT pae2.public_artifact_id AS other_artifact_id,
+                    COUNT(DISTINCT pae1.entity_ref_id) AS shared_count
+               FROM public_artifact_entity pae1
+               JOIN public_artifact_entity pae2 ON pae1.entity_ref_id = pae2.entity_ref_id
+              WHERE pae1.public_artifact_id = $1
+                AND pae2.public_artifact_id != $1
+                AND (pae1.salience IS NULL OR pae1.salience >= 0.5)
+                AND (pae2.salience IS NULL OR pae2.salience >= 0.5)
+              GROUP BY pae2.public_artifact_id
+             HAVING COUNT(DISTINCT pae1.entity_ref_id) >= $2
+              ORDER BY COUNT(DISTINCT pae1.entity_ref_id) DESC
+              LIMIT 20) r
+     ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING`,
+    [artifactId, minShared]
+  );
+  return rowCount ?? 0;
 }
 
 // --- Search queries ---

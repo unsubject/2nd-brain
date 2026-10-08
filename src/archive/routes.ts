@@ -150,7 +150,8 @@ export function archiveRoutes(): Router {
       res.status(202).json({ runId, status: "running" });
     } catch (err) {
       if (err instanceof RunAlreadyActiveError) {
-        res.status(409).json({ error: "an extraction run is already in progress" });
+        // Another extraction, or a collection that starts one when it ends.
+        res.status(409).json({ error: err.message });
         return;
       }
       console.error("[consolidation] extract error:", describeGoogleError(err));

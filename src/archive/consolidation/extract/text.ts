@@ -1,6 +1,6 @@
 // Text helpers for extraction (step 2): HTML to plain text, whitespace
-// normalisation, rejoining hard-wrapped email lines, and a length measure
-// that treats Chinese and English text alike.
+// normalisation, rejoining hard-wrapped email lines, a length measure that
+// treats Chinese and English text alike, and a check on dates read from text.
 
 const ENTITIES: Record<string, string> = {
   amp: "&",
@@ -110,4 +110,11 @@ export function paragraphs(text: string): string[] {
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
+}
+
+// A calendar date written in a subject or file name, or null when there is
+// no such day ("20230231"): Date.UTC would roll it over into the next month.
+export function utcDate(year: number, month: number, day: number): Date | null {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day ? d : null;
 }

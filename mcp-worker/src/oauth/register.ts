@@ -18,6 +18,36 @@ const MAX_REDIRECT_URIS = 10;
 const MAX_UNAUTHORIZED_PER_SOURCE_HOUR = 10;
 const MAX_UNAUTHORIZED_PER_HOUR = 200;
 
+// /register is public and a refused registration never reaches the caps
+// above, so the refusal log is throttled per isolate: at most this many
+// lines a minute. The first line of the next window counts the ones skipped.
+export const REFUSED_LOGS_PER_MINUTE = 10;
+
+// A fixed-window log budget. Each call says whether to log, and with the
+// first call of a new window, how many the previous window skipped.
+export function logBudget(limit: number, windowMs: number) {
+  let start = -Infinity;
+  let used = 0;
+  let skipped = 0;
+  return (now: number): { log: boolean; skipped: number } => {
+    let carried = 0;
+    if (now - start >= windowMs) {
+      carried = skipped;
+      start = now;
+      used = 0;
+      skipped = 0;
+    }
+    if (used < limit) {
+      used++;
+      return { log: true, skipped: carried };
+    }
+    skipped++;
+    return { log: false, skipped: 0 };
+  };
+}
+
+const refusedLog = logBudget(REFUSED_LOGS_PER_MINUTE, 60_000);
+
 export async function registerClient(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
 
@@ -52,10 +82,17 @@ export async function registerClient(request: Request, env: Env, ctx: ExecutionC
   if (allowed.length === 0) {
     // Redirect URIs aren't secrets; logging them is how an unknown client's
     // callback gets found (Workers Logs) and added to the allow-list.
-    console.warn(
-      '[register] refused: no allowed redirect_uri',
-      JSON.stringify({ redirect_uris: (uris as string[]).map((u) => u.slice(0, 300)), client_name: typeof body.client_name === 'string' ? body.client_name.slice(0, 100) : null }),
-    );
+    const budget = refusedLog(Date.now());
+    if (budget.log) {
+      console.warn(
+        '[register] refused: no allowed redirect_uri',
+        JSON.stringify({
+          redirect_uris: (uris as string[]).map((u) => u.slice(0, 300)),
+          client_name: typeof body.client_name === 'string' ? body.client_name.slice(0, 100) : null,
+          ...(budget.skipped > 0 ? { skipped_before: budget.skipped } : {}),
+        }),
+      );
+    }
     return oauthError(
       'invalid_redirect_uri',
       `no redirect_uri is allowed by this server (first: ${String(uris[0]).slice(0, 300)}). See docs/mcp-client-setup.md (OAUTH_EXTRA_REDIRECT_PREFIXES).`,

@@ -7,11 +7,13 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { Pool } from "pg";
+import { holdTestDatabase } from "./support/database-lock";
 
 const url = process.env.TEST_DATABASE_URL;
 const skip = !url ? "TEST_DATABASE_URL not set" : false;
 
 let db: Pool;
+let releaseDatabase: (() => Promise<void>) | undefined;
 let worker: typeof import("../src/ideas/worker");
 
 const vec = (x: number) => {
@@ -46,10 +48,12 @@ before(async () => {
     await db.end();
     throw new Error(`Refusing to run against ${rows[0].db}@${addr}: needs a local *_test database`);
   }
+  releaseDatabase = await holdTestDatabase(url);
 });
 
 after(async () => {
   await db?.end();
+  await releaseDatabase?.();
 });
 
 beforeEach(async () => {

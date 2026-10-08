@@ -81,9 +81,12 @@ export async function proposeGoalAmendmentHandler(
       }
     }
 
-    if (args.kind === 'new') {
+    // A new or synthesized goal goes under an active domain. Retiring or
+    // merging a domain leaves its goals active, so a synthesis of them must
+    // be checked here too (its payload domain is the sources' domain, below).
+    if (args.kind === 'new' || args.kind === 'synthesize') {
       const domain = await sql<Array<{ status: string }>>`
-        SELECT status FROM constitution_domains
+        SELECT status, now() AS as_of FROM constitution_domains
          WHERE id = ${args.payload.constitution_domain_id}
            AND user_id = ${env.BRAIN_USER_ID}
       `;

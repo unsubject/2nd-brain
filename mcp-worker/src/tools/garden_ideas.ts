@@ -142,6 +142,9 @@ export async function gardenIdeasHandler(
     if (args.mode === 'outputs') {
       // Ideas without an accepted `became`, a page at a time, each with its
       // nearest own published outputs (public_artifact rows are user 'default').
+      // LEFT JOIN: an idea with no output in range still yields one row (art
+      // columns null), so `total`, and with it next_offset, survive a page
+      // that has no candidates.
       const rows = await run((tx) => tx<Row[]>`
         SELECT ${cols(tx, 'i', 'a')}, i.captured_at AS a_captured_at, i.total,
                art.id AS art_id, art.title AS art_title, art.canonical_url AS art_url,
@@ -159,7 +162,7 @@ export async function gardenIdeasHandler(
              ORDER BY ${newestFirst ? tx`x.captured_at DESC` : tx`x.captured_at ASC`}, x.id
              LIMIT ${OUTPUTS_PAGE} OFFSET ${offset}
           ) i
-          CROSS JOIN LATERAL (
+          LEFT JOIN LATERAL (
             SELECT a.id, a.title, a.canonical_url, a.published_at, a.type,
                    1 - (a.embedding <=> i.embedding) AS similarity
               FROM public_artifact a
@@ -171,14 +174,14 @@ export async function gardenIdeasHandler(
                                   AND l.status IN ('proposed', 'accepted', 'rejected', 'retracted'))
              ORDER BY a.embedding <=> i.embedding
              LIMIT 3
-          ) art
-         WHERE art.similarity >= ${minSim} AND art.similarity <= ${maxSim}
-         ORDER BY art.similarity DESC
+          ) art ON art.similarity >= ${minSim} AND art.similarity <= ${maxSim}
+         ORDER BY art.similarity DESC NULLS LAST
       `);
       const total = rows.length > 0 ? Number(rows[0].total) : null;
       const perIdea = new Map<string, number>();
       const candidates = [];
       for (const r of rows) {
+        if (r.art_id == null) continue; // an idea with no output in range
         const n = perIdea.get(r.a_id as string) ?? 0;
         if (n >= perIdeaCap) continue;
         perIdea.set(r.a_id as string, n + 1);
