@@ -959,3 +959,40 @@ test("a load that read the works before a match finished loads again (Codex on #
   const load = await import("../src/archive/consolidation/load/run");
   assert.equal(await load.loadStale(db), false);
 });
+
+test("retiring an old row and moving its links succeed or fail together (Codex on #99)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await db.query("DELETE FROM link_edge WHERE target_type = 'public_artifact' OR source_type = 'public_artifact'");
+  await buildWorks();
+  const { rows: old } = await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status)
+     VALUES ('default', 'essay', '自由市場的代價', $1, 'notion', 'n1', 'processed') RETURNING id`,
+    [ESSAY]
+  );
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  const { rows: col } = await db.query("SELECT id FROM public_artifact WHERE source_external_id = 'gmail:sub'");
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE id = $1", [col[0].id]);
+  await db.query(
+    `INSERT INTO link_edge (user_id, source_type, source_id, target_type, target_id, link_type, confidence)
+     VALUES ('default', 'journal_entry', '11111111-1111-1111-1111-111111111111', 'public_artifact', $1, 'echoes_artifact', 0.8)`,
+    [old[0].id]
+  );
+  const oldStatus = async () => (await db.query("SELECT status FROM public_artifact WHERE id = $1", [old[0].id])).rows[0].status;
+
+  // Moving the link fails: the old row stays in search.
+  await db.query(`CREATE OR REPLACE FUNCTION test_fail_link() RETURNS trigger AS $$
+                  BEGIN RAISE EXCEPTION 'link_edge unavailable'; END $$ LANGUAGE plpgsql`);
+  await db.query("CREATE TRIGGER test_fail_link BEFORE INSERT ON link_edge FOR EACH ROW EXECUTE FUNCTION test_fail_link()");
+  try {
+    await assert.rejects(load.retireReplacedRows(col[0].id, db), /link_edge unavailable/);
+    assert.equal(await oldStatus(), "published");
+  } finally {
+    await db.query("DROP TRIGGER IF EXISTS test_fail_link ON link_edge");
+    await db.query("DROP FUNCTION IF EXISTS test_fail_link()");
+  }
+  assert.equal(await load.retireReplacedRows(col[0].id, db), 1);
+  assert.equal(await oldStatus(), "superseded");
+  const { rows: links } = await db.query("SELECT target_id FROM link_edge WHERE source_type = 'journal_entry'");
+  assert.deepEqual(links.map((l) => l.target_id), [col[0].id]);
+});

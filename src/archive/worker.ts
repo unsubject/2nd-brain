@@ -120,7 +120,14 @@ async function processOne(): Promise<boolean> {
       console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
       return true;
     }
-    const retired = await retireReplacedRows(artifact.id);
+    // A failure here is not this row's: it is complete. The rows it
+    // replaces stay searchable, and the next load retires them.
+    let retired = 0;
+    try {
+      retired = await retireReplacedRows(artifact.id);
+    } catch (err) {
+      console.error(`[archive] Could not retire the rows "${artifact.title}" replaces:`, err);
+    }
 
     console.log(
       `[archive] Processed "${artifact.title}": ${chunks.length} chunks, ${entities.length} entities` +

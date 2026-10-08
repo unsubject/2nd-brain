@@ -387,15 +387,18 @@ async function moveLinks(db: DB): Promise<void> {
 // `id` (the worker calls this once it has processed a row), or by any row
 // when `id` is null.
 export async function retireReplacedRows(id: string | null, db: DB = pool): Promise<number> {
-  const { rowCount } = await db.query(
-    `UPDATE public_artifact a SET status = 'superseded', updated_at = now()
-       FROM public_artifact t
-      WHERE t.id = a.superseded_by AND t.processing_status = 'processed'
-        AND a.status = 'published' AND ($1::uuid IS NULL OR t.id = $1::uuid)`,
-    [id]
-  );
-  if ((rowCount ?? 0) > 0) await moveLinks(db);
-  return rowCount ?? 0;
+  // With the links' move, so a failure leaves both as they were.
+  return inTransaction(db, "BEGIN", async (q) => {
+    const { rowCount } = await q.query(
+      `UPDATE public_artifact a SET status = 'superseded', updated_at = now()
+         FROM public_artifact t
+        WHERE t.id = a.superseded_by AND t.processing_status = 'processed'
+          AND a.status = 'published' AND ($1::uuid IS NULL OR t.id = $1::uuid)`,
+      [id]
+    );
+    if ((rowCount ?? 0) > 0) await moveLinks(q);
+    return rowCount ?? 0;
+  });
 }
 
 export async function loadSummary(db: DB = pool): Promise<Record<string, unknown>[]> {
