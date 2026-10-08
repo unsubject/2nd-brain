@@ -506,6 +506,16 @@ test("an extraction run is tracked like a collection run", { skip }, async () =>
   }
   assert.equal(matchRow?.status, "succeeded");
   assert.equal(matchRow?.stats.works, 1);
+
+  // And a successful match starts loading.
+  let loadRow: { status: string; stats: Record<string, unknown> } | undefined;
+  for (let i = 0; i < 100; i++) {
+    loadRow = (await db.query("SELECT status, stats FROM archive_collect_run WHERE source = 'load'")).rows[0];
+    if (loadRow && loadRow.status !== "running") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(loadRow?.status, "succeeded");
+  assert.equal(loadRow?.stats.works, 1);
 });
 
 test("catch-up: extract when candidates are stale, then match when works are", { skip }, async () => {
@@ -752,6 +762,20 @@ test("catch-up loads when no load has run since the works were made", { skip }, 
   assert.equal(await auto.loadStale(db), false);
   assert.equal(await auto.catchUp(async () => "run-2", stale), null);
 
+  // A load that started while a match was writing read the works from
+  // before it: what it read counts, not when it started.
+  const read: string = (await db.query("SELECT stats->>'worksMatchedAt' AS t FROM archive_collect_run WHERE id = $1", [runId])).rows[0].t;
+  assert.ok(read);
+  await db.query(
+    `UPDATE archive_collect_run SET started_at = now() + interval '1 hour',
+            stats = jsonb_set(stats, '{worksMatchedAt}', to_jsonb(($2::timestamptz - interval '1 second')::text))
+      WHERE id = $1`,
+    [runId, read]
+  );
+  assert.equal(await auto.loadStale(db), true);
+  await db.query(`UPDATE archive_collect_run SET stats = jsonb_set(stats, '{worksMatchedAt}', to_jsonb($2::text)) WHERE id = $1`, [runId, read]);
+  assert.equal(await auto.loadStale(db), false);
+
   // New works (a later match), or a new loader version, mean load again.
   await db.query("UPDATE archive_work SET matched_at = now() + interval '1 second'");
   assert.equal(await auto.loadStale(db), true);
@@ -759,4 +783,70 @@ test("catch-up loads when no load has run since the works were made", { skip }, 
   assert.equal(await auto.loadStale(db), false);
   await db.query(`UPDATE archive_collect_run SET stats = stats || '{"loaderVersion": 0}' WHERE id = $1`, [runId]);
   assert.equal(await auto.loadStale(db), true);
+});
+
+test("the worker saves its result only for the text it processed (Codex on #99)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  const queries = await import("../src/archive/queries");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  await db.query("UPDATE public_artifact SET processing_status = 'processed' WHERE source_external_id <> 'gmail:sub'");
+
+  // The worker takes the column; meanwhile a new match changes its text and
+  // a load queues it again.
+  const claimed = await queries.findPendingArtifact();
+  assert.equal(claimed?.title, "自由市場的代價");
+  await db.query(`UPDATE archive_candidate SET body_text = body_text || '\n\n補記：多謝讀者指正。' WHERE id =
+                    (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+
+  const result = {
+    cleanText: claimed!.raw_source,
+    summary: "舊文的摘要",
+    excerpt: "",
+    tags: [],
+    language: "zh",
+    embedding: new Array(1536).fill(0),
+    embeddingModel: "test",
+  };
+  assert.equal(await queries.saveArtifactProcessingResult(claimed!.id, claimed!.raw_source, result), false);
+  const { rows } = await db.query("SELECT processing_status, summary, raw_source FROM public_artifact WHERE id = $1", [claimed!.id]);
+  assert.equal(rows[0].processing_status, "pending"); // processed again, with the new text
+  assert.equal(rows[0].summary, null);
+  assert.match(rows[0].raw_source, /補記/);
+
+  const next = await queries.findPendingArtifact();
+  assert.equal(next?.id, claimed!.id);
+  assert.equal(await queries.saveArtifactProcessingResult(next!.id, next!.raw_source, { ...result, cleanText: next!.raw_source }), true);
+  assert.equal((await db.query("SELECT processing_status FROM public_artifact WHERE id = $1", [claimed!.id])).rows[0].processing_status, "processed");
+});
+
+test("a load that read the works before a match finished loads again (Codex on #99)", { skip }, async () => {
+  const { startCollection } = await import("../src/archive/consolidation/runner");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  // Hold the load up once it has read the works: it waits for public_artifact.
+  const lock = await db.connect();
+  try {
+    await lock.query("BEGIN");
+    await lock.query("LOCK TABLE public_artifact IN ACCESS EXCLUSIVE MODE");
+    await startCollection({ source: "load" });
+    // A match finishes while the load runs: its own load is refused.
+    await lock.query("UPDATE archive_work SET matched_at = clock_timestamp()");
+    await assert.rejects(startCollection({ source: "load" }), staging.RunAlreadyActiveError);
+    await lock.query("COMMIT");
+  } finally {
+    lock.release();
+  }
+
+  let runs: { status: string }[] = [];
+  for (let i = 0; i < 200; i++) {
+    runs = (await db.query("SELECT status FROM archive_collect_run WHERE source = 'load' ORDER BY started_at")).rows;
+    if (runs.length === 2 && runs.every((r) => r.status !== "running")) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.deepEqual(runs.map((r) => r.status), ["succeeded", "succeeded"]);
+  const load = await import("../src/archive/consolidation/load/run");
+  assert.equal(await load.loadStale(db), false);
 });

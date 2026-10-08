@@ -101,8 +101,13 @@ export async function findPendingArtifact(): Promise<{
   return rows[0] || null;
 }
 
+// Saved only if the row still holds `claimedRawSource`, the text the worker
+// processed: a re-sync that changed the text meanwhile (and queued the row
+// again) must not be overwritten with results for the old text. Returns
+// whether it saved.
 export async function saveArtifactProcessingResult(
   id: string,
+  claimedRawSource: string,
   params: {
     cleanText: string;
     summary: string;
@@ -112,9 +117,9 @@ export async function saveArtifactProcessingResult(
     embedding: number[];
     embeddingModel: string;
   }
-): Promise<void> {
+): Promise<boolean> {
   const vectorStr = `[${params.embedding.join(",")}]`;
-  await pool.query(
+  const { rowCount } = await pool.query(
     `UPDATE public_artifact
      SET clean_text = $2,
          summary = $3,
@@ -126,7 +131,7 @@ export async function saveArtifactProcessingResult(
          processing_status = 'processed',
          last_error = NULL,
          updated_at = now()
-     WHERE id = $1`,
+     WHERE id = $1 AND raw_source = $9`,
     [
       id,
       params.cleanText,
@@ -136,8 +141,10 @@ export async function saveArtifactProcessingResult(
       params.language,
       vectorStr,
       params.embeddingModel,
+      claimedRawSource,
     ]
   );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function insertChunks(

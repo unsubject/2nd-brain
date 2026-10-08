@@ -31,6 +31,9 @@ export interface LoadStats extends CollectStats {
   retired: number;
   // Rows whose replacement was processed while the load was writing.
   retiredLate: number;
+  // When the works it read were matched (max matched_at, as text so no
+  // precision is lost): the next load is due once a match is newer.
+  worksMatchedAt: string | null;
   legacy: { rows: number; matched: number; hidden: number; waiting: number; unmatched: number };
 }
 
@@ -51,6 +54,7 @@ export function emptyLoadStats(): LoadStats {
     flaggedReview: 0,
     retired: 0,
     retiredLate: 0,
+    worksMatchedAt: null,
     legacy: { rows: 0, matched: 0, hidden: 0, waiting: 0, unmatched: 0 },
   };
 }
@@ -247,10 +251,11 @@ export async function runLoad(
 ): Promise<void> {
   // One snapshot, so a match run finishing meanwhile can't leave works and
   // members out of step.
-  const { works, members, legacy, archived } = await inTransaction(
+  const { matchedAt, works, members, legacy, archived } = await inTransaction(
     db,
     "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     async (q) => ({
+      matchedAt: (await q.query<{ t: string | null }>("SELECT max(matched_at)::text AS t FROM archive_work")).rows[0].t,
       works: await loadWorks(q),
       members: await loadMembers(q),
       legacy: (
@@ -268,6 +273,7 @@ export async function runLoad(
       ).rows,
     })
   );
+  stats.worksMatchedAt = matchedAt;
   stats.listed = stats.works = works.length;
   stats.flaggedReview = works.filter((w) => w.status === "review").length;
   stats.legacy.rows = legacy.length;
@@ -332,6 +338,25 @@ export async function runLoad(
   // A replacement the worker finished while the transaction was open
   // retired nothing (its rows did not point at it yet): retire them now.
   stats.retiredLate = await retireReplacedRows(null, db);
+}
+
+// Works matched after the ones the last successful load by this
+// LOADER_VERSION read (or no such load yet): their rows are out of date.
+// Compared with what the load read, not when it started: a load that
+// starts while a match is writing still reads the works before it.
+export async function loadStale(db: DB = pool): Promise<boolean> {
+  const { rows } = await db.query<{ stale: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM archive_work)
+        AND COALESCE(
+              (SELECT max(matched_at) FROM archive_work) >
+              (SELECT (stats->>'worksMatchedAt')::timestamptz FROM archive_collect_run
+                WHERE source = 'load' AND status = 'succeeded'
+                  AND (stats->>'loaderVersion')::int = $1
+                ORDER BY started_at DESC LIMIT 1),
+              true) AS stale`,
+    [LOADER_VERSION]
+  );
+  return rows[0].stale;
 }
 
 // Rows whose replacement is processed leave search: those replaced by row

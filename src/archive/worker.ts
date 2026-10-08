@@ -49,7 +49,7 @@ async function processOne(): Promise<boolean> {
     const chunkEmbeddings = embeddings.slice(1);
 
     // 4. Save artifact processing result
-    await archiveQueries.saveArtifactProcessingResult(artifact.id, {
+    const saved = await archiveQueries.saveArtifactProcessingResult(artifact.id, artifact.raw_source, {
       cleanText,
       summary: finalSummary,
       excerpt: analysis.excerpt,
@@ -58,6 +58,13 @@ async function processOne(): Promise<boolean> {
       embedding: summaryEmbedding,
       embeddingModel: EMBEDDING_MODEL,
     });
+
+    if (!saved) {
+      // The text changed while it was processed; the row is queued again
+      // and the next pass processes the new text.
+      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
+      return true;
+    }
 
     // 5. Save chunks with embeddings
     const chunksWithEmbeddings = chunks.map((c, i) => ({

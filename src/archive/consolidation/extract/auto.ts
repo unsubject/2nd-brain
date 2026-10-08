@@ -9,11 +9,13 @@
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
-import { LOADER_VERSION } from "../load/run";
+import { LOADER_VERSION, loadStale } from "../load/run";
 import { MATCHER_VERSION } from "../match/run";
 import { startCollection, type CollectRequest } from "../runner";
 import { RunAlreadyActiveError } from "../staging";
 import { EXTRACTOR_VERSION } from "./types";
+
+export { loadStale };
 
 // After the resume sweeper's first pass (30 s), which restarts a run a
 // deploy cut short; this check then finds that run active and leaves it.
@@ -42,20 +44,6 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
        OR (SELECT max(extracted_at) FROM archive_candidate) > (SELECT min(matched_at) FROM archive_work),
        false) AS stale`,
     [MATCHER_VERSION]
-  );
-  return rows[0].stale;
-}
-
-export async function loadStale(db: DB = pool): Promise<boolean> {
-  const { rows } = await db.query<{ stale: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM archive_work)
-        AND COALESCE(
-              (SELECT max(matched_at) FROM archive_work) >
-              (SELECT max(started_at) FROM archive_collect_run
-                WHERE source = 'load' AND status = 'succeeded'
-                  AND (stats->>'loaderVersion')::int = $1),
-              true) AS stale`,
-    [LOADER_VERSION]
   );
   return rows[0].stale;
 }

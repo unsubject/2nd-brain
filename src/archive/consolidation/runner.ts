@@ -2,7 +2,7 @@ import { collectDrive, emptyDriveStats, type DriveCollectParams } from "./drive"
 import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
 import { describeGoogleError } from "../../google/errors";
 import { emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
-import { emptyLoadStats, runLoad, type LoadStats } from "./load/run";
+import { emptyLoadStats, loadStale, runLoad, type LoadStats } from "./load/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
 import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun } from "./staging";
 
@@ -97,6 +97,14 @@ export async function startCollection(req: CollectRequest): Promise<string> {
           // works mean public_artifact is: load next.
           if (source === "extract" && !failed) startFollowUp({ source: "match" });
           if (source === "match" && !failed) startFollowUp({ source: "load" });
+          // A match that finished while this load ran could not start its
+          // own (one run per source), and this one read the works before:
+          // load again.
+          if (source === "load" && !failed) {
+            loadStale()
+              .then((stale) => stale && startFollowUp({ source: "load" }))
+              .catch((err) => console.error("[consolidation] could not check for newer works:", describeGoogleError(err)));
+          }
         }
       );
     })
