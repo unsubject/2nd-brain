@@ -248,6 +248,22 @@ test("a .docx canonical takes its work's title from a message or published copy,
   assert.equal(w.title, "科目三");
 });
 
+test("the message, cleaned, is canonical over the .docx it carried (Codex, follow-up on #96)", () => {
+  // One send, the essay inline and attached: same time and outlet, but the
+  // attachment keeps its title line and sign-off, so it is longer.
+  const text = essay(90);
+  const inline = cand({ kind: "submission", title: "科目三", bodyText: text });
+  const docx = cand({ kind: "attachment", title: "利字當頭 20240220", bodyText: `利字當頭：科目三\n\n利世民\n\n${text}\n\n利世民` });
+  const { works } = matchCandidates([docx, inline]);
+  assert.equal(works.length, 1);
+  assert.equal(works[0].canonicalId, inline.id);
+  assert.equal(works[0].title, "科目三");
+
+  // A later resend as a .docx alone is still the last version sent.
+  const resend = cand({ kind: "attachment", authoredAt: new Date("2020-06-29T15:00:00Z"), bodyText: text });
+  assert.equal(matchCandidates([inline, resend]).works[0].canonicalId, resend.id);
+});
+
 test("an unpublished WordPress page or private post never outranks a published newsletter (Codex P2 on #97)", () => {
   const text = essay(50);
   const newsletter = cand({ source: "gmail", kind: "newsletter", outlet: "Revue", bodyText: text });

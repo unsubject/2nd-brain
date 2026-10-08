@@ -223,6 +223,9 @@ outlet (Simon's decision: the last version he sent wins, not the editor's
 edit); the published Substack post; the published WordPress post (a page or
 private post ranks with the drafts); the newsletter issue; an email
 to an address at no known outlet; the Drive document; anything else.
+Between a message and the `.docx` it carried (one send, the essay inline
+and attached), the message wins: its title line, note and sign-off were
+removed.
 
 A work's title is its canonical's, except that a `.docx` is named by its
 file ("final"): a canonical `.docx` takes the title of the best-ranked

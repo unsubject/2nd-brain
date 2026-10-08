@@ -67,6 +67,9 @@ export function pickCanonical(members: MatchCandidate[]): MatchCandidate {
     (a, b) =>
       canonicalRank(a) - canonicalRank(b) ||
       time(b.authoredAt) - time(a.authoredAt) ||
+      // One send with the essay inline and as a .docx: the message's text
+      // has its title line, note and sign-off removed, the .docx's not.
+      Number(isAttachment(a)) - Number(isAttachment(b)) ||
       b.bodyText.length - a.bodyText.length ||
       a.id.localeCompare(b.id)
   )[0];
