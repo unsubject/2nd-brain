@@ -12,6 +12,7 @@ import { normalizeLabel, pickUniqueLabel } from '../src/auth/labels';
 import { authenticate, unauthorized } from '../src/auth/middleware';
 import { authServerMetadata, isOurResource, normalizeScope, protectedResourceMetadata } from '../src/oauth/metadata';
 import { clientIdFrom } from '../src/oauth/common';
+import { logBudget } from '../src/oauth/register';
 import { sameOrigin } from '../src/console';
 import worker from '../src/index';
 import type { Env } from '../src/env';
@@ -301,5 +302,23 @@ describe('console origin check', () => {
     expect(sameOrigin(post({ 'Sec-Fetch-Site': 'cross-site' }))).toBe(false);
     expect(sameOrigin(post({ 'Sec-Fetch-Site': 'same-origin' }))).toBe(true);
     expect(sameOrigin(post({}))).toBe(true);
+  });
+});
+
+describe('logBudget (refused-registration log throttle)', () => {
+  it('logs up to the limit per window, then reports the skipped count once', () => {
+    const budget = logBudget(3, 60_000);
+    const t0 = 1_000_000;
+    expect([0, 1, 2, 3, 4].map((i) => budget(t0 + i))).toEqual([
+      { log: true, skipped: 0 },
+      { log: true, skipped: 0 },
+      { log: true, skipped: 0 },
+      { log: false, skipped: 0 },
+      { log: false, skipped: 0 },
+    ]);
+    expect(budget(t0 + 59_999)).toEqual({ log: false, skipped: 0 });
+    // The next window logs again; its first line carries the three skipped.
+    expect(budget(t0 + 60_000)).toEqual({ log: true, skipped: 3 });
+    expect(budget(t0 + 60_001)).toEqual({ log: true, skipped: 0 });
   });
 });
