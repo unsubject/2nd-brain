@@ -60,7 +60,11 @@ export async function startCollection(req: CollectRequest): Promise<string> {
         console.error(`[consolidation] heartbeat failed for run ${runId}:`, describeGoogleError(err))
       );
   const shouldStop = () => takenOver;
+  // Cleared when the run ends; unref'd so that a run whose job never settles
+  // (its pool ended under it, as at the end of a test) can't keep the
+  // process alive.
   const timer = setInterval(() => void progress(), HEARTBEAT_MS);
+  timer.unref();
 
   const job =
     req.source === "gmail"

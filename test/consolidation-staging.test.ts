@@ -485,8 +485,19 @@ test("candidate list, detail and review sample", { skip }, async () => {
 test("an extraction run is tracked like a collection run", { skip }, async () => {
   const { startCollection } = await import("../src/archive/consolidation/runner");
   await stageForExtraction();
-  const runId = await startCollection({ source: "extract" });
-  await assert.rejects(startCollection({ source: "extract" }), staging.RunAlreadyActiveError);
+  // Hold the run at its first candidate write, so the second start meets it
+  // running however quickly it would otherwise finish.
+  const hold = await db.connect();
+  let runId: string;
+  try {
+    await hold.query("BEGIN");
+    await hold.query("LOCK TABLE archive_candidate IN SHARE MODE");
+    runId = await startCollection({ source: "extract" });
+    await assert.rejects(startCollection({ source: "extract" }), staging.RunAlreadyActiveError);
+  } finally {
+    await hold.query("ROLLBACK");
+    hold.release();
+  }
   let row: { status: string; stats: Record<string, unknown> } | undefined;
   for (let i = 0; i < 100; i++) {
     row = (await db.query("SELECT status, stats FROM archive_collect_run WHERE id = $1", [runId])).rows[0];
