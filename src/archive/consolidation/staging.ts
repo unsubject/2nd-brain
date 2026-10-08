@@ -214,15 +214,16 @@ export async function finishRun(
   stats: Record<string, unknown>,
   error: string | null,
   db: DB = pool
-): Promise<void> {
+): Promise<boolean> {
   // Only a run still marked running: a run taken over as interrupted keeps
-  // that outcome even if its old process finishes later.
-  await db.query(
+  // that outcome even if its old process finishes later (false then).
+  const { rowCount } = await db.query(
     `UPDATE archive_collect_run
         SET status = $2, stats = $3::jsonb, error = $4, finished_at = now(), heartbeat_at = now()
       WHERE id = $1 AND status = 'running'`,
     [runId, status, JSON.stringify(stats), error ? error.slice(0, 2000) : null]
   );
+  return (rowCount ?? 0) > 0;
 }
 
 export interface InterruptedRun {

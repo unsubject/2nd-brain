@@ -116,7 +116,8 @@ what is already staged, so it continues where the old one stopped; a
 `resumedFrom` and `resumeCount`. A run is resumed at most 3 times in a row,
 so one that keeps crashing the app stops and has to be started again by
 hand. If a run's row is taken over while its old process is still alive,
-that process stops at its next item and cannot overwrite the outcome.
+that process stops at its next item and can neither overwrite the outcome
+nor start the step after it: the run that continues it does that.
 
 ## Running step 2
 

@@ -156,12 +156,17 @@ export async function startCollection(req: CollectRequest): Promise<string> {
     .then(async ({ ok, error }) => {
       const counts = JSON.stringify({ ...stats, errors: undefined });
       if (takenOver) {
-        // The row already records the outcome (interrupted, resumed elsewhere).
+        // The row already records the outcome (interrupted, resumed elsewhere),
+        // and the run that continues it, if any, chooses the next step.
         console.log(`[consolidation] ${source} run ${runId} stopped after being taken over: ${counts}`);
         return;
       }
       console.log(`[consolidation] ${source} run ${runId} finished: ${counts}`);
-      await finishRun(runId, ok ? "succeeded" : "failed", stats, error);
+      if (!(await finishRun(runId, ok ? "succeeded" : "failed", stats, error))) {
+        // Taken over after its last heartbeat: the same as above.
+        console.log(`[consolidation] ${source} run ${runId} was taken over before it ended; no step after it`);
+        return;
+      }
       const next = await nextStep(source, ok, runId).catch((err) => {
         console.error(`[consolidation] could not choose the step after ${source} run ${runId}:`, describeGoogleError(err));
         return null;

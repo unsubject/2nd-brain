@@ -2,7 +2,7 @@
 // Gated on TEST_DATABASE_URL: a local *_test database with migrations
 // applied (CI's mcp-worker setup migrates it). No Google traffic.
 
-import { test, before, after, beforeEach } from "node:test";
+import { test, before, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -306,7 +306,7 @@ test("heartbeat and finish leave alone a run that is no longer running", { skip 
   assert.equal(await staging.heartbeatRun(id, { inserted: 1 }, db), true);
   await db.query(`UPDATE archive_collect_run SET status = 'failed', error = 'interrupted: test' WHERE id = $1`, [id]);
   assert.equal(await staging.heartbeatRun(id, { inserted: 2 }, db), false);
-  await staging.finishRun(id, "succeeded", { inserted: 3 }, null, db);
+  assert.equal(await staging.finishRun(id, "succeeded", { inserted: 3 }, null, db), false);
   const { rows } = await db.query("SELECT status, error, stats FROM archive_collect_run WHERE id = $1", [id]);
   assert.deepEqual(rows[0], { status: "failed", error: "interrupted: test", stats: { inserted: 1 } });
 });
@@ -1431,4 +1431,97 @@ test("the step after a load: another when a match ended while it ran", { skip },
   const failedAgain = await endedRun("load", "failed");
   await endedRun("match", "failed");
   assert.equal(await nextStep("load", false, failedAgain, db), null);
+});
+
+// The runner's log lines, for waiting on a background run's end.
+function captureLog(): { lines: () => string[]; restore: () => void } {
+  const log = mock.method(console, "log", () => {});
+  return {
+    lines: () => log.mock.calls.map((c) => c.arguments.map(String).join(" ")),
+    restore: () => log.mock.restore(),
+  };
+}
+
+async function waitFor(what: string, done: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if (await done()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
+const runsOf = async (source: string) =>
+  (await db.query("SELECT id, status, error FROM archive_collect_run WHERE source = $1 ORDER BY started_at", [source])).rows;
+
+test("a run taken over while it works starts no step after it", { skip }, async () => {
+  const { startCollection } = await import("../src/archive/consolidation/runner");
+  await stageForExtraction();
+  const log = captureLog();
+  try {
+    // Hold the extraction at its first candidate write, and take it over
+    // meanwhile (the sweeper resuming it elsewhere would do this).
+    const hold = await db.connect();
+    let runId: string;
+    try {
+      await hold.query("BEGIN");
+      await hold.query("LOCK TABLE archive_candidate IN SHARE MODE");
+      runId = await startCollection({ source: "extract" });
+      await db.query("UPDATE archive_collect_run SET status = 'failed', error = 'interrupted: test' WHERE id = $1", [runId]);
+    } finally {
+      await hold.query("ROLLBACK");
+      hold.release();
+    }
+    // Its next heartbeat finds the row taken over: it stops, records
+    // nothing and starts no match.
+    await waitFor("the run to stop", () => log.lines().some((l) => l.includes(`run ${runId} stopped after being taken over`)));
+    assert.deepEqual(
+      (await runsOf("extract")).map((r) => [r.status, r.error]),
+      [["failed", "interrupted: test"]]
+    );
+    assert.deepEqual(await runsOf("match"), []);
+  } finally {
+    log.restore();
+  }
+});
+
+test("a run taken over after its last heartbeat records nothing and starts no step after it", { skip }, async () => {
+  const { startCollection } = await import("../src/archive/consolidation/runner");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  const log = captureLog();
+  try {
+    // Hold the load at its first write, after it has read the works and
+    // reported progress; take it over there, then let it finish.
+    const hold = await db.connect();
+    let runId: string;
+    try {
+      await hold.query("BEGIN");
+      await hold.query("LOCK TABLE public_artifact IN SHARE MODE");
+      runId = await startCollection({ source: "load" });
+      await waitFor("the load to wait for its write", async () => {
+        const { rows } = await db.query(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query LIKE '%INSERT INTO public_artifact%'`
+        );
+        return rows[0].n > 0;
+      });
+      await db.query("UPDATE archive_collect_run SET status = 'failed', error = 'interrupted: test' WHERE id = $1", [runId]);
+    } finally {
+      await hold.query("ROLLBACK");
+      hold.release();
+    }
+    await waitFor("the load to end", () => log.lines().some((l) => l.includes(`run ${runId} was taken over before it ended`)));
+    // Its works are written, but its row keeps the takeover, and no load
+    // follows (loadStale is true: no load succeeded).
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM public_artifact WHERE source_system = 'archive'")).rows[0].n, 2);
+    assert.deepEqual(
+      (await runsOf("load")).map((r) => [r.status, r.error]),
+      [["failed", "interrupted: test"]]
+    );
+    const load = await import("../src/archive/consolidation/load/run");
+    assert.equal(await load.loadStale(db), true);
+  } finally {
+    log.restore();
+  }
 });
