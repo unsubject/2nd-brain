@@ -114,8 +114,12 @@ async function processOne(): Promise<boolean> {
       );
     }
 
-    // 8. Rows this one replaces (archive consolidation, step 4) leave
-    // search now that it can be found instead.
+    // 8. Done: the row can be found, and the rows it replaces (archive
+    // consolidation, step 4) leave search.
+    if (!(await archiveQueries.finishArtifactProcessing(artifact.id, artifact.raw_source))) {
+      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
+      return true;
+    }
     const retired = await retireReplacedRows(artifact.id);
 
     console.log(
@@ -126,7 +130,7 @@ async function processOne(): Promise<boolean> {
   } catch (err) {
     console.error(`[archive] Error processing "${artifact.title}":`, err);
     const message = err instanceof Error ? err.message : String(err);
-    await archiveQueries.markArtifactError(artifact.id, message);
+    await archiveQueries.markArtifactError(artifact.id, message, artifact.raw_source);
     return true;
   }
 }

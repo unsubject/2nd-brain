@@ -243,9 +243,9 @@ flagged; an old row that matches a work is superseded, one that matches
 nothing stays searchable, flagged.
 
 A load runs by itself after every successful match, and on boot when no
-load by the current `LOADER_VERSION` has run since the works were made. A
-load that finds the works changed while it ran (a match finished meanwhile,
-whose own load it blocked) loads again. To start one by hand:
+load by the current `LOADER_VERSION` has read the current works (an empty
+set of works included). A load that finds the works changed while it ran (a
+match finished meanwhile, whose own load it blocked) loads again. To start one by hand:
 
 ```sh
 curl -X POST "$BASE/archive/consolidation/load" -H "Authorization: Bearer $ARCHIVE_API_KEY"
@@ -262,7 +262,9 @@ What a load writes, in one transaction:
   (`processing_status = 'pending'`), which summarises, chunks and embeds it
   as for any row; an unchanged one is left as it is. The worker saves its
   result only if the row still holds the text it processed, so a text
-  changed mid-way is processed again rather than overwritten.
+  changed mid-way is processed again rather than overwritten (a failure on
+  the old text is not recorded against the new one either), and marks a row
+  `processed` only once its summary, chunks and entities are all in.
 - **The rows it replaces** get `superseded_by` pointing at the new row:
   - a row from the first import (any source but `youtube`) that is a copy
     of any version of the work: the step 3 test, or, for a row the import
@@ -272,8 +274,10 @@ What a load writes, in one transaction:
 
   Such a row leaves search (`status = 'superseded'`) only once its
   replacement has been processed, so a piece never drops out of search
-  while its new row waits in the queue. An `archive` row that no work
-  replaces is superseded at once.
+  while its new row waits in the queue. The links the calendar/task linker
+  made to it (journal echoes, shared entities) then move to the
+  replacement. An `archive` row that no work replaces is superseded at
+  once.
 - **Old rows that match no work** stay searchable with
   `flag = 'unmatched'`. Video transcripts are not touched.
 

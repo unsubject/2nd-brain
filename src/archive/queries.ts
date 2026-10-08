@@ -104,7 +104,8 @@ export async function findPendingArtifact(): Promise<{
 // Saved only if the row still holds `claimedRawSource`, the text the worker
 // processed: a re-sync that changed the text meanwhile (and queued the row
 // again) must not be overwritten with results for the old text. Returns
-// whether it saved.
+// whether it saved. The row stays 'processing' until finishArtifactProcessing,
+// once its chunks and entities are in too.
 export async function saveArtifactProcessingResult(
   id: string,
   claimedRawSource: string,
@@ -128,8 +129,6 @@ export async function saveArtifactProcessingResult(
          language = $6,
          embedding = $7::vector,
          embedding_model = $8,
-         processing_status = 'processed',
-         last_error = NULL,
          updated_at = now()
      WHERE id = $1 AND raw_source = $9`,
     [
@@ -227,17 +226,35 @@ export async function clearArtifactEntities(artifactId: string): Promise<void> {
   );
 }
 
+// The last step: the row is complete and can be found. Like the save, only
+// for the text the worker claimed.
+export async function finishArtifactProcessing(id: string, claimedRawSource: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE public_artifact
+     SET processing_status = 'processed',
+         last_error = NULL,
+         updated_at = now()
+     WHERE id = $1 AND raw_source = $2`,
+    [id, claimedRawSource]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// With `claimedRawSource`, recorded only if the row still holds that text:
+// a failed attempt on an old text must not mark the new one, queued
+// meanwhile, as failed.
 export async function markArtifactError(
   id: string,
-  errorMessage: string
+  errorMessage: string,
+  claimedRawSource: string | null = null
 ): Promise<void> {
   await pool.query(
     `UPDATE public_artifact
      SET processing_status = 'error',
          last_error = $2,
          updated_at = now()
-     WHERE id = $1`,
-    [id, errorMessage]
+     WHERE id = $1 AND ($3::text IS NULL OR raw_source = $3)`,
+    [id, errorMessage, claimedRawSource]
   );
 }
 

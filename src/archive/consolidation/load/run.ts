@@ -311,6 +311,7 @@ export async function runLoad(
       }),
     ];
     const results = await pointRows(pointers, q);
+    await moveLinks(q);
     for (const p of pointers) {
       const r = results.get(p.id);
       if (!p.legacy || !r) continue;
@@ -340,23 +341,46 @@ export async function runLoad(
   stats.retiredLate = await retireReplacedRows(null, db);
 }
 
-// Works matched after the ones the last successful load by this
-// LOADER_VERSION read (or no such load yet): their rows are out of date.
-// Compared with what the load read, not when it started: a load that
-// starts while a match is writing still reads the works before it.
+// The works are not the ones the last successful load by this
+// LOADER_VERSION read (or none has run): their rows are out of date. Each
+// match writes one generation with one matched_at, so a different max
+// means a different generation, an empty one included. Compared with what
+// the load read, not when it started: a load that starts while a match is
+// writing still reads the works before it.
 export async function loadStale(db: DB = pool): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM archive_work)
-        AND COALESCE(
-              (SELECT max(matched_at) FROM archive_work) >
-              (SELECT (stats->>'worksMatchedAt')::timestamptz FROM archive_collect_run
-                WHERE source = 'load' AND status = 'succeeded'
-                  AND (stats->>'loaderVersion')::int = $1
-                ORDER BY started_at DESC LIMIT 1),
-              true) AS stale`,
+    `SELECT (SELECT max(matched_at) FROM archive_work) IS DISTINCT FROM
+            (SELECT (stats->>'worksMatchedAt')::timestamptz FROM archive_collect_run
+              WHERE source = 'load' AND status = 'succeeded'
+                AND (stats->>'loaderVersion')::int = $1
+              ORDER BY started_at DESC LIMIT 1) AS stale`,
     [LOADER_VERSION]
   );
   return rows[0].stale;
+}
+
+// Links the calendar/task linker made to a row that has left search
+// (journal echoes, shared entities) move to the row that replaced it, so
+// they keep showing the piece. A link that would point at its own source
+// is dropped.
+async function moveLinks(db: DB): Promise<void> {
+  await db.query(
+    `WITH moved AS (
+       SELECT e.id, a.superseded_by AS target
+         FROM link_edge e
+         JOIN public_artifact a ON e.target_type = 'public_artifact' AND a.id = e.target_id
+        WHERE a.status = 'superseded' AND a.superseded_by IS NOT NULL
+     ), copied AS (
+       INSERT INTO link_edge
+         (user_id, source_type, source_id, target_type, target_id, link_type, confidence, explanation, created_by, created_at)
+       SELECT e.user_id, e.source_type, e.source_id, e.target_type, m.target, e.link_type, e.confidence,
+              e.explanation, e.created_by, e.created_at
+         FROM link_edge e JOIN moved m ON m.id = e.id
+        WHERE NOT (e.source_type = 'public_artifact' AND e.source_id = m.target)
+       ON CONFLICT (source_type, source_id, target_type, target_id, link_type) DO NOTHING
+     )
+     DELETE FROM link_edge e USING moved m WHERE e.id = m.id`
+  );
 }
 
 // Rows whose replacement is processed leave search: those replaced by row
@@ -370,6 +394,7 @@ export async function retireReplacedRows(id: string | null, db: DB = pool): Prom
         AND a.status = 'published' AND ($1::uuid IS NULL OR t.id = $1::uuid)`,
     [id]
   );
+  if ((rowCount ?? 0) > 0) await moveLinks(db);
   return rowCount ?? 0;
 }
 
