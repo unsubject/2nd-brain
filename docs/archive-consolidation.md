@@ -54,6 +54,45 @@ Decisions (Simon, 2026-10-04):
    address with the full text, including paid posts, so they can be picked
    up from Gmail daily without re-exporting.
 
+## How the steps run
+
+Each step runs in the background inside the app and is tracked as a run in
+`archive_collect_run` (source `gmail`, `gdrive`, `extract`, `match` or
+`load`), with at most one live run per source. Once something is
+collected, the rest follows by itself, collect → extract → match → load:
+when a run ends it starts the step after it (`runner.nextStep`):
+
+| Run that ended | Next |
+|---|---|
+| Gmail or Drive collection, whatever its outcome | extraction, if any staged item lacks a current candidate |
+| Extraction that succeeded | extraction again if items were staged or changed while it ran, else matching |
+| Extraction that failed | extraction again only if items were staged or changed while it ran |
+| Match, whatever its outcome | matching again if an extraction succeeded while it ran |
+| Match that succeeded (otherwise) | loading |
+| Load that succeeded | loading again if the works are not the ones it read |
+| Load that failed | loading again only if a match succeeded while it ran |
+
+A step asked to start while a run of it is live is refused, so the live run
+checks when it ends whether something it missed arrived meanwhile: that is
+what the "again" rows are for. Extraction is also held back while a Gmail or
+Drive collection is live (it reads everything staged); the collection
+starts it when it ends. A failed run is followed again only for what came in
+while it ran, so a step that always fails doesn't start run after run. A run
+taken over by the resume sweeper (see "Running step 1") starts nothing; the
+run that continues it does when it ends.
+
+On boot (90 s after, so after every deploy and after the sweeper has
+resumed the runs it cut short) the app checks, in order, whether the
+candidates, the works or the loaded rows are out of date (a staged item
+with no candidate, one made by an older `EXTRACTOR_VERSION` or one older
+than the item; works older than the candidates or than `MATCHER_VERSION`;
+no load by this `LOADER_VERSION` that read the current works) and starts
+the first step that is due, which then starts the rest (`extract/auto.ts`). While a
+collection is live it waits for it, checking again every minute.
+Collection, extraction and loading can also be started by hand
+(`POST /archive/consolidation/collect`, `/extract`, `/load`; a refused
+start answers 409); matching starts only after an extraction or on boot.
+
 ## Running step 1
 
 All routes sit behind the existing `/archive/*` bearer auth (`ARCHIVE_API_KEY`).
