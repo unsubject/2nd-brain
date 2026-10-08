@@ -177,7 +177,9 @@ else the send date (`date_source`). The outlet follows the column (蘋果論壇 
 蘋果日報, 壹擋專政 → 壹週刊, 金融一條針 → 爽報), else the recipients' domain.
 A piece mailed to forum@appledaily.com is a 蘋果論壇 piece even when the
 subject doesn't say so. A leading "李兆富：" or "利世民：" in a subject is the
-author's name, not part of the title.
+author's name, not part of the title; a leading 投稿 followed by a separator,
+a space or a quote ("投稿：title") is a marker, but a title that starts with
+the word ("投稿文化的轉變") keeps it.
 
 These rules were checked against about 15 real messages from the label
 (2013–2024) on 2026-10-07; that pass added the 李兆富 sign-off, the older

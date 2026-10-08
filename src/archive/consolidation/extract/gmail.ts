@@ -109,6 +109,11 @@ export function cleanSubject(subject: string | null): string {
   return s.replace(/[（(]\s*留稿[^）)]*[）)]/g, "").trim();
 }
 
+// "投稿" ("submission") as a marker before the title: followed by a
+// separator, a space, an opening quote or nothing, so a title that starts
+// with the word ("投稿文化的轉變") keeps it.
+const SUBMISSION_MARKER = /^投稿(?:\s*[:：\-–—|｜·．]\s*|\s+|$|(?=[「『《〈“"‘'（(]))/;
+
 // The piece's own title: no column marker, author name, date, "投稿" or
 // "- Simon Lee".
 export function bareTitle(s: string | null): string {
@@ -119,7 +124,7 @@ export function bareTitle(s: string | null): string {
   t = t.replace(/^(李兆富|利世民)\s*[:：]/, "").trim();
   t = t.replace(/^[（(]?\s*\d{4}[\s\-./]?\d{1,2}[\s\-./]?\d{1,2}\s*[）)]?/, "").trim();
   t = t.replace(/^[:：\-–—|·．]+/, "").trim();
-  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(/^投稿\s*[:：\-–—]?\s*/, "");
+  t = t.replace(/\s*[-–—|]\s*simon\s*lee\s*$/i, "").replace(/\s*[x×]\s*尚生活\s*$/i, "").replace(SUBMISSION_MARKER, "");
   t = t.trim();
   return /^[\d\s\-./]*$/.test(t) ? "" : t;
 }

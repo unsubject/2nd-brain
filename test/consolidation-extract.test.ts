@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { htmlToText, textLength, unwrapSoftBreaks } from "../src/archive/consolidation/extract/text";
 import {
+  bareTitle,
   cutQuoted,
   detectOutlet,
   extractGmail,
@@ -212,6 +213,18 @@ test("an occasional piece outside the known columns is kept, with no column", ()
   assert.equal(c.bodyText, ESSAY);
   // Without a title line, the subject gives the title, minus "投稿".
   assert.equal(extractGmail(message({ title: "投稿：樓市的下一步" }, { to: ["editor@example-weekly.com"] })).title, "樓市的下一步");
+});
+
+test("投稿 is removed only as a marker, not from a title that starts with the word", () => {
+  for (const marked of ["投稿：樓市的下一步", "投稿 樓市的下一步", "投稿 - 樓市的下一步", "投稿｜樓市的下一步"]) {
+    assert.equal(bareTitle(marked), "樓市的下一步", marked);
+  }
+  assert.equal(bareTitle("投稿「樓市的下一步」"), "「樓市的下一步」");
+  assert.equal(bareTitle("投稿"), "");
+  assert.equal(bareTitle("投稿文化的轉變"), "投稿文化的轉變");
+  assert.equal(bareTitle("投稿人的權利"), "投稿人的權利");
+  const c = extractGmail(message({ title: "投稿文化的轉變" }, { to: ["editor@example-weekly.com"] }));
+  assert.equal(c.title, "投稿文化的轉變");
 });
 
 test("subjectDate reads 留稿 dates across the new year, and ignores far-off dates", () => {
