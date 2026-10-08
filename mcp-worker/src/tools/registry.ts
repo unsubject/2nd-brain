@@ -135,7 +135,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'archive_search_text',
     description:
-      "Search Simon's published essays and YouTube episodes by meaning: the query is embedded server-side (text-embedding-3-small) and matched against each piece's summary embedding. Returns top-K hits with {id, title, url, published_at, similarity, type: 'essay'|'episode'}. Matches summaries only and returns no body text.",
+      "Search Simon's published essays and YouTube episodes by meaning: the query is embedded server-side (text-embedding-3-small) and matched against each piece's summary embedding. Returns top-K hits with {id, title, url, published_at, similarity, type: 'essay'|'episode', flag}. flag is null for a confirmed piece, 'review' for an essay still to be checked (unpublished, or its text uncertain), or 'unmatched' for an old imported row that matches no confirmed piece. Matches summaries only and returns no body text.",
     inputSchema: {
       type: 'object',
       properties: {

@@ -325,6 +325,11 @@ test("resumeRequest continues a run with its settings, up to MAX_RESUMES times",
     resumedFrom: "run-4",
     resumeCount: 1,
   });
+  assert.deepEqual(resumeRequest({ id: "run-5", source: "load", params: { resumeCount: 1 } }), {
+    source: "load",
+    resumedFrom: "run-5",
+    resumeCount: 2,
+  });
 
   // Resumed too often, or params that don't describe a run: left alone.
   assert.equal(resumeRequest({ id: "r", source: "gmail", params: { label: "Writing", resumeCount: MAX_RESUMES } }), null);

@@ -7,6 +7,7 @@ import { startCollection, type CollectRequest } from "./consolidation/runner";
 import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
 import { candidateSummary } from "./consolidation/extract/run";
 import { workSummary } from "./consolidation/match/run";
+import { loadSummary } from "./consolidation/load/run";
 import { getWork, listWorks, parseWorkListQuery } from "./consolidation/match/review";
 import {
   getCandidate,
@@ -127,13 +128,14 @@ export function archiveRoutes(): Router {
 
   router.get("/archive/consolidation/status", async (_req, res) => {
     try {
-      const [staging, candidates, works, audit] = await Promise.all([
+      const [staging, candidates, works, loaded, audit] = await Promise.all([
         getStagingStatus(),
         candidateSummary(),
         workSummary(),
+        loadSummary(),
         auditPublicArtifacts(),
       ]);
-      res.json({ staging, candidates, works, publicArtifactAudit: audit });
+      res.json({ staging, candidates, works, publicArtifact: loaded, publicArtifactAudit: audit });
     } catch (err) {
       console.error("[consolidation] status error:", describeGoogleError(err));
       res.status(500).json({ error: "Failed to get consolidation status" });
@@ -154,6 +156,22 @@ export function archiveRoutes(): Router {
       }
       console.error("[consolidation] extract error:", describeGoogleError(err));
       res.status(500).json({ error: "Failed to start extraction" });
+    }
+  });
+
+  // Step 4: write the works to public_artifact (runs by itself after every
+  // match; this starts one by hand).
+  router.post("/archive/consolidation/load", async (_req, res) => {
+    try {
+      const runId = await startCollection({ source: "load" });
+      res.status(202).json({ runId, status: "running" });
+    } catch (err) {
+      if (err instanceof RunAlreadyActiveError) {
+        res.status(409).json({ error: "a load run is already in progress" });
+        return;
+      }
+      console.error("[consolidation] load error:", describeGoogleError(err));
+      res.status(500).json({ error: "Failed to start loading" });
     }
   });
 

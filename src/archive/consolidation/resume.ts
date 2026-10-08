@@ -28,8 +28,8 @@ export function resumeRequest(run: InterruptedRun): CollectRequest | null {
   const p = run.params ?? {};
   const count = typeof p.resumeCount === "number" ? p.resumeCount : 0;
   if (count >= MAX_RESUMES) return null;
-  if (run.source === "extract" || run.source === "match") {
-    // Both rebuild their whole output, so running again is the resume.
+  if (run.source === "extract" || run.source === "match" || run.source === "load") {
+    // Each rebuilds its whole output, so running again is the resume.
     return { source: run.source, resumedFrom: run.id, resumeCount: count + 1 };
   }
   const resume = { refetch: p.refetch === true, resumedFrom: run.id, resumeCount: count + 1 };

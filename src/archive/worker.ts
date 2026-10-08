@@ -3,6 +3,7 @@ import { analyzeArtifact, extractEntities } from "./processor";
 import { chunkArtifact } from "./chunker";
 import { batchEmbed, EMBEDDING_MODEL } from "./embeddings";
 import { normalizeMarkdown } from "./ingest/markdown";
+import { retireReplacedRows } from "./consolidation/load/run";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -48,7 +49,7 @@ async function processOne(): Promise<boolean> {
     const chunkEmbeddings = embeddings.slice(1);
 
     // 4. Save artifact processing result
-    await archiveQueries.saveArtifactProcessingResult(artifact.id, {
+    const saved = await archiveQueries.saveArtifactProcessingResult(artifact.id, artifact.raw_source, {
       cleanText,
       summary: finalSummary,
       excerpt: analysis.excerpt,
@@ -57,6 +58,13 @@ async function processOne(): Promise<boolean> {
       embedding: summaryEmbedding,
       embeddingModel: EMBEDDING_MODEL,
     });
+
+    if (!saved) {
+      // The text changed while it was processed; the row is queued again
+      // and the next pass processes the new text.
+      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
+      return true;
+    }
 
     // 5. Save chunks with embeddings
     const chunksWithEmbeddings = chunks.map((c, i) => ({
@@ -89,31 +97,34 @@ async function processOne(): Promise<boolean> {
       );
     }
 
-    // 7. Cross-link artifacts sharing entities
-    const related = await archiveQueries.findArtifactsSharingEntities(
-      artifact.id,
-      2
-    );
-    for (const rel of related) {
-      await archiveQueries.insertLinkEdge(
-        "public_artifact",
-        artifact.id,
-        "public_artifact",
-        rel.other_artifact_id,
-        "shared_entities",
-        null,
-        `${rel.shared_count} shared entities`
-      );
+    // 7. Cross-link artifacts sharing entities (rebuilt, so nothing from an
+    // earlier pass or an abandoned attempt stays)
+    await archiveQueries.replaceSharedEntityLinks(artifact.id, 2);
+
+    // 8. Done: the row can be found, and the rows it replaces (archive
+    // consolidation, step 4) leave search.
+    if (!(await archiveQueries.finishArtifactProcessing(artifact.id, artifact.raw_source))) {
+      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
+      return true;
+    }
+    // A failure here is not this row's: it is complete. The rows it
+    // replaces stay searchable, and the next load retires them.
+    let retired = 0;
+    try {
+      retired = await retireReplacedRows(artifact.id);
+    } catch (err) {
+      console.error(`[archive] Could not retire the rows "${artifact.title}" replaces:`, err);
     }
 
     console.log(
-      `[archive] Processed "${artifact.title}": ${chunks.length} chunks, ${entities.length} entities`
+      `[archive] Processed "${artifact.title}": ${chunks.length} chunks, ${entities.length} entities` +
+        (retired > 0 ? `, replaces ${retired} older row(s)` : "")
     );
     return true;
   } catch (err) {
     console.error(`[archive] Error processing "${artifact.title}":`, err);
     const message = err instanceof Error ? err.message : String(err);
-    await archiveQueries.markArtifactError(artifact.id, message);
+    await archiveQueries.markArtifactError(artifact.id, message, artifact.raw_source);
     return true;
   }
 }

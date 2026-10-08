@@ -3,6 +3,7 @@ import { collectGmail, emptyStats, type GmailCollectParams } from "./gmail";
 import { pool, type DB } from "../../db/client";
 import { describeGoogleError } from "../../google/errors";
 import { candidatesStale, emptyExtractStats, runExtraction, type ExtractStats } from "./extract/run";
+import { emptyLoadStats, loadStale, runLoad, type LoadStats } from "./load/run";
 import { emptyMatchStats, runMatch, type MatchStats } from "./match/run";
 import { finishRun, heartbeatRun, RunAlreadyActiveError, startRun, type CollectorSource } from "./staging";
 
@@ -16,7 +17,8 @@ export type CollectRequest =
   | ({ source: "gmail" } & GmailCollectParams & ResumeInfo)
   | ({ source: "gdrive" } & DriveCollectParams & ResumeInfo)
   | ({ source: "extract" } & ResumeInfo)
-  | ({ source: "match" } & ResumeInfo);
+  | ({ source: "match" } & ResumeInfo)
+  | ({ source: "load" } & ResumeInfo);
 
 // Independent of progress, so a long rate-limit pause never looks like a
 // dead process (staging.STALE_RUN_SECONDS is the other side of this).
@@ -34,32 +36,45 @@ function startFollowUp(req: CollectRequest): void {
     });
 }
 
-// The step after run `runId` ended, so new material reaches the works with
-// no one starting a step. A collection, whatever its outcome (what it staged
-// is good), is followed by extraction when a staged item lacks a current
-// candidate: its own items, or another collection's whose extraction it held
-// back. An extraction, whatever its outcome, is followed by another when
-// items were staged or changed while it ran: its scan can miss a
-// collection's rows (extraction doesn't start while a collection is live,
-// but a collection can start during an extraction, and its own follow-up is
-// refused while the extraction is live). After a failed extraction only
-// those items count, so an item that always fails doesn't start run after
-// run (it waits for the boot check or a run by hand). A successful
-// extraction that left every candidate current is followed by matching.
+// The step after run `runId` ended, so new material reaches the works and
+// public_artifact with no one starting a step: collect -> extract -> match
+// -> load. One run per step at a time, so a step's follow-up is refused
+// while that step is already running; the running one then checks, when it
+// ends, whether it has to run again.
+//
+// - A collection, whatever its outcome (what it staged is good), is
+//   followed by extraction when a staged item lacks a current candidate:
+//   its own items, or another collection's whose extraction it held back.
+// - An extraction, whatever its outcome, is followed by another when items
+//   were staged or changed while it ran: its scan can miss a collection's
+//   rows (extraction doesn't start while a collection is live, but a
+//   collection can start during an extraction, and its own follow-up is
+//   refused while the extraction is live). After a failed extraction only
+//   those items count, so an item that always fails doesn't start run after
+//   run (it waits for the boot check or a run by hand). A successful
+//   extraction that left every candidate current is followed by matching.
+// - A successful match (new works) is followed by loading.
+// - A successful load is followed by another when the works are not the
+//   ones it read (loadStale): a match that ended while it ran could not
+//   start its own.
 export async function nextStep(
   source: CollectorSource,
   succeeded: boolean,
   runId: string,
   db: DB = pool
 ): Promise<CollectRequest | null> {
-  if (source === "gmail" || source === "gdrive") {
-    return (await candidatesStale(db)) ? { source: "extract" } : null;
+  switch (source) {
+    case "gmail":
+    case "gdrive":
+      return (await candidatesStale(db)) ? { source: "extract" } : null;
+    case "extract":
+      if (await candidatesStale(db, succeeded ? undefined : runId)) return { source: "extract" };
+      return succeeded ? { source: "match" } : null;
+    case "match":
+      return succeeded ? { source: "load" } : null;
+    case "load":
+      return succeeded && (await loadStale(db)) ? { source: "load" } : null;
   }
-  if (source === "extract") {
-    if (await candidatesStale(db, succeeded ? undefined : runId)) return { source: "extract" };
-    return succeeded ? { source: "match" } : null;
-  }
-  return null;
 }
 
 // Start a collector in the background and return its run id at once; the
@@ -76,7 +91,9 @@ export async function startCollection(req: CollectRequest): Promise<string> {
         ? emptyDriveStats()
         : source === "extract"
           ? emptyExtractStats()
-          : emptyMatchStats();
+          : source === "match"
+            ? emptyMatchStats()
+            : emptyLoadStats();
   // Set when the row stops being 'running' under us (taken over as
   // interrupted); the collector then stops at its next item.
   let takenOver = false;
@@ -110,7 +127,9 @@ export async function startCollection(req: CollectRequest): Promise<string> {
           )
         : req.source === "extract"
           ? runExtraction(stats as ExtractStats, progress, shouldStop)
-          : runMatch(stats as MatchStats, progress, shouldStop);
+          : req.source === "match"
+            ? runMatch(stats as MatchStats, progress, shouldStop)
+            : runLoad(stats as LoadStats, progress, shouldStop);
 
   job
     .then(

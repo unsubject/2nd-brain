@@ -1,19 +1,25 @@
-// Keep candidates (step 2) and works (step 3) in step with the rules without
-// anyone starting a run: shortly after boot (so after every deploy),
-// re-extract when a staged item has no candidate yet, one made by an older
-// EXTRACTOR_VERSION or one older than the item (a successful extraction
-// then starts matching by itself), else re-match when the works are older
-// than the candidates or MATCHER_VERSION. When all is current this costs
-// two queries. Collections start extraction themselves when they end
-// (runner.ts); this check covers what a deploy or a rule change left behind.
+// Keep candidates (step 2), works (step 3) and their public_artifact rows
+// (step 4) in step with the rules without anyone starting a run: shortly
+// after boot (so after every deploy), re-extract when a staged item has no
+// candidate yet, one made by an older EXTRACTOR_VERSION or one older than
+// the item, else re-match when the works are older than the candidates or
+// MATCHER_VERSION, else load when no load by this LOADER_VERSION has read
+// the works as they are. Only the first step due is started: each step
+// starts the next when it ends (runner.nextStep), so a successful
+// extraction is followed by matching and loading. When all is current this
+// costs three queries. Collections start extraction themselves when they
+// end; this check covers what a deploy or a rule change left behind.
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
+import { LOADER_VERSION, loadStale } from "../load/run";
 import { MATCHER_VERSION } from "../match/run";
 import { startCollection, type CollectRequest } from "../runner";
 import { RunAlreadyActiveError, RunBlockedError, type CollectorSource } from "../staging";
 import { candidatesStale } from "./run";
 import { EXTRACTOR_VERSION } from "./types";
+
+export { candidatesStale, loadStale };
 
 // After the resume sweeper's first pass (30 s). A collection that is live
 // then (resumed, or its old process's heartbeat not yet stale) holds
@@ -37,17 +43,30 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
   return rows[0].stale;
 }
 
+const MESSAGES = {
+  extract: `candidates out of date (extractor v${EXTRACTOR_VERSION})`,
+  match: `works out of date (matcher v${MATCHER_VERSION})`,
+  load: `archive rows out of date (loader v${LOADER_VERSION})`,
+};
+
 // The step started and its run id; `waitingFor` when extraction is due but
 // a collection is live; null when everything was current or a run of the
 // step is already going.
 export async function catchUp(
   start: (req: CollectRequest) => Promise<string> = startCollection,
-  stale: { candidates: () => Promise<boolean>; works: () => Promise<boolean> } = {
+  stale: { candidates: () => Promise<boolean>; works: () => Promise<boolean>; load?: () => Promise<boolean> } = {
     candidates: () => candidatesStale(),
     works: () => worksStale(),
+    load: () => loadStale(),
   }
-): Promise<{ source: "extract" | "match"; runId: string } | { waitingFor: CollectorSource } | null> {
-  const source = (await stale.candidates()) ? "extract" : (await stale.works()) ? "match" : null;
+): Promise<{ source: "extract" | "match" | "load"; runId: string } | { waitingFor: CollectorSource } | null> {
+  const source = (await stale.candidates())
+    ? "extract"
+    : (await stale.works())
+      ? "match"
+      : (await stale.load?.())
+        ? "load"
+        : null;
   if (!source) return null;
   try {
     return { source, runId: await start({ source }) };
@@ -68,9 +87,7 @@ export function startAutoExtraction(): void {
           waiting = true;
           setTimeout(check, RECHECK_MS);
         } else if (r) {
-          console.log(
-            `[consolidation] ${r.source === "extract" ? `candidates out of date (extractor v${EXTRACTOR_VERSION})` : `works out of date (matcher v${MATCHER_VERSION})`}; ${r.source} run ${r.runId} started`
-          );
+          console.log(`[consolidation] ${MESSAGES[r.source]}; ${r.source} run ${r.runId} started`);
         }
       })
       .catch((err) => console.error("[consolidation] catch-up check failed:", describeGoogleError(err)));
