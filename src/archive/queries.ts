@@ -1,5 +1,5 @@
 import { PoolClient } from "pg";
-import { pool } from "../db/client";
+import { pool, type DB } from "../db/client";
 
 export async function upsertArtifact(params: {
   userId: string;
@@ -58,6 +58,17 @@ export async function upsertArtifact(params: {
              WHEN public_artifact.raw_source = EXCLUDED.raw_source
              THEN public_artifact.last_error
              ELSE NULL
+           END,
+           -- Re-queued: a worker processing the old text loses its claim.
+           claim_token = CASE
+             WHEN public_artifact.raw_source = EXCLUDED.raw_source
+             THEN public_artifact.claim_token
+             ELSE NULL
+           END,
+           claimed_at = CASE
+             WHEN public_artifact.raw_source = EXCLUDED.raw_source
+             THEN public_artifact.claimed_at
+             ELSE NULL
            END
      RETURNING id,
        (xmax = 0) AS created`,
@@ -80,18 +91,36 @@ export async function upsertArtifact(params: {
   return { id: rows[0].id, created: rows[0].created };
 }
 
+// One worker pass's hold on a row: the token its claim got, and the text it
+// processes. Every write the pass makes requires both, with the row still
+// 'processing'. Whatever takes the row out of the pass's hands (the
+// reclaim, a load or import that changes the text, resetErroredArtifacts)
+// clears the token, so the pass then writes nothing (Codex on #102).
+export interface ArtifactClaim {
+  token: string;
+  rawSource: string;
+}
+
+// Claims the oldest pending row under a new token, with a fresh lease. It
+// stamps updated_at too, as the claim did before 031: the code from before
+// 031 reclaims on updated_at alone, and it still runs while a deploy
+// starts this code, so a fresh claim on an old row must not look stranded
+// to it. (Its reclaim and its claim both leave our token on the row, so
+// our pass would go on beside one of its own.) This code reclaims on the
+// lease.
 export async function findPendingArtifact(): Promise<{
   id: string;
   raw_source: string;
   title: string;
   tags: string[] | null;
   summary: string | null;
+  claim_token: string;
 } | null> {
-  // The claim stamps updated_at, so a claim left by a worker that stopped
-  // mid-row (a restart or deploy) can be told from one in progress.
   const { rows } = await pool.query(
     `UPDATE public_artifact
      SET processing_status = 'processing',
+         claim_token = gen_random_uuid(),
+         claimed_at = now(),
          updated_at = now()
      WHERE id = (
        SELECT id FROM public_artifact
@@ -100,47 +129,80 @@ export async function findPendingArtifact(): Promise<{
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING id, raw_source, title, tags, summary`
+     RETURNING id, raw_source, title, tags, summary, claim_token`
   );
   return rows[0] || null;
 }
 
-// Rows left 'processing' by a worker that stopped mid-row go back to the
-// queue once their claim is this many minutes old (a row takes seconds).
+// Rows 'processing' whose lease is this many minutes old go back to the
+// queue (a row takes seconds): their worker stopped mid-row (a restart or
+// deploy), or has spent that long in one model step. Either way it loses
+// its claim, so if it does go on, it writes nothing. A row claimed before
+// leases existed (031) has no claimed_at; its updated_at, which that claim
+// stamped, stands in.
 export async function reclaimStaleProcessing(minutes: number = 15): Promise<number> {
   const { rowCount } = await pool.query(
     `UPDATE public_artifact
-     SET processing_status = 'pending'
+     SET processing_status = 'pending',
+         claim_token = NULL,
+         claimed_at = NULL
      WHERE processing_status = 'processing'
-       AND updated_at < now() - make_interval(mins => $1)`,
+       AND coalesce(claimed_at, updated_at) < now() - make_interval(mins => $1)`,
     [minutes]
   );
   return rowCount ?? 0;
 }
 
-// Whether the row still holds `rawSource`: the worker stops a pass on a
-// changed text before its entity calls. The save checks it again, under
-// the row's lock.
-export async function artifactHoldsText(id: string, rawSource: string): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2`,
-    [id, rawSource]
-  );
-  return (rowCount ?? 0) > 0;
+// The worker's writes to its row, in a transaction of their own. A load
+// holds every row it writes until it commits, which can take longer than
+// the pool's 10 s statement timeout: wait for it rather than fail the row.
+async function waitingForLoads<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout = '5min'");
+    const out = await fn(client);
+    await client.query("COMMIT");
+    return out;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Renews the lease, if the claim still holds: the worker calls it between
+// model steps, so a pass that is getting on is not taken back. False when
+// the claim was lost (taken back, the text changed, or the row was reset):
+// the worker drops the pass before its next model call. The save checks
+// the claim again, under the row's lock.
+export async function renewClaim(id: string, claim: ArtifactClaim): Promise<boolean> {
+  return waitingForLoads(async (client) => {
+    const { rowCount } = await client.query(
+      `UPDATE public_artifact SET claimed_at = now()
+        WHERE id = $1 AND claim_token = $2 AND raw_source = $3 AND processing_status = 'processing'`,
+      [id, claim.token, claim.rawSource]
+    );
+    return (rowCount ?? 0) > 0;
+  });
 }
 
 // Everything one pass of the worker writes, in one transaction that first
-// locks the row and checks it still holds `claimedRawSource`, the text the
-// worker processed. A load that changes the text (and queues the row again)
-// either waits for the commit or leaves this pass writing nothing. So the
-// results for an old text never land beside, or after, those for the new
-// one, even when a second worker processes the new text meanwhile and
-// finishes first (Codex on #99). The lock is the one an update takes, so a
-// load pointing an older row at this one (superseded_by) need not wait.
-// Returns whether it saved. A saved row is 'processed' and can be found.
+// locks the row and checks the pass still holds its claim: the row is
+// 'processing' under the pass's token, with the text it processed. A load
+// that changes the text (and queues the row again) either waits for the
+// commit or leaves this pass writing nothing. So the results for an old
+// text never land beside, or after, those for the new one, even when a
+// second worker processes the new text meanwhile and finishes first (Codex
+// on #99). Likewise for a claim taken back, or reset, while the pass ran:
+// the pass that took the row over writes, this one does not (Codex on
+// #102). The lock is the one an update takes, so a load pointing an older
+// row at this one (superseded_by) need not wait. Returns whether it saved.
+// A saved row is 'processed', holds no claim, and can be found.
 export async function completeArtifactProcessing(
   id: string,
-  claimedRawSource: string,
+  claim: ArtifactClaim,
   params: {
     cleanText: string;
     summary: string;
@@ -158,26 +220,21 @@ export async function completeArtifactProcessing(
       endOffset: number;
       embedding: number[];
     }[];
-    // entity_ref ids, upserted beforehand (upsertEntity)
-    entities: { entityRefId: string; mentionText: string | null; salience: number | null }[];
+    // The extractor's entities. Their shared names (entity_ref) are
+    // written here, under the claim.
+    entities: { entityType: string; displayName: string; aliases: string[]; salience: number | null }[];
   },
   minShared: number = 2
 ): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    // A load holds every row it writes until it commits, which can take
-    // longer than the pool's 10 s statement timeout: wait for it rather
-    // than fail the row. The other statements here are short.
-    await client.query("SET LOCAL statement_timeout = '5min'");
+  // Only the lock waits for a load; the other statements here are short.
+  return waitingForLoads(async (client) => {
     const { rowCount: held } = await client.query(
-      `SELECT 1 FROM public_artifact WHERE id = $1 AND raw_source = $2 FOR NO KEY UPDATE`,
-      [id, claimedRawSource]
+      `SELECT 1 FROM public_artifact
+        WHERE id = $1 AND claim_token = $2 AND raw_source = $3 AND processing_status = 'processing'
+        FOR NO KEY UPDATE`,
+      [id, claim.token, claim.rawSource]
     );
-    if (!held) {
-      await client.query("ROLLBACK");
-      return false;
-    }
+    if (!held) return false;
 
     await client.query(
       `UPDATE public_artifact
@@ -190,6 +247,8 @@ export async function completeArtifactProcessing(
            embedding_model = $8,
            processing_status = 'processed',
            last_error = NULL,
+           claim_token = NULL,
+           claimed_at = NULL,
            updated_at = now()
        WHERE id = $1`,
       [
@@ -224,6 +283,20 @@ export async function completeArtifactProcessing(
       );
     }
 
+    // The entities' shared names, written only under the claim, so a pass
+    // that lost it changes none of them (Codex on #103). In one order (type,
+    // then name), so two passes upserting the same names wait for each
+    // other rather than deadlock.
+    const entities = [...params.entities].sort((a, b) => {
+      const ka = `${a.entityType}\u0000${normalizedEntityName(a.displayName)}`;
+      const kb = `${b.entityType}\u0000${normalizedEntityName(b.displayName)}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+    const refIds: string[] = [];
+    for (const e of entities) {
+      refIds.push(await upsertEntity("default", e.entityType, e.displayName, e.aliases, client));
+    }
+
     // One row per entity: two names the extractor returned for the same
     // entity would otherwise count twice towards a shared link.
     await client.query(`DELETE FROM public_artifact_entity WHERE public_artifact_id = $1`, [id]);
@@ -232,33 +305,27 @@ export async function completeArtifactProcessing(
        SELECT DISTINCT ON (e.entity_ref_id) $1, e.entity_ref_id, e.mention_text, e.salience
          FROM unnest($2::uuid[], $3::text[], $4::real[]) AS e(entity_ref_id, mention_text, salience)
         ORDER BY e.entity_ref_id, e.salience DESC NULLS LAST`,
-      [
-        id,
-        params.entities.map((e) => e.entityRefId),
-        params.entities.map((e) => e.mentionText),
-        params.entities.map((e) => e.salience),
-      ]
+      [id, refIds, entities.map((e) => e.displayName), entities.map((e) => e.salience)]
     );
 
     await writeSharedEntityLinks(client, id, minShared);
-    await client.query("COMMIT");
     return true;
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
+}
+
+function normalizedEntityName(displayName: string): string {
+  return displayName.toLowerCase().trim();
 }
 
 export async function upsertEntity(
   userId: string,
   entityType: string,
   displayName: string,
-  aliases: string[]
+  aliases: string[],
+  db: DB = pool
 ): Promise<string> {
-  const normalized = displayName.toLowerCase().trim();
-  const { rows } = await pool.query(
+  const normalized = normalizedEntityName(displayName);
+  const { rows } = await db.query(
     `INSERT INTO entity_ref (user_id, entity_type, normalized_name, display_name, aliases)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (user_id, entity_type, normalized_name) DO UPDATE
@@ -271,22 +338,24 @@ export async function upsertEntity(
   return rows[0].id;
 }
 
-// With `claimedRawSource`, recorded only if the row still holds that text:
-// a failed attempt on an old text must not mark the new one, queued
-// meanwhile, as failed.
-export async function markArtifactError(
-  id: string,
-  errorMessage: string,
-  claimedRawSource: string | null = null
-): Promise<void> {
-  await pool.query(
-    `UPDATE public_artifact
-     SET processing_status = 'error',
-         last_error = $2,
-         updated_at = now()
-     WHERE id = $1 AND ($3::text IS NULL OR raw_source = $3)`,
-    [id, errorMessage, claimedRawSource]
-  );
+// A failed pass, recorded only while it holds its claim: a failure on a
+// claim that was lost must not mark the row, whether it was queued again
+// with a new text, reset, or taken over and finished by another pass.
+// Returns whether it was recorded.
+export async function markArtifactError(id: string, errorMessage: string, claim: ArtifactClaim): Promise<boolean> {
+  return waitingForLoads(async (client) => {
+    const { rowCount } = await client.query(
+      `UPDATE public_artifact
+       SET processing_status = 'error',
+           last_error = $2,
+           claim_token = NULL,
+           claimed_at = NULL,
+           updated_at = now()
+       WHERE id = $1 AND claim_token = $3 AND raw_source = $4 AND processing_status = 'processing'`,
+      [id, errorMessage, claim.token, claim.rawSource]
+    );
+    return (rowCount ?? 0) > 0;
+  });
 }
 
 // This artifact's links to the artifacts sharing at least `minShared` of
@@ -561,11 +630,15 @@ export async function getProcessingDiagnostics(): Promise<{
   };
 }
 
+// Queues failed rows again, and rows being processed: a worker still on
+// one loses its claim and writes nothing.
 export async function resetErroredArtifacts(): Promise<number> {
   const { rowCount } = await pool.query(
     `UPDATE public_artifact
      SET processing_status = 'pending',
-         last_error = NULL
+         last_error = NULL,
+         claim_token = NULL,
+         claimed_at = NULL
      WHERE processing_status IN ('error', 'processing')`
   );
   return rowCount ?? 0;

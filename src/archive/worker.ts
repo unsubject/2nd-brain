@@ -6,7 +6,9 @@ import { normalizeMarkdown } from "./ingest/markdown";
 import { retireReplacedRows } from "./consolidation/load/run";
 
 const POLL_INTERVAL_MS = 60_000;
-// How often to put back rows a stopped worker left half done.
+// How often to put back rows whose lease has run out: their worker
+// stopped mid-row (a restart or deploy), or spent that long in one model
+// call.
 const RECLAIM_INTERVAL_MS = 5 * 60_000;
 let lastReclaim = 0;
 
@@ -14,13 +16,22 @@ async function reclaimStale(): Promise<void> {
   if (Date.now() - lastReclaim < RECLAIM_INTERVAL_MS) return;
   lastReclaim = Date.now();
   const n = await archiveQueries.reclaimStaleProcessing();
-  if (n > 0) console.log(`[archive] Requeued ${n} row(s) a stopped worker left in processing`);
+  if (n > 0) console.log(`[archive] Requeued ${n} row(s) whose worker's claim expired`);
 }
 
 async function processOne(): Promise<boolean> {
   await reclaimStale();
   const artifact = await archiveQueries.findPendingArtifact();
   if (!artifact) return false;
+  // Every write this pass makes requires its claim. A claim lost meanwhile
+  // (taken back once its lease ran out, the text changed by a load or an
+  // import, or the row reset) leaves the row to the pass that holds it now,
+  // or the next.
+  const claim = { token: artifact.claim_token, rawSource: artifact.raw_source };
+  const dropped = (outcome = "left for the next pass"): true => {
+    console.log(`[archive] "${artifact.title}" lost its claim while processing (requeued, reset or taken back); ${outcome}`);
+    return true;
+  };
 
   console.log(`[archive] Processing "${artifact.title}" (${artifact.id})...`);
 
@@ -34,6 +45,8 @@ async function processOne(): Promise<boolean> {
       cleanText,
       artifact.tags
     );
+    // Renew the lease between model steps, or stop if it is lost.
+    if (!(await archiveQueries.renewClaim(artifact.id, claim))) return dropped();
 
     // Prefer a source-provided summary over the LLM's when one is present
     const existingSummary = artifact.summary?.trim();
@@ -59,32 +72,18 @@ async function processOne(): Promise<boolean> {
     const summaryEmbedding = embeddings[0];
     const chunkEmbeddings = embeddings.slice(1);
 
-    // A load may have changed the text meanwhile: stop before the entity
-    // calls (the save below checks again).
-    if (!(await archiveQueries.artifactHoldsText(artifact.id, artifact.raw_source))) {
-      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
-      return true;
-    }
+    // Again before the entity calls (the save below checks once more).
+    if (!(await archiveQueries.renewClaim(artifact.id, claim))) return dropped();
 
-    // 4. Extract entities. Each is upserted now, but the row's links to
-    // them are written with the rest below.
+    // 4. Extract entities. Their shared names are written with the rest
+    // below, under the claim.
     const entities = await extractEntities(artifact.title, cleanText);
-    const entityLinks = [];
-    for (const entity of entities) {
-      const entityRefId = await archiveQueries.upsertEntity(
-        "default",
-        entity.entity_type,
-        entity.display_name,
-        entity.aliases
-      );
-      entityLinks.push({ entityRefId, mentionText: entity.display_name, salience: entity.salience });
-    }
 
     // 5. Save it all at once: the result, chunks, entities, and the links
     // to artifacts sharing entities (rebuilt, so nothing from an earlier
     // pass stays). Then the row can be found, and the rows it replaces
     // (archive consolidation, step 4) leave search.
-    const saved = await archiveQueries.completeArtifactProcessing(artifact.id, artifact.raw_source, {
+    const saved = await archiveQueries.completeArtifactProcessing(artifact.id, claim, {
       cleanText,
       summary: finalSummary,
       excerpt: analysis.excerpt,
@@ -101,14 +100,15 @@ async function processOne(): Promise<boolean> {
         endOffset: c.endOffset,
         embedding: chunkEmbeddings[i],
       })),
-      entities: entityLinks,
+      entities: entities.map((e) => ({
+        entityType: e.entity_type,
+        displayName: e.display_name,
+        aliases: e.aliases,
+        salience: e.salience,
+      })),
     });
-    if (!saved) {
-      // The text changed while it was processed; the row is queued again
-      // and the next pass processes the new text.
-      console.log(`[archive] "${artifact.title}" changed while processing; left for the next pass`);
-      return true;
-    }
+    // The claim was lost after the last renewal.
+    if (!saved) return dropped();
     // A failure here is not this row's: it is complete. The rows it
     // replaces stay searchable, and the next load retires them.
     let retired = 0;
@@ -126,7 +126,7 @@ async function processOne(): Promise<boolean> {
   } catch (err) {
     console.error(`[archive] Error processing "${artifact.title}":`, err);
     const message = err instanceof Error ? err.message : String(err);
-    await archiveQueries.markArtifactError(artifact.id, message, artifact.raw_source);
+    if (!(await archiveQueries.markArtifactError(artifact.id, message, claim))) return dropped("its error is not recorded");
     return true;
   }
 }
