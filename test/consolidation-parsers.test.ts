@@ -297,17 +297,21 @@ test("parseCollectRequest validates sources, labels and Drive ids", async () => 
   assert.equal(typeof parseCollectRequest({ source: "notion" }), "string");
 });
 
-test("resumeRequest continues a run without refetching, up to MAX_RESUMES times", () => {
-  const gmail = resumeRequest({ id: "run-1", source: "gmail", params: { label: "Writing", refetch: true } });
+test("resumeRequest continues a run with its settings, up to MAX_RESUMES times", () => {
+  const gmail = resumeRequest({ id: "run-1", source: "gmail", params: { label: "Writing" } });
   assert.deepEqual(gmail, { source: "gmail", label: "Writing", refetch: false, resumedFrom: "run-1", resumeCount: 1 });
+  // A refetch run's continuation re-reads too: skipping what is staged would
+  // skip what the interrupted run never reached.
+  const refetch = resumeRequest({ id: "run-1", source: "gmail", params: { label: "Writing", refetch: true } });
+  assert.deepEqual(refetch, { source: "gmail", label: "Writing", refetch: true, resumedFrom: "run-1", resumeCount: 1 });
 
   const folders = ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl", "19xMNprsamGSLdZw6EgRd2uCeppKS2gzZ"];
   const drive = resumeRequest({
     id: "run-2",
     source: "gdrive",
-    params: { folderIds: folders, refetch: false, resumedFrom: "run-0", resumeCount: 2 },
+    params: { folderIds: folders, refetch: true, resumedFrom: "run-0", resumeCount: 2 },
   });
-  assert.deepEqual(drive, { source: "gdrive", folderIds: folders, refetch: false, resumedFrom: "run-2", resumeCount: 3 });
+  assert.deepEqual(drive, { source: "gdrive", folderIds: folders, refetch: true, resumedFrom: "run-2", resumeCount: 3 });
 
   // Extraction rewrites every candidate, so running it again is the resume.
   assert.deepEqual(resumeRequest({ id: "run-3", source: "extract", params: {} }), {

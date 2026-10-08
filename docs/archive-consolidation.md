@@ -104,8 +104,9 @@ Runs survive deploys. Collectors run inside the app, so a restart stops a
 run mid-way; a live run heartbeats every 30 s, so a `running` row silent for
 2 minutes belongs to a process that is gone. A sweeper (every minute, from
 30 s after boot) marks such a run failed (`interrupted: …`) and starts a
-fresh run with the same settings and `refetch: false`, which skips what is
-already staged; the new run's params carry `resumedFrom` and `resumeCount`.
+fresh run with the same settings. A normal run skips what is already
+staged, so it continues where the old one stopped; a `refetch` run re-reads
+everything again. The new run's params carry `resumedFrom` and `resumeCount`.
 A run is resumed at most 3 times in a row, so one that keeps crashing the
 app stops and has to be started again by hand. If a run's row is taken over
 while its old process is still alive, that process stops at its next item

@@ -1,9 +1,11 @@
 // Resume collection runs that a restart cut short. Collectors run inside
 // the app process, so every deploy stops a run mid-way; its row stays
 // 'running' until its heartbeats stop. This sweeper marks such runs failed
-// ("interrupted") and starts a fresh run with the same settings, which
-// skips everything already staged. A run is resumed at most MAX_RESUMES
-// times in a row, so one that keeps killing the process can't loop.
+// ("interrupted") and starts a fresh run with the same settings. A normal
+// run skips everything already staged, so it continues where the old one
+// stopped; a refetch run starts its re-read over. A run is resumed at most
+// MAX_RESUMES times in a row, so one that keeps killing the process can't
+// loop.
 
 import { describeGoogleError } from "../../google/errors";
 import { startCollection, type CollectRequest } from "./runner";
@@ -16,8 +18,10 @@ const SWEEP_INTERVAL_MS = 60_000;
 const DRIVE_ID = /^[A-Za-z0-9_-]{10,200}$/;
 
 // The request that continues `run`, or null when it can't or mustn't be
-// resumed (params unusable, or resumed MAX_RESUMES times already). Always
-// refetch: false, so a resumed run never starts over from scratch.
+// resumed (params unusable, or resumed MAX_RESUMES times already). Keeps
+// `refetch`: a refetch run re-reads what is already staged, so its
+// continuation has to as well, or it would skip what the old run never
+// reached and still end 'succeeded'.
 export function resumeRequest(run: InterruptedRun): CollectRequest | null {
   const p = run.params ?? {};
   const count = typeof p.resumeCount === "number" ? p.resumeCount : 0;
@@ -26,7 +30,7 @@ export function resumeRequest(run: InterruptedRun): CollectRequest | null {
     // Both rebuild their whole output, so running again is the resume.
     return { source: run.source, resumedFrom: run.id, resumeCount: count + 1 };
   }
-  const resume = { refetch: false, resumedFrom: run.id, resumeCount: count + 1 };
+  const resume = { refetch: p.refetch === true, resumedFrom: run.id, resumeCount: count + 1 };
   if (run.source === "gmail") {
     if (typeof p.label !== "string" || p.label.trim() === "") return null;
     return { source: "gmail", label: p.label, ...resume };

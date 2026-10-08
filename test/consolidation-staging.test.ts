@@ -343,7 +343,8 @@ test("resumeInterruptedRuns starts the continuation of an interrupted run", { sk
     },
     () => staging.claimInterruptedRuns(db)
   );
-  assert.deepEqual(requests, [{ source: "gmail", label: "Writing", refetch: false, resumedFrom: old, resumeCount: 1 }]);
+  // A refetch run is continued as one: it re-reads what is staged.
+  assert.deepEqual(requests, [{ source: "gmail", label: "Writing", refetch: true, resumedFrom: old, resumeCount: 1 }]);
   assert.equal(started.length, 1);
   const { rows } = await db.query("SELECT id, source, status, params FROM archive_collect_run");
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
