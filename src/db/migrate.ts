@@ -10,10 +10,18 @@ const MIGRATIONS_DIR = join(__dirname, "../../migrations");
 // need longer, and a cancelled migration fails the boot. So migrations run
 // on one connection of their own with the limit lifted for that session,
 // and the connection is closed afterwards instead of going back to the
-// pool, where the lifted limit would otherwise outlive the migrations.
+// pool, where the lifted settings would otherwise outlive the migrations.
+//
+// Waiting for a lock keeps the pool's limit, as lock_timeout. While a
+// migration waits for its lock (an ALTER TABLE behind an open
+// transaction), every later query on that table queues behind it. Without
+// a limit the boot would hang and those queries would time out; with it,
+// the migration fails, and so does the boot, which is retried.
 export async function migrate(db: Pool = pool, migrationsDir: string = MIGRATIONS_DIR): Promise<void> {
   const client = await db.connect();
   try {
+    const { rows: limit } = await client.query("SHOW statement_timeout");
+    await client.query("SELECT set_config('lock_timeout', $1, false)", [limit[0].statement_timeout]);
     await client.query("SET statement_timeout = 0");
     await client.query(`
       CREATE TABLE IF NOT EXISTS _migrations (

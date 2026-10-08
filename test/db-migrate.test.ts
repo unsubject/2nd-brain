@@ -76,3 +76,54 @@ test("a migration may outlast the pool's statement_timeout, which still holds fo
     await db.end();
   }
 });
+
+test("a migration blocked on a lock gives up after the pool's statement_timeout instead of waiting without limit", { skip }, async () => {
+  // While a migration waits for its lock, every later query on that table
+  // queues behind it. So the wait keeps the pool's limit (300 ms here),
+  // even though the migration's run time does not.
+  const db = new Pool({
+    connectionString: url,
+    max: 1,
+    statement_timeout: 300,
+    options: `-c search_path=${SCHEMA}`,
+  });
+  const lockDir = mkdtempSync(join(tmpdir(), "migrate-lock-test-"));
+  const holder = await admin.connect();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await holder.query(`CREATE TABLE ${SCHEMA}.locked (n int)`);
+    // An open transaction that has read the table, as a live query would.
+    await holder.query("BEGIN");
+    await holder.query(`LOCK TABLE ${SCHEMA}.locked IN ACCESS SHARE MODE`);
+    writeFileSync(join(lockDir, "001_alter.sql"), "ALTER TABLE locked ADD COLUMN extra int;\n");
+
+    const started = Date.now();
+    const run = migrate(db, lockDir).then(() => "applied", (err: unknown) => err);
+    const outcome = await Promise.race([
+      run,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve("still waiting after 5 s"), 5000);
+      }),
+    ]);
+    const elapsed = Date.now() - started;
+    await holder.query("ROLLBACK");
+    await run; // without a lock limit, the migration applies once the lock is free
+
+    assert.ok(outcome instanceof Error, `expected the migration to fail, got: ${String(outcome)}`);
+    assert.match(outcome.message, /lock timeout/);
+    assert.ok(elapsed < 3000, `gave up after ${elapsed} ms`);
+    const applied = await db.query("SELECT count(*)::int AS n FROM _migrations WHERE name = '001_alter.sql'");
+    assert.equal(applied.rows[0].n, 0);
+
+    // The lock limit, like the lifted statement limit, stayed on the
+    // migration's own connection.
+    const { rows } = await db.query("SHOW lock_timeout");
+    assert.equal(rows[0].lock_timeout, "0");
+  } finally {
+    clearTimeout(timer);
+    await holder.query("ROLLBACK").catch(() => undefined);
+    holder.release();
+    await db.end();
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
