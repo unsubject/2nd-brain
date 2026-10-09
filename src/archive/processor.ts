@@ -18,6 +18,13 @@ export interface ExtractedEntity {
   salience: number;
 }
 
+// The model's JSON, without NUL characters: Postgres TEXT can't hold them,
+// and the model now and then writes one (as \u0000) into a string it
+// copies from the article, which failed the whole save.
+export function parseModelJson<T>(content: string): T {
+  return JSON.parse(content, (_key, value) => (typeof value === "string" ? value.replace(/\u0000/g, "") : value)) as T;
+}
+
 const SUMMARIZE_SCHEMA = {
   name: "save_artifact_analysis",
   strict: true,
@@ -128,7 +135,7 @@ export async function analyzeArtifact(
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("No content in artifact analysis");
 
-  return JSON.parse(content) as ArtifactProcessingResult;
+  return parseModelJson<ArtifactProcessingResult>(content);
 }
 
 const ENTITY_MAX_TOKENS = 8192;
@@ -172,7 +179,7 @@ export async function extractEntities(
   const content = choice?.message?.content;
   if (!content) throw new Error("No content in entity extraction");
 
-  const result = JSON.parse(content) as { entities?: ExtractedEntity[] };
+  const result = parseModelJson<{ entities?: ExtractedEntity[] }>(content);
   return Array.isArray(result.entities) ? result.entities : [];
 }
 
@@ -221,6 +228,6 @@ export async function extractEntitiesFromJournal(
   const content = choice?.message?.content;
   if (!content) throw new Error("No content in journal entity extraction");
 
-  const result = JSON.parse(content) as { entities?: ExtractedEntity[] };
+  const result = parseModelJson<{ entities?: ExtractedEntity[] }>(content);
   return Array.isArray(result.entities) ? result.entities : [];
 }
