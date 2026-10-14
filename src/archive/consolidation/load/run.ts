@@ -6,6 +6,7 @@
 // match no work stay searchable, flagged 'unmatched'. Nothing is deleted,
 // and everything is written in one transaction.
 
+import { createHash } from "crypto";
 import { Pool } from "pg";
 import { pool, type DB } from "../../../db/client";
 import type { CollectStats } from "../gmail";
@@ -13,8 +14,8 @@ import { units } from "../match/similarity";
 import { IMPORT_CUT, matchLegacy } from "./legacy";
 
 // Bump with every change to what a load writes: the rows are loaded again
-// on boot.
-export const LOADER_VERSION = 1;
+// on boot. 2: the report of the old rows no work replaces.
+export const LOADER_VERSION = 2;
 
 export const ARCHIVE_SOURCE = "archive";
 // Rows that are not from the first import: video transcripts and this
@@ -35,6 +36,10 @@ export interface LoadStats extends CollectStats {
   // precision is lost): the next load is due once a match is newer.
   worksMatchedAt: string | null;
   legacy: { rows: number; matched: number; hidden: number; waiting: number; unmatched: number };
+  // Where the old rows no work replaces come from: for each source system
+  // and year of publication, the old rows and how many of them match no
+  // work; and a digest of which rows those are.
+  legacyUnmatched: { bySource: Record<string, Record<string, { rows: number; unmatched: number }>>; digest: string | null };
 }
 
 export function emptyLoadStats(): LoadStats {
@@ -56,6 +61,7 @@ export function emptyLoadStats(): LoadStats {
     retiredLate: 0,
     worksMatchedAt: null,
     legacy: { rows: 0, matched: 0, hidden: 0, waiting: 0, unmatched: 0 },
+    legacyUnmatched: { bySource: {}, digest: null },
   };
 }
 
@@ -194,6 +200,74 @@ async function upsertWorks(works: WorkRow[], q: DB): Promise<Map<string, { id: s
   return out;
 }
 
+interface LegacyRow {
+  id: string;
+  text: string;
+  truncated: boolean;
+  source_system: string;
+  title: string;
+  published_at: Date | null;
+  canonical_url: string | null;
+}
+
+function hostOf(url: string | null): string | null {
+  try {
+    return url ? new URL(url).hostname : null;
+  } catch {
+    return null;
+  }
+}
+
+// Lines of the unmatched rows' list logged at a time, then a pause: the
+// platform drops log lines beyond a few hundred a second.
+const LIST_BURST = 100;
+const LIST_PAUSE_MS = 500;
+
+// Where the old rows no work replaces come from, in the run's stats; and,
+// when they are not the ones the last load left (or no load recorded
+// them), each of them in the log, to tell a source the collection lacks
+// from notes that were never published.
+async function reportUnmatched(legacy: LegacyRow[], unmatched: Set<string>, stats: LoadStats, lastDigest: string | null): Promise<void> {
+  const yearOf = (l: LegacyRow) => (l.published_at ? String(l.published_at.getUTCFullYear()) : "undated");
+  const bySource: LoadStats["legacyUnmatched"]["bySource"] = {};
+  for (const l of legacy) {
+    const years = (bySource[l.source_system] ??= {});
+    const year = (years[yearOf(l)] ??= { rows: 0, unmatched: 0 });
+    year.rows++;
+    if (unmatched.has(l.id)) year.unmatched++;
+  }
+  const digest = createHash("sha256").update([...unmatched].sort().join(",")).digest("hex").slice(0, 16);
+  stats.legacyUnmatched = { bySource, digest };
+
+  console.log(`[consolidation] load: ${unmatched.size} of ${legacy.length} old rows match no work`);
+  for (const [source, years] of Object.entries(bySource).sort()) {
+    const counts = Object.entries(years)
+      .sort()
+      .map(([year, c]) => `${year} ${c.unmatched}/${c.rows}`)
+      .join(", ");
+    console.log(`[consolidation] load: unmatched/old rows by year, ${source}: ${counts}`);
+  }
+
+  if (lastDigest === digest) return;
+  const rows = legacy
+    .filter((l) => unmatched.has(l.id))
+    .sort(
+      (a, b) =>
+        a.source_system.localeCompare(b.source_system) ||
+        (a.published_at?.getTime() ?? Infinity) - (b.published_at?.getTime() ?? Infinity) ||
+        a.title.localeCompare(b.title)
+    );
+  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+  for (const [i, l] of rows.entries()) {
+    if (i > 0 && i % LIST_BURST === 0) await new Promise((r) => setTimeout(r, LIST_PAUSE_MS));
+    const date = l.published_at ? l.published_at.toISOString().slice(0, 10) : "undated";
+    console.log(
+      `[consolidation] unmatched old row: ${date} ${l.source_system} ${l.text.length} chars${l.truncated ? " (cut)" : ""} ` +
+        `${hostOf(l.canonical_url) ?? "-"} "${oneLine(l.title)}" | ${oneLine(l.text).slice(0, 40)}`
+    );
+  }
+}
+
 interface Pointer {
   id: string;
   // The row that replaces this one, if any.
@@ -254,7 +328,7 @@ export async function runLoad(
 ): Promise<void> {
   // One snapshot, so a match run finishing meanwhile can't leave works and
   // members out of step.
-  const { matchedAt, works, members, legacy, archived } = await inTransaction(
+  const { matchedAt, works, members, legacy, archived, lastDigest } = await inTransaction(
     db,
     "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     async (q) => ({
@@ -262,8 +336,9 @@ export async function runLoad(
       works: await loadWorks(q),
       members: await loadMembers(q),
       legacy: (
-        await q.query<{ id: string; text: string; truncated: boolean }>(
-          `SELECT id, coalesce(clean_text, raw_source) AS text, length(raw_source) = $1 AS truncated
+        await q.query<LegacyRow>(
+          `SELECT id, coalesce(clean_text, raw_source) AS text, length(raw_source) = $1 AS truncated,
+                  source_system, title, published_at, canonical_url
              FROM public_artifact WHERE NOT (source_system = ANY($2))`,
           [IMPORT_CUT, NOT_LEGACY]
         )
@@ -274,6 +349,14 @@ export async function runLoad(
           [ARCHIVE_SOURCE]
         )
       ).rows,
+      // Which old rows the last load found no work for (reportUnmatched).
+      lastDigest:
+        (
+          await q.query<{ digest: string | null }>(
+            `SELECT stats->'legacyUnmatched'->>'digest' AS digest FROM archive_collect_run
+              WHERE source = 'load' AND status = 'succeeded' ORDER BY started_at DESC LIMIT 1`
+          )
+        ).rows[0]?.digest ?? null,
     })
   );
   stats.worksMatchedAt = matchedAt;
@@ -291,6 +374,7 @@ export async function runLoad(
   const workOfMember = new Map(members.map((m) => [m.member_ref, m.work_ref]));
   if (shouldStop()) return;
 
+  const unmatched = new Set<string>();
   await inTransaction(db, "BEGIN", async (q) => {
     const loaded = await upsertWorks(works, q);
     for (const r of loaded.values()) {
@@ -318,8 +402,10 @@ export async function runLoad(
     for (const p of pointers) {
       const r = results.get(p.id);
       if (!p.legacy || !r) continue;
-      if (r.target === null) stats.legacy.unmatched++;
-      else {
+      if (r.target === null) {
+        stats.legacy.unmatched++;
+        unmatched.add(p.id);
+      } else {
         stats.legacy.matched++;
         if (r.status === "superseded") stats.legacy.hidden++;
         else stats.legacy.waiting++;
@@ -342,6 +428,7 @@ export async function runLoad(
   // A replacement the worker finished while the transaction was open
   // retired nothing (its rows did not point at it yet): retire them now.
   stats.retiredLate = await retireReplacedRows(null, db);
+  await reportUnmatched(legacy, unmatched, stats, lastDigest);
 }
 
 // The works are not the ones the last successful load by this

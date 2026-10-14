@@ -942,12 +942,45 @@ test("runLoad writes one row per work and points the first import's copies at it
     ]
   );
 
+  await db.query("UPDATE public_artifact SET published_at = '2019-05-01' WHERE source_external_id IN ('n1', 'n2')");
+
   const stats = load.emptyLoadStats();
-  await load.runLoad(stats, async () => {}, () => false, db);
+  let log = captureLog();
+  try {
+    await load.runLoad(stats, async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
   assert.equal(stats.works, 2);
   assert.equal(stats.inserted, 2);
   assert.equal(stats.flaggedReview, 1);
   assert.deepEqual(stats.legacy, { rows: 3, matched: 2, hidden: 0, waiting: 2, unmatched: 1 });
+  // Where the unmatched rows come from, and, as no load recorded them yet,
+  // each of them in the log.
+  assert.deepEqual(stats.legacyUnmatched.bySource, {
+    notion: { "2019": { rows: 2, unmatched: 1 }, undated: { rows: 1, unmatched: 0 } },
+  });
+  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, notion: 2019 1/2, undated 0/1"));
+  const listed = log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:"));
+  assert.equal(listed.length, 1);
+  assert.match(listed[0], /^\[consolidation\] unmatched old row: 2019-05-01 notion \d+ chars - "無關" \| 今天天氣很好/);
+
+  // A load that finds the same rows unmatched as the last one recorded
+  // lists them no more.
+  const { rows: recorded } = await db.query(
+    `INSERT INTO archive_collect_run (source, status, finished_at, stats)
+     VALUES ('load', 'succeeded', now(), $1::jsonb) RETURNING id`,
+    [JSON.stringify(stats)]
+  );
+  log = captureLog();
+  try {
+    await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
+  assert.ok(log.lines().some((l) => l.startsWith("[consolidation] load: 1 of 3 old rows match no work")));
+  assert.equal(log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:")).length, 0);
+  await db.query("DELETE FROM archive_collect_run WHERE id = $1", [recorded[0].id]);
 
   const { rows: archived } = await db.query(
     `SELECT id, source_external_id AS ref, title, type, status, flag, processing_status, canonical_url,

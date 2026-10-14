@@ -398,6 +398,15 @@ state; the run log gives works, rows inserted / changed / unchanged,
 how many matched, left search, wait for their replacement, or matched
 nothing.
 
+Where the unmatched old rows come from is in the run's stats
+(`legacyUnmatched.bySource`: for each source system and year of
+publication, the old rows and how many match no work) and in the log, one
+line per source. When the unmatched rows are not the ones the last
+successful load recorded (`legacyUnmatched.digest`), the log also lists
+each of them, with its date, source, length, link host, title and opening
+words, so a source the collection lacks can be told from notes that were
+never published.
+
 ## What is stored
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
