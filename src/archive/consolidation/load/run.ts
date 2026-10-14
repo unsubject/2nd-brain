@@ -229,20 +229,27 @@ const LIST_PAUSE_MS = 500;
 // from notes that were never published.
 async function reportUnmatched(legacy: LegacyRow[], unmatched: Set<string>, stats: LoadStats, lastDigest: string | null): Promise<void> {
   const yearOf = (l: LegacyRow) => (l.published_at ? String(l.published_at.getUTCFullYear()) : "undated");
-  const bySource: LoadStats["legacyUnmatched"]["bySource"] = {};
+  // Maps, not objects: a source named like an Object property (Codex on
+  // #105) is a source like any other.
+  const bySource = new Map<string, Map<string, { rows: number; unmatched: number }>>();
   for (const l of legacy) {
-    const years = (bySource[l.source_system] ??= {});
-    const year = (years[yearOf(l)] ??= { rows: 0, unmatched: 0 });
+    let years = bySource.get(l.source_system);
+    if (!years) bySource.set(l.source_system, (years = new Map()));
+    let year = years.get(yearOf(l));
+    if (!year) years.set(yearOf(l), (year = { rows: 0, unmatched: 0 }));
     year.rows++;
     if (unmatched.has(l.id)) year.unmatched++;
   }
+  const sorted = <T>(m: Map<string, T>) => [...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const digest = createHash("sha256").update([...unmatched].sort().join(",")).digest("hex").slice(0, 16);
-  stats.legacyUnmatched = { bySource, digest };
+  stats.legacyUnmatched = {
+    bySource: Object.fromEntries(sorted(bySource).map(([source, years]) => [source, Object.fromEntries(sorted(years))])),
+    digest,
+  };
 
   console.log(`[consolidation] load: ${unmatched.size} of ${legacy.length} old rows match no work`);
-  for (const [source, years] of Object.entries(bySource).sort()) {
-    const counts = Object.entries(years)
-      .sort()
+  for (const [source, years] of sorted(bySource)) {
+    const counts = sorted(years)
       .map(([year, c]) => `${year} ${c.unmatched}/${c.rows}`)
       .join(", ");
     console.log(`[consolidation] load: unmatched/old rows by year, ${source}: ${counts}`);

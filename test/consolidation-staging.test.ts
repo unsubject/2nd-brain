@@ -1064,6 +1064,31 @@ test("runLoad writes one row per work and points the first import's copies at it
   assert.ok(summary.some((r) => r.source_system === "archive" && r.flag === "review"));
 });
 
+test("the unmatched rows' report counts a source named like an Object property (Codex on #105)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, published_at) VALUES
+       ('default', 'essay', 'a', '甲', '__proto__', 'p1', '2018-01-01'),
+       ('default', 'essay', 'b', '乙', 'constructor', 'c1', NULL)`
+  );
+  const stats = load.emptyLoadStats();
+  const log = captureLog();
+  try {
+    await load.runLoad(stats, async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
+  const bySource = stats.legacyUnmatched.bySource;
+  assert.deepEqual(Object.keys(bySource), ["__proto__", "constructor"]);
+  assert.deepEqual(bySource["__proto__"]["2018"], { rows: 1, unmatched: 1 });
+  assert.deepEqual(bySource["constructor"].undated, { rows: 1, unmatched: 1 });
+  assert.equal(({} as Record<string, unknown>)["2018"], undefined); // nothing written to Object.prototype
+  assert.deepEqual(JSON.parse(JSON.stringify(stats.legacyUnmatched)).bySource["__proto__"], { "2018": { rows: 1, unmatched: 1 } });
+  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, __proto__: 2018 1/1"));
+  await db.query("DELETE FROM public_artifact");
+});
+
 test("catch-up loads when no load has run since the works were made", { skip }, async () => {
   const auto = await import("../src/archive/consolidation/extract/auto");
   const load = await import("../src/archive/consolidation/load/run");
