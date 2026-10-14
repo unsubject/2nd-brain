@@ -942,12 +942,45 @@ test("runLoad writes one row per work and points the first import's copies at it
     ]
   );
 
+  await db.query("UPDATE public_artifact SET published_at = '2019-05-01' WHERE source_external_id IN ('n1', 'n2')");
+
   const stats = load.emptyLoadStats();
-  await load.runLoad(stats, async () => {}, () => false, db);
+  let log = captureLog();
+  try {
+    await load.runLoad(stats, async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
   assert.equal(stats.works, 2);
   assert.equal(stats.inserted, 2);
   assert.equal(stats.flaggedReview, 1);
   assert.deepEqual(stats.legacy, { rows: 3, matched: 2, hidden: 0, waiting: 2, unmatched: 1 });
+  // Where the unmatched rows come from, and, as no load recorded them yet,
+  // each of them in the log.
+  assert.deepEqual(stats.legacyUnmatched.bySource, {
+    notion: { "2019": { rows: 2, unmatched: 1 }, undated: { rows: 1, unmatched: 0 } },
+  });
+  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, notion: 2019 1/2, undated 0/1"));
+  const listed = log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:"));
+  assert.equal(listed.length, 1);
+  assert.match(listed[0], /^\[consolidation\] unmatched old row: 2019-05-01 notion \d+ chars - "無關" \| 今天天氣很好/);
+
+  // A load that finds the same rows unmatched as the last one recorded
+  // lists them no more.
+  const { rows: recorded } = await db.query(
+    `INSERT INTO archive_collect_run (source, status, finished_at, stats)
+     VALUES ('load', 'succeeded', now(), $1::jsonb) RETURNING id`,
+    [JSON.stringify(stats)]
+  );
+  log = captureLog();
+  try {
+    await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
+  assert.ok(log.lines().some((l) => l.startsWith("[consolidation] load: 1 of 3 old rows match no work")));
+  assert.equal(log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:")).length, 0);
+  await db.query("DELETE FROM archive_collect_run WHERE id = $1", [recorded[0].id]);
 
   const { rows: archived } = await db.query(
     `SELECT id, source_external_id AS ref, title, type, status, flag, processing_status, canonical_url,
@@ -1029,6 +1062,31 @@ test("runLoad writes one row per work and points the first import's copies at it
 
   const summary = await load.loadSummary(db);
   assert.ok(summary.some((r) => r.source_system === "archive" && r.flag === "review"));
+});
+
+test("the unmatched rows' report counts a source named like an Object property (Codex on #105)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, published_at) VALUES
+       ('default', 'essay', 'a', '甲', '__proto__', 'p1', '2018-01-01'),
+       ('default', 'essay', 'b', '乙', 'constructor', 'c1', NULL)`
+  );
+  const stats = load.emptyLoadStats();
+  const log = captureLog();
+  try {
+    await load.runLoad(stats, async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
+  const bySource = stats.legacyUnmatched.bySource;
+  assert.deepEqual(Object.keys(bySource), ["__proto__", "constructor"]);
+  assert.deepEqual(bySource["__proto__"]["2018"], { rows: 1, unmatched: 1 });
+  assert.deepEqual(bySource["constructor"].undated, { rows: 1, unmatched: 1 });
+  assert.equal(({} as Record<string, unknown>)["2018"], undefined); // nothing written to Object.prototype
+  assert.deepEqual(JSON.parse(JSON.stringify(stats.legacyUnmatched)).bySource["__proto__"], { "2018": { rows: 1, unmatched: 1 } });
+  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, __proto__: 2018 1/1"));
+  await db.query("DELETE FROM public_artifact");
 });
 
 test("catch-up loads when no load has run since the works were made", { skip }, async () => {
