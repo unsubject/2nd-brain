@@ -1135,14 +1135,14 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
   const full = varied(9, 3000);
   await db.query(
     `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status, canonical_url) VALUES
-       ('default', 'transcript', '影片', $1, 'youtube', 'dQw4w9WgXcQ', 'processed', 'https://youtube.com/watch?v=dQw4w9WgXcQ'),
+       ('default', 'transcript', '影片', $1, 'youtube', 'dQw4w9WgXcQ', 'processed', NULL),
        ('default', 'essay', '影片逐字稿', $2, 'notion', 'v1', 'processed', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
        ('default', 'essay', '另一條片', $3, 'notion', 'v2', 'processed', 'https://youtu.be/AAAAAAAAAAA'),
        ('default', 'essay', '利字當頭：第四個生產要素', $4, 'notion', 't1', 'processed', NULL),
        ('default', 'essay', 'RE: 稿件', $5, 'notion', 'f1', 'processed', NULL),
        ('default', 'essay', '短', '好文。', 'notion', 'f2', 'processed', NULL),
        ('default', 'essay', '全文', $6, 'notion', 'd1', 'processed', NULL),
-       ('default', 'essay', '節錄', $7, 'notion', 'd2', 'processed', NULL),
+       ('default', 'essay', '節錄', $7, 'notion', 'd2', 'processed', 'https://example.org/excerpt'),
        ('default', 'essay', '獨文', $8, 'notion', 'k1', 'processed', NULL)`,
     [
       varied(1, 1500),
@@ -1196,6 +1196,13 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     d2: ["superseded", null, id.d1],
     k1: ["published", null, null],
   });
+  // The fuller row keeps the link of the excerpt merged into it (Codex on
+  // #114); a video's transcript row takes none from the copies of it.
+  const urls = Object.fromEntries(
+    (await db.query("SELECT source_external_id AS ref, canonical_url FROM public_artifact")).rows.map((r) => [r.ref, r.canonical_url])
+  );
+  assert.equal(urls.d1, "https://example.org/excerpt");
+  assert.equal(urls.dQw4w9WgXcQ, null);
   const listed = log.lines().filter((l) => l.startsWith("[consolidation] old row,"));
   assert.deepEqual(
     listed.map((l) => l.split(":")[0]).sort(),

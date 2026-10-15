@@ -507,8 +507,9 @@ export async function runLoad(
       }
     }
 
-    // A work with no URL of its own keeps the first import's link, if the
-    // row it replaces had one.
+    // A work, or an old row a duplicate merged into, with no URL of its
+    // own keeps the first import's link, if a row it replaces had one (Codex
+    // on #114). Not a video's transcript row: that has its own.
     await q.query(
       `UPDATE public_artifact a SET canonical_url = l.canonical_url
          FROM (SELECT DISTINCT ON (superseded_by) superseded_by, canonical_url
@@ -516,8 +517,8 @@ export async function runLoad(
                 WHERE superseded_by IS NOT NULL AND NOT (source_system = ANY($1))
                   AND canonical_url ~ '^https?://'
                 ORDER BY superseded_by, published_at NULLS LAST, id) l
-        WHERE a.id = l.superseded_by AND a.canonical_url IS NULL AND a.source_system = $2`,
-      [NOT_LEGACY, ARCHIVE_SOURCE]
+        WHERE a.id = l.superseded_by AND a.canonical_url IS NULL AND a.source_system <> $2`,
+      [NOT_LEGACY, VIDEO_SOURCE]
     );
   });
   // A replacement the worker finished while the transaction was open
