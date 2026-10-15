@@ -1,4 +1,4 @@
-// Pure text helpers for the Idea Parking Lot tools.
+// Pure text helpers for the Idea Parking Lot and the search tools.
 
 // Escape LIKE/ILIKE wildcards; used with the default '\' escape char.
 export function escapeLike(s: string): string {
@@ -75,4 +75,19 @@ export function searchTerms(query: string): string[] {
     .map((t) => t.trim())
     .filter(Boolean)
     .slice(0, 5);
+}
+
+// A case-insensitive regex for one search term. Latin terms match at the
+// start of a word, and terms of up to three characters only as whole words,
+// so 'AI' finds "AI-driven" and "我覺得AI會" but not "said", "again" or
+// "aim". A word boundary here is any character that is not an ASCII letter
+// or digit, so Latin words run into Chinese text still match. Other terms
+// (Chinese has no spaces) match anywhere. The pattern is for Postgres `~*`,
+// and reads the same as a JavaScript RegExp with flags 'iu'.
+export function termPattern(term: string): string {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!/^[A-Za-z0-9]/.test(term)) return escaped;
+  const start = '(^|[^A-Za-z0-9])';
+  const end = /^[A-Za-z0-9]{1,3}$/.test(term) ? '($|[^A-Za-z0-9])' : '';
+  return `${start}${escaped}${end}`;
 }
