@@ -7,8 +7,10 @@ import { dbError, errorResult, ok, parseJsonb, toIso, toIsoOrNull, uuidSchema } 
 // One published piece (refocus Phase 5) with its text, a bounded part at a
 // time. An id whose row was replaced (status 'superseded', as the archive
 // load does) resolves to the row that replaced it, so a link found in an
-// old journal entry or idea still reads the current text. Members-only
-// pieces are returned (D11), marked members_only. Every read carries
+// old journal entry or idea still reads the current text. Only a published
+// row is returned: a draft, a fragment kept out of search (status
+// 'hidden') or a chain that ends anywhere else reads as not found, even by
+// id. Members-only pieces are returned (D11), marked members_only. Every read carries
 // `now() AS as_of` (test/ideas.fixes.test.ts scans this file).
 
 // Characters (Unicode code points: Postgres substr and char_length count
@@ -97,6 +99,7 @@ export async function getArtifactHandler(
              now() AS as_of
         FROM public_artifact pa
        WHERE pa.id = (SELECT id FROM chain ORDER BY hop DESC LIMIT 1)
+         AND pa.status = 'published'
     `;
     if (rows.length === 0) return errorResult(`Published piece not found: ${id}`);
     const r = rows[0];
@@ -121,8 +124,7 @@ export async function getArtifactHandler(
         // null: confirmed (or an old row kept as the only copy); 'review':
         // still to check (it may never have been published, or its text is
         // uncertain); 'video': an old copy of a video's transcript;
-        // 'unmatched' (older loads): an old row no piece replaced;
-        // 'fragment': a reply, pitch or blurb out of search (status 'hidden').
+        // 'unmatched' (older loads): an old row no piece replaced.
         flag: r.flag ?? null,
         members_only: r.members_only,
         published_at: toIsoOrNull(r.published_at),

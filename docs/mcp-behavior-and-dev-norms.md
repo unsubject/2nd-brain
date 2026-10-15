@@ -103,13 +103,13 @@ Each link carries a `target_title`. Links below `min_confidence` (default 0.5) a
 
 - Use `search_published` when the user asks what they wrote or said in public ("did I write about X?", "find the piece where I said …") or wants to cite their own work. "Have I thought about X?" is the journal (`search_brain`); "what do I have on X?" is the Idea Garden (`explore_topic`).
 - It searches the pieces' chunks two ways, by meaning and by exact text (the text match finds Chinese phrases and names the embedding misses). It returns one hit per piece, best first, with a short summary and up to three passages of about 500 characters each. `get_artifact` reads one piece's whole text, 12,000 characters at a time; an id that was replaced resolves to the piece that replaced it.
-- Copies that consolidation replaced (`status = 'superseded'`) and fragments it set aside (`status = 'hidden'`) never come back from search.
+- Only published rows come back. A copy that consolidation replaced (`status = 'superseded'`) is left out of search, and `get_artifact` resolves its id to the piece that replaced it. A fragment it set aside (`status = 'hidden'`) or any other unpublished row never comes back, not even by id.
 - Say so when a hit is flagged:
   - `review`: a piece still to be checked (it may never have been published, or its text is uncertain);
   - `video`: an old imported copy of a video's transcript;
   - `unmatched` (older loads): an old row no piece replaced.
 
-  `confirmed_only` leaves flagged pieces out. `get_artifact` can also return `fragment` (a reply, pitch or blurb kept out of search) when asked for its id.
+  `confirmed_only` leaves flagged pieces out.
 - Members-only episodes are included and marked `members_only` (D10, D11). Read and discuss them with the user, but never quote, link or use one in anything meant for the public; pass `members_only: 'exclude'` when gathering material for something public. `export_idea_map`'s HTML leaves them out.
 
 ### Idea Garden — when to use these tools

@@ -172,8 +172,8 @@ describe.skipIf(!TEST_DB)('search_published', () => {
       processingStatus: 'pending',
       chunks: [{ text: 'harbour lights at night', vector: axis(0) }],
     });
-    // Migration 034: a fragment leaves search, but get_artifact still reads it by id.
-    const fragment = await seedPiece({
+    // Migration 034: a fragment leaves search (status 'hidden').
+    await seedPiece({
       title: 'Re: harbour lights',
       status: 'hidden',
       flag: 'fragment',
@@ -182,8 +182,27 @@ describe.skipIf(!TEST_DB)('search_published', () => {
 
     const r = await ok('search_published', { query: 'harbour lights' });
     expect(r.hits.map((h: any) => h.artifact_id)).toEqual([live]);
-    const f = await ok('get_artifact', { artifact_id: fragment, include_text: false });
-    expect([f.artifact.status, f.artifact.flag]).toEqual(['hidden', 'fragment']);
+  });
+
+  it('fills a 15-piece request with three passages each, from either leg', async () => {
+    for (let i = 0; i < 16; i++) {
+      await seedPiece({
+        title: `Essay ${String(i).padStart(2, '0')}`,
+        publishedAt: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z`,
+        chunks: [0, 1, 2].map((k) => ({ text: `river delta part ${k}`, vector: mix(0, 1, 0.9 - i / 1000 - k / 100_000) })),
+      });
+    }
+    // Text only: 15 pieces need 45 rows, past the 40 the leg took before.
+    stubEmbeddings('fail');
+    const t = await ok('search_published', { query: 'river delta', limit: 15, passages: 3 });
+    expect(t.count).toBe(15);
+    expect(t.hits.every((h: any) => h.passages.length === 3)).toBe(true);
+    vi.unstubAllGlobals();
+    // Semantic only: no text matches, the same 45 rows.
+    stubEmbeddings(axis(0));
+    const v = await ok('search_published', { query: 'quiet rivers', limit: 15, passages: 3 });
+    expect(v.count).toBe(15);
+    expect(v.hits.every((h: any) => h.passages.length === 3 && h.match.join() === 'semantic')).toBe(true);
   });
 
   it('applies each filter and marks flag and members_only on every hit', async () => {
@@ -356,7 +375,7 @@ describe.skipIf(!TEST_DB)('get_artifact', () => {
     expect(l.note).toBeUndefined();
   });
 
-  it('marks a members-only piece and refuses unknown ids and arguments', async () => {
+  it('marks a members-only piece and refuses unknown or unpublished ids and unknown arguments', async () => {
     const m = await seedPiece({
       title: 'Members episode',
       sourceSystem: 'youtube',
@@ -375,6 +394,17 @@ describe.skipIf(!TEST_DB)('get_artifact', () => {
     const missing = await callTool('get_artifact', { artifact_id: '00000000-0000-4000-8000-000000000000' });
     expect(missing.isError).toBe(true);
     expect(missing.texts[0]).toMatch(/not found/);
+    // Only published rows, even by id: a draft, a hidden fragment, and a
+    // replaced copy whose replacement is hidden all read as not found.
+    const draft = await seedPiece({ title: 'Draft essay', status: 'draft', chunks: [{ text: 'draft words', vector: null }] });
+    const fragment = await seedPiece({ title: 'Re: a pitch', status: 'hidden', flag: 'fragment', chunks: [{ text: 'pitch words', vector: null }] });
+    const replaced = await seedPiece({ title: 'Old copy', status: 'superseded', chunks: [{ text: 'old words', vector: null }] });
+    await admin`UPDATE public_artifact SET superseded_by = ${fragment} WHERE id = ${replaced}`;
+    for (const id of [draft, fragment, replaced]) {
+      const r = await callTool('get_artifact', { artifact_id: id });
+      expect(r.isError).toBe(true);
+      expect(r.texts[0]).toMatch(/not found/);
+    }
     const bad = await callTool('get_artifact', { artifact_id: pub, part: 2 });
     expect(bad.isError).toBe(true);
     expect(bad.texts[0]).toMatch(/Unrecognized key/);

@@ -39,13 +39,17 @@ const inputSchema = z
   })
   .strict();
 
-// Chunk rows each leg brings back. A chunk is about 2,000-3,200 characters
-// (src/archive/chunker.ts), so only a window of it becomes a passage.
+// Chunk rows each leg brings back at least; a leg takes more when the
+// request needs them (limit pieces at the leg's per-piece cap), so a full
+// leg always holds `limit` whole pieces. A chunk is about 2,000-3,200
+// characters (src/archive/chunker.ts), so only a window of it becomes a
+// passage.
 const CANDIDATES = 40;
 // Nearest chunks the semantic leg reads from the vector index before keeping
 // at most SEMANTIC_PER_PIECE of each piece (the most passages a hit shows),
-// so one long transcript cannot fill the leg. When that leaves fewer than
-// CANDIDATES rows, the leg ranks every searchable chunk exactly instead.
+// so one long transcript cannot fill the leg. When that leaves the leg
+// short, it ranks every searchable chunk exactly instead. At least the
+// largest leg (15 pieces x 3).
 const SEMANTIC_POOL = 200;
 const SEMANTIC_PER_PIECE = 3;
 const PASSAGE_CHARS = 500;
@@ -107,6 +111,8 @@ export async function searchPublishedHandler(
   const args = parsed.data;
   const limit = args.limit ?? 8;
   const perPiece = args.passages ?? 2;
+  const semanticRows = Math.max(CANDIDATES, limit * SEMANTIC_PER_PIECE);
+  const textRows = Math.max(CANDIDATES, limit * perPiece);
   const membersOnly = args.members_only ?? 'include';
   const terms = searchTerms(args.query);
   const patterns = terms.map(termPattern);
@@ -176,7 +182,7 @@ export async function searchPublishedHandler(
                 ) x
                WHERE x.n <= ${SEMANTIC_PER_PIECE}
                ORDER BY x.d
-               LIMIT ${CANDIDATES}
+               LIMIT ${semanticRows}
             `;
             // A full leg needs nothing more: every chunk past the pool is at
             // least as far as the farthest pooled one (up to the index's
@@ -187,7 +193,7 @@ export async function searchPublishedHandler(
             // each piece's nearest SEMANTIC_PER_PIECE first, then read the
             // text of the rows kept. The archive is a few thousand pieces,
             // so the scan stays quick.
-            if (pooled.length >= CANDIDATES) return pooled;
+            if (pooled.length >= semanticRows) return pooled;
             return tx<SemanticRow[]>`
               SELECT c.public_artifact_id AS artifact_id, c.chunk_index,
                      to_jsonb(c.heading_path) AS heading_path, c.chunk_text, pa.published_at,
@@ -209,7 +215,7 @@ export async function searchPublishedHandler(
                     ) r
                    WHERE r.n <= ${SEMANTIC_PER_PIECE}
                    ORDER BY r.d, r.id
-                   LIMIT ${CANDIDATES}
+                   LIMIT ${semanticRows}
                 ) k
                 JOIN public_artifact_chunk c ON c.id = k.id
                 JOIN public_artifact pa ON pa.id = c.public_artifact_id
@@ -240,7 +246,7 @@ export async function searchPublishedHandler(
               ) x
              WHERE x.n <= ${perPiece}
              ORDER BY x.in_title DESC, x.published_at DESC NULLS LAST, x.artifact_id, x.n
-             LIMIT ${CANDIDATES}
+             LIMIT ${textRows}
           `
         : Promise.resolve([]),
     ]);
@@ -318,7 +324,7 @@ export async function searchPublishedHandler(
           // null: confirmed (or an old row kept as the only copy);
           // 'review': still to check; 'video': an old copy of a video's
           // transcript; 'unmatched' (older loads): an old row no piece
-          // replaced. 'fragment' rows are hidden, so never found here.
+          // replaced.
           flag: m.flag ?? null,
           members_only: m.members_only,
           language: m.language,
