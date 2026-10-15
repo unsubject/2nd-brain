@@ -42,9 +42,10 @@ const inputSchema = z
 // Chunk rows each leg brings back. A chunk is about 2,000-3,200 characters
 // (src/archive/chunker.ts), so only a window of it becomes a passage.
 const CANDIDATES = 40;
-// Nearest chunks the semantic leg reads before keeping at most
-// SEMANTIC_PER_PIECE of each piece (the most passages a hit shows), so one
-// long transcript cannot fill the leg.
+// Nearest chunks the semantic leg reads from the vector index before keeping
+// at most SEMANTIC_PER_PIECE of each piece (the most passages a hit shows),
+// so one long transcript cannot fill the leg. When that leaves fewer than
+// CANDIDATES rows, the leg ranks every searchable chunk exactly instead.
 const SEMANTIC_POOL = 200;
 const SEMANTIC_PER_PIECE = 3;
 const PASSAGE_CHARS = 500;
@@ -65,6 +66,8 @@ type ChunkRow = {
   chunk_text: string;
   published_at: Date | null;
 };
+
+type SemanticRow = ChunkRow & { similarity: number };
 
 type Chunk = ChunkRow & { legs: Leg[]; rank: number; similarity: number | null };
 
@@ -153,7 +156,7 @@ export async function searchPublishedHandler(
             // 40) before the filters run, and superseded copies' chunks take
             // some of them; widen it so a filtered search still fills the pool.
             await tx`SET LOCAL hnsw.ef_search = 400`;
-            return tx<Array<ChunkRow & { similarity: number }>>`
+            const pooled = await tx<SemanticRow[]>`
               SELECT x.artifact_id, x.chunk_index, x.heading_path, x.chunk_text, x.published_at,
                      1 - x.d AS similarity,
                      now() AS as_of
@@ -175,7 +178,44 @@ export async function searchPublishedHandler(
                ORDER BY x.d
                LIMIT ${CANDIDATES}
             `;
-          }) as Promise<Array<ChunkRow & { similarity: number }>>)
+            // A full leg needs nothing more: every chunk past the pool is at
+            // least as far as the farthest pooled one (up to the index's
+            // approximation), so none could displace a row kept here. A
+            // short one may miss pieces: a few long pieces can own
+            // the whole pool, or the filters drop most of it, and the pieces
+            // just past it are left out. Rank every searchable chunk instead,
+            // each piece's nearest SEMANTIC_PER_PIECE first, then read the
+            // text of the rows kept. The archive is a few thousand pieces,
+            // so the scan stays quick.
+            if (pooled.length >= CANDIDATES) return pooled;
+            return tx<SemanticRow[]>`
+              SELECT c.public_artifact_id AS artifact_id, c.chunk_index,
+                     to_jsonb(c.heading_path) AS heading_path, c.chunk_text, pa.published_at,
+                     1 - k.d AS similarity,
+                     now() AS as_of
+                FROM (
+                  SELECT r.id, r.d
+                    FROM (
+                      SELECT z.id, z.d,
+                             row_number() OVER (PARTITION BY z.artifact_id ORDER BY z.d, z.chunk_index) AS n
+                        FROM (
+                          SELECT c.id, c.public_artifact_id AS artifact_id, c.chunk_index,
+                                 c.embedding <=> ${v}::vector AS d
+                            FROM public_artifact_chunk c
+                            JOIN public_artifact pa ON pa.id = c.public_artifact_id
+                           WHERE c.embedding IS NOT NULL
+                             AND ${searchable(tx)}
+                        ) z
+                    ) r
+                   WHERE r.n <= ${SEMANTIC_PER_PIECE}
+                   ORDER BY r.d, r.id
+                   LIMIT ${CANDIDATES}
+                ) k
+                JOIN public_artifact_chunk c ON c.id = k.id
+                JOIN public_artifact pa ON pa.id = c.public_artifact_id
+               ORDER BY k.d, k.id
+            `;
+          }) as Promise<SemanticRow[]>)
         : Promise.resolve([]),
       // Every term in the chunk or the piece's title. A piece whose title
       // matches ranks first, then newer pieces; each piece brings at most

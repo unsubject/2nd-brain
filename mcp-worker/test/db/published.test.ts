@@ -137,6 +137,27 @@ describe.skipIf(!TEST_DB)('search_published', () => {
     expect(r.hits[0].passages.map((p: any) => p.chunk_index)).toEqual([0, 1]);
   });
 
+  it('finds the other pieces when one long piece owns every pooled chunk', async () => {
+    stubEmbeddings(axis(0));
+    // 210 chunks, all nearer than anything else: the 200-chunk pool holds
+    // only this piece, so the leg ranks every chunk exactly instead.
+    await seedPiece({
+      title: 'Very long transcript',
+      sourceSystem: 'youtube',
+      chunks: Array.from({ length: 210 }, (_, i) => ({ text: `Segment ${i} of a very long talk.`, vector: mix(0, 1, 0.99 - i / 1_000_000) })),
+    });
+    for (let i = 0; i < 4; i++) {
+      await seedPiece({ title: `Short essay ${i}`, chunks: [{ text: 'A short essay.', vector: mix(0, 1, 0.9 - i / 100) }] });
+    }
+    // Nearer than the essays, but the exact scan still applies the filters.
+    await seedPiece({ title: 'Superseded copy', status: 'superseded', chunks: [{ text: 'An old copy.', vector: mix(0, 1, 0.95) }] });
+
+    const r = await ok('search_published', { query: 'quiet rivers', passages: 3 });
+    expect(titles(r)).toEqual(['Very long transcript', 'Short essay 0', 'Short essay 1', 'Short essay 2', 'Short essay 3']);
+    expect(r.hits[0].passages.map((p: any) => p.chunk_index)).toEqual([0, 1, 2]);
+    expect(r.hits.every((h: any) => h.match.includes('semantic'))).toBe(true);
+  });
+
   it('never returns a superseded copy or an unprocessed row', async () => {
     stubEmbeddings(axis(0));
     const live = await seedPiece({ title: 'Harbour lights', chunks: [{ text: 'harbour lights at night', vector: axis(0) }] });
