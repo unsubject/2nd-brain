@@ -1215,6 +1215,30 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     ]
   );
 
+  // The video with no transcript row: once one is imported, a load is due
+  // and points the copy at it; after that load, none is (Codex on #114).
+  assert.deepEqual(stats.videosWaiting, ["AAAAAAAAAAA"]);
+  const recordLoad = (s: object) =>
+    db.query(`INSERT INTO archive_collect_run (source, status, finished_at, stats) VALUES ('load', 'succeeded', now(), $1::jsonb)`, [
+      JSON.stringify(s),
+    ]);
+  await recordLoad(stats);
+  assert.equal(await load.loadStale(db), false);
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status)
+     VALUES ('default', 'transcript', '另一條片', $1, 'youtube', 'AAAAAAAAAAA', 'processed')`,
+    [varied(10, 1500)]
+  );
+  assert.equal(await load.loadStale(db), true);
+  const linked = load.emptyLoadStats();
+  await load.runLoad(linked, async () => {}, () => false, db);
+  assert.deepEqual(linked.videosWaiting, []);
+  assert.equal(linked.legacy.replaced.video, 2);
+  assert.deepEqual((await old()).v2, ["superseded", null, (await ids()).AAAAAAAAAAA]);
+  await recordLoad(linked);
+  assert.equal(await load.loadStale(db), false);
+  await db.query("DELETE FROM archive_collect_run WHERE source = 'load'");
+
   // The rules decide again at every load: with the transcript row gone,
   // the video copy stays, flagged; a fragment stays out of search.
   await db.query("DELETE FROM public_artifact WHERE source_system = 'youtube'");

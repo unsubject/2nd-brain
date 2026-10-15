@@ -395,7 +395,9 @@ What a load writes, in one transaction:
   (`placeUnmatched` in `load/legacy.ts`):
   - a copy of a video's transcript (its link names a YouTube video) is
     replaced by that video's transcript row (source `youtube`); with none,
-    it stays searchable, `flag = 'video'`;
+    it stays searchable, `flag = 'video'`, and the load records the video
+    (`videosWaiting`): a YouTube import that adds its transcript makes a
+    load due, and the import starts the catch-up check at once;
   - one with the same title as a work (reply markers, column names, dates
     and punctuation aside) and at least 30% of its text found in a version
     of it is replaced by that work: the import kept many pieces only in

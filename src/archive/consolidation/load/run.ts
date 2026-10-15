@@ -57,6 +57,9 @@ export interface LoadStats extends CollectStats {
   // and year of publication, the old rows and how many of them nothing
   // replaces; and a digest of which rows those are, and why.
   legacyUnreplaced: { bySource: Record<string, Record<string, { rows: number; unreplaced: number }>>; digest: string | null };
+  // The videos an old row is a copy of that have no transcript row: once
+  // one is imported, the next load is due (loadStale).
+  videosWaiting: string[];
 }
 
 export function emptyLoadStats(): LoadStats {
@@ -87,6 +90,7 @@ export function emptyLoadStats(): LoadStats {
       fragments: 0,
     },
     legacyUnreplaced: { bySource: {}, digest: null },
+    videosWaiting: [],
   };
 }
 
@@ -450,6 +454,7 @@ export async function runLoad(
   if (shouldStop()) return;
 
   const unreplaced = new Map<string, Unreplaced>();
+  const waiting = new Set<string>();
   await inTransaction(db, "BEGIN", async (q) => {
     const loaded = await upsertWorks(works, q);
     for (const r of loaded.values()) {
@@ -482,6 +487,7 @@ export async function runLoad(
           return pointer(p.rowId, "duplicate");
         case "video": {
           const target = videoRow.get(p.videoId) ?? null;
+          if (!target) waiting.add(p.videoId);
           return target ? pointer(target, "video") : { id: l.id, target: null, legacy: true, flag: "video", hide: false };
         }
         case "fragment":
@@ -521,6 +527,7 @@ export async function runLoad(
       [NOT_LEGACY, VIDEO_SOURCE]
     );
   });
+  stats.videosWaiting = [...waiting].sort();
   // A replacement the worker finished while the transaction was open
   // retired nothing (its rows did not point at it yet): retire them now.
   stats.retiredLate = await retireReplacedRows(null, db);
@@ -532,15 +539,27 @@ export async function runLoad(
 // match writes one generation with one matched_at, so a different max
 // means a different generation, an empty one included. Compared with what
 // the load read, not when it started: a load that starts while a match is
-// writing still reads the works before it.
+// writing still reads the works before it. Due too once a video an old row
+// is a copy of, with no transcript row at that load, has one now (Codex on
+// #114): the load points the copy at it. Only the ids the load itself
+// found waiting count, so the load that links them is not due again.
 export async function loadStale(db: DB = pool): Promise<boolean> {
   const { rows } = await db.query<{ stale: boolean }>(
-    `SELECT (SELECT max(matched_at) FROM archive_work) IS DISTINCT FROM
-            (SELECT (stats->>'worksMatchedAt')::timestamptz FROM archive_collect_run
-              WHERE source = 'load' AND status = 'succeeded'
-                AND (stats->>'loaderVersion')::int = $1
-              ORDER BY started_at DESC LIMIT 1) AS stale`,
-    [LOADER_VERSION]
+    `WITH last AS (
+       SELECT stats FROM archive_collect_run
+        WHERE source = 'load' AND status = 'succeeded'
+          AND (stats->>'loaderVersion')::int = $1
+        ORDER BY started_at DESC LIMIT 1
+     )
+     SELECT (SELECT max(matched_at) FROM archive_work) IS DISTINCT FROM
+            (SELECT (stats->>'worksMatchedAt')::timestamptz FROM last)
+         OR EXISTS (
+              SELECT 1 FROM public_artifact
+               WHERE source_system = $2
+                 AND source_external_id IN (
+                       SELECT jsonb_array_elements_text(coalesce(stats->'videosWaiting', '[]'::jsonb)) FROM last)
+            ) AS stale`,
+    [LOADER_VERSION, VIDEO_SOURCE]
   );
   return rows[0].stale;
 }
