@@ -387,6 +387,11 @@ What a load writes, in one transaction:
 - **Old rows that match no work** stay searchable with
   `flag = 'unmatched'`. Video transcripts are not touched.
 
+A load never changes `members_only` (migration 033), which marks a
+members-only piece (D10: never on a public surface). Only the YouTube
+import sets it, from the sync's `members_only` (`true` or `false`; a sync
+that leaves it out keeps the stored value, and a new video is public).
+
 Search leaves out superseded rows: the `/archive/search` route and the
 calendar/task linker filter on `status = 'published'`, as the MCP tools
 already did. The `/archive/search` route and the MCP `archive_search_text`

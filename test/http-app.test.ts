@@ -92,6 +92,25 @@ test("the right key reaches the archive handlers", async (t) => {
   }
 });
 
+test("the YouTube import takes members_only only as a JSON boolean, before reaching the database", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const post = (members_only: unknown) =>
+    fetch(`${base}/archive/import/youtube`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ARCHIVE_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ video_id: "v1", title: "t", transcript: "x", members_only }),
+    });
+  for (const bad of ["yes", "true", "false", 1, 0, null, [], {}]) {
+    const res = await post(bad);
+    assert.equal(res.status, 400, JSON.stringify(bad));
+    assert.deepEqual(await res.json(), { error: "members_only must be true or false" });
+  }
+  // A boolean, or none, gets past the check (to the closed database here).
+  for (const good of [true, false, undefined]) {
+    assert.equal((await post(good)).status, 500, String(good));
+  }
+});
+
 test("with no archive key configured, every archive request is refused", async () => {
   const { createApp } = await import("../src/server");
   const other = await listen(createApp({ archiveApiKey: undefined, ownerSecret: undefined }));

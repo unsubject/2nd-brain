@@ -8,6 +8,9 @@ export interface YouTubeImportBody {
   summary?: string | null;
   keywords?: string | null;
   has_manual_transcript?: boolean;
+  // A members-only episode (D10): never on a public surface. Left out, a
+  // new video is public and a re-sync keeps what the row has.
+  members_only?: boolean;
 }
 
 function slugify(title: string): string {
@@ -54,5 +57,6 @@ export async function importYouTubeVideo(
     sourceSystem: "youtube",
     sourceExternalId: body.video_id,
     sourceSummary: body.summary ?? null,
+    membersOnly: body.members_only,
   });
 }

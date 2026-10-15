@@ -15,6 +15,10 @@ export async function upsertArtifact(params: {
   sourceSystem: string;
   sourceExternalId: string;
   sourceSummary?: string | null;
+  // Left out (or null), a new row is not members-only and an existing one
+  // keeps what it has: a sync that doesn't know the field never makes a
+  // members-only row public.
+  membersOnly?: boolean | null;
 }): Promise<{ id: string; created: boolean }> {
   const { rows } = await pool.query(
     `INSERT INTO public_artifact
@@ -22,10 +26,10 @@ export async function upsertArtifact(params: {
         canonical_url, series, series_position, tags,
         source_system, source_external_id, summary,
         source_last_synced_at,
-        word_count, processing_status)
+        word_count, processing_status, members_only)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(),
              array_length(regexp_split_to_array(trim($6), '\s+'), 1),
-             'pending')
+             'pending', COALESCE($14::boolean, false))
      ON CONFLICT (source_system, source_external_id) DO UPDATE
        SET title = EXCLUDED.title,
            slug = EXCLUDED.slug,
@@ -35,6 +39,9 @@ export async function upsertArtifact(params: {
            series = EXCLUDED.series,
            series_position = EXCLUDED.series_position,
            tags = EXCLUDED.tags,
+           -- $14, not EXCLUDED: the insert has already turned a missing
+           -- value into false.
+           members_only = COALESCE($14::boolean, public_artifact.members_only),
            -- Invariant: when a row is pending, summary is either NULL or
            -- source-provided. Never a stale prior LLM output.
            summary = CASE
@@ -86,6 +93,7 @@ export async function upsertArtifact(params: {
       params.sourceSystem,
       params.sourceExternalId,
       params.sourceSummary ?? null,
+      params.membersOnly ?? null,
     ]
   );
   return { id: rows[0].id, created: rows[0].created };
