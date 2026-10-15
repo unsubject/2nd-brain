@@ -129,6 +129,24 @@ export function unwrapJsonb(v: unknown): unknown {
   return cur;
 }
 
+// A composted idea is set aside, so proposals waiting on it are taken
+// back the way decide_idea_links withdraws them. Accepted links stay.
+// Returns how many were withdrawn.
+export async function withdrawProposalsOf(q: Q, userId: string, ideaId: string, credential: string): Promise<number> {
+  const w = await q`
+    UPDATE idea_link SET
+      status = 'withdrawn',
+      decided_at = now(),
+      decided_via = ${jsonParam(q, { credential })},
+      decision_note = 'endpoint composted'
+    WHERE user_id = ${userId}
+      AND status = 'proposed'
+      AND (source_idea_id = ${ideaId} OR target_idea_id = ${ideaId})
+    RETURNING id
+  `;
+  return w.length;
+}
+
 // The inbox (refocus Phase 4): ideas no garden review has handled yet.
 // Composted ideas are set aside, so they never wait in it. Keep this and
 // inboxCondition in step.

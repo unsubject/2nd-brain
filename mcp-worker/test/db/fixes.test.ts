@@ -119,7 +119,7 @@ describe.skipIf(!TEST_DB)('import fixes', () => {
         'not even an object',
       ],
     });
-    expect(r.counts).toEqual({ created: 1, merged: 0, already_imported: 0, error: 2 });
+    expect(r.counts).toEqual({ created: 1, merged: 0, already_imported: 0, error: 2, promoted: 0 });
     expect(r.results[0]).toMatchObject({ index: 0, source_external_id: 'too-long-tag', result: 'error' });
     expect(r.results[2]).toMatchObject({ index: 2, source_external_id: null, result: 'error' });
   });
@@ -148,6 +148,7 @@ describe.skipIf(!TEST_DB)('import fixes', () => {
       source_system: 'notion',
       items: [{ source_external_id: 'n', import_payload: {}, title: 'T', tags: ['Physics', 'oceans'] }],
     });
+    await seedSubjects([{ id: 't', title: 'T' }]);
     await ok('import_ideas', {
       source_system: 'gtasks_subjects',
       items: [
