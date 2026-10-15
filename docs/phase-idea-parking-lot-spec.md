@@ -137,7 +137,7 @@ The sweeper (`src/ideas/worker.ts`, 30 s poll):
 
 ## 9. Search
 
-Ideas are bilingual (English and Traditional Chinese). The hybrid search lives in `mcp-worker/src/ideas/search.ts`, shared by `search_ideas` (a flat list, composted included) and `explore_topic` (live ideas, then clusters). It merges a vector top-k (hits below `min_similarity`, default 0.25, dropped as noise) with an ILIKE match of every whitespace-separated term over all text fields, tags and notes. ILIKE covers Chinese (the english `tsvector` used elsewhere does not) and ideas filed seconds ago that aren't embedded yet. Score: `max(similarity, text match ? (all terms in title ? 0.8 : 0.6) : 0)`.
+Ideas are bilingual (English and Traditional Chinese). The hybrid search lives in `mcp-worker/src/ideas/search.ts`, shared by `search_ideas` (a flat list, composted included) and `explore_topic` (live ideas, then clusters). It merges a vector top-k (hits below `min_similarity`, default 0.25, dropped as noise) with an ILIKE match of every search term (split on spaces, quotes, brackets and CJK punctuation; `searchTerms` in `mcp-worker/src/ideas/text.ts`) over all text fields, tags and notes. ILIKE covers Chinese (the english `tsvector` used elsewhere does not) and ideas filed seconds ago that aren't embedded yet. Score: `max(similarity, text match ? (all terms in title ? 0.8 : 0.6) : 0)`.
 
 ## 10. Gardening algorithms
 

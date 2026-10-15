@@ -120,8 +120,9 @@ export async function exportIdeaMapHandler(
     `;
 
     // The html file is portable (easily forwarded), so it carries only
-    // published outputs; links to any other output are left out of it (and
-    // so out of degree, orphans and cluster names too).
+    // published outputs, and never a members-only one (D10); links to any
+    // other output are left out of it (and so out of degree, orphans and
+    // cluster names too).
     const artifactIds = [...new Set(linkRows.map((l) => l.target_artifact_id).filter((x): x is string => !!x))];
     const artifactRows =
       artifactIds.length > 0
@@ -131,7 +132,7 @@ export async function exportIdeaMapHandler(
             SELECT id, title, canonical_url AS url, published_at, type, now() AS as_of
               FROM public_artifact
              WHERE id = ANY(${uuidArrayLiteral(artifactIds)}::uuid[])
-               AND ${format === 'html' ? sql`status = 'published'` : sql`TRUE`}
+               AND ${format === 'html' ? sql`status = 'published' AND NOT members_only` : sql`TRUE`}
           `
         : [];
 

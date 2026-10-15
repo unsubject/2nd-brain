@@ -43,8 +43,18 @@ describe('Hyperdrive cache-busting convention', () => {
   it('scans every auth and OAuth module', () => {
     expect(authFiles).toEqual(expect.arrayContaining(['auth/middleware.ts', 'auth/labels.ts', 'oauth/token.ts', 'oauth/register.ts']));
   });
+
+  // The published-work tools (refocus Phase 5) follow the same rule: a
+  // piece read right after the archive load replaced it must not come from
+  // the cache.
+  const publishedTools = readdirSync(dir).filter((f) => /^(search_published|get_artifact)\.ts$/.test(f));
+
+  it('covers both published-work tools', () => {
+    expect(publishedTools).toHaveLength(2);
+  });
   const scanned = [
     ...ideaTools.map((f) => ({ path: `${dir}/${f}`, name: f, mustQuery: true })),
+    ...publishedTools.map((f) => ({ path: `${dir}/${f}`, name: f, mustQuery: true })),
     ...ideaModules.map((f) => ({ path: `${ideasDir}/${f}`, name: `ideas/${f}`, mustQuery: f === 'search.ts' })),
     ...authFiles.map((f) => ({ path: `${srcDir}/${f}`, name: f, mustQuery: false })),
   ];

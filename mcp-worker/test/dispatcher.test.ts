@@ -74,6 +74,9 @@ describe('mcp dispatcher', () => {
     expect(names).toContain('search_brain');
     expect(names).toContain('list_constitution_domains');
     expect(names).toContain('list_goals');
+    // Published work (refocus Phase 5): search_published replaced archive_search_text.
+    expect(names).toEqual(expect.arrayContaining(['search_published', 'get_artifact']));
+    expect(names).not.toContain('archive_search_text');
   });
 
   it('tools/list includes the Idea Parking Lot surface with guarded write tools', async () => {
@@ -111,6 +114,22 @@ describe('mcp dispatcher', () => {
     expect(text).toContain('explore_topic');
     expect(text).toContain("export_idea_map(format:'html')");
     expect(text).toContain('search_brain');
+  });
+
+  it('initialize instructions route published work and keep members-only pieces private', async () => {
+    const r = await rpc('initialize');
+    const text = r.result.instructions as string;
+    expect(text).toContain('"what have I written or said about X?" is search_published');
+    expect(text).toContain('get_artifact');
+    expect(text).toContain('Never use a members_only piece in anything public');
+  });
+
+  it('describes the members-only rule on both published-work tools', async () => {
+    const r = await rpc('tools/list');
+    const byName = new Map((r.result.tools as Array<{ name: string; description: string }>).map((t) => [t.name, t]));
+    for (const name of ['search_published', 'get_artifact']) {
+      expect(byName.get(name)!.description, name).toMatch(/members_only: true marks a members-only piece[^.]*NEVER quote, link or use it in anything meant for the public/);
+    }
   });
 
   it('resources/list returns the protocol resources', async () => {

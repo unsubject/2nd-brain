@@ -28,7 +28,7 @@ The journal is the user's external memory. Treat it as authoritative for **what 
 | Table | Source | Question it answers |
 |---|---|---|
 | `journal_entry` | `save_session` (channel `ai_chat`); older rows from the retired Telegram bot | **How** the user is thinking things through and **why**: their raw, unfiltered notes |
-| `public_artifact` (+ chunks, entities) | Archive consolidation rebuilds it from the Gmail "Writing" label, the Drive archive folders and the Substack and WordPress exports; the YouTube transcript sync adds the episodes. The archive worker summarises, chunks and embeds each piece | **What** the user has published: columns, essays and YouTube episodes. A copy that consolidation replaced is kept but leaves search (`status = 'superseded'`). `flag` marks a piece still to be checked (`review`) or an old imported row that matches no confirmed piece (`unmatched`). `members_only` (migration 033) marks a members-only episode (D10) |
+| `public_artifact` (+ chunks, entities) | Archive consolidation rebuilds it from the Gmail "Writing" label, the Drive archive folders and the Substack and WordPress exports; the YouTube transcript sync adds the episodes. The archive worker summarises, chunks and embeds each piece | **What** the user has published: columns, essays and YouTube episodes. A copy that consolidation replaced is kept but leaves search (`status = 'superseded'`). `flag` marks a piece still to be checked (`review`), an old imported copy of a video's transcript (`video`), a fragment set aside (`fragment`, with `status = 'hidden'`, out of search) or, from older loads, an old row no piece replaced (`unmatched`). `members_only` (migration 033) marks a members-only episode (D10) |
 | `link_edge` | Machine-made by the journal linker (`src/google/linker.ts`) after each entry is processed. The archive worker also writes `shared_entities` links between published pieces (`src/archive/queries.ts`), which no tool reads, and archive consolidation moves links to the piece that replaced their target | Links from a journal entry to a published piece it echoes (`echoes_artifact`), to an organisation, concept or work it mentions (`mentions_entity`) and, until Phase 7, to an open Google Tasks item it shares keywords with (`relates_to_task`). Read through `get_entry` |
 | `task_ref` | Google Tasks sync (read-only), until Phase 7 | The "Subjects" list for the one-time idea import (`list_subjects_for_import`, and `import_ideas`, which reads the synced task to record each item's promotion), and the task titles in `get_entry`'s links |
 | `idea` | `park_idea` / `import_ideas` / `create_synthesis` (this MCP); `update_idea` and `decide_idea_links` (`mark_reviewed`) record reviews and promotions | The **Idea Garden** — parked ideas (when/where captured, the raw source, why it's interesting, the user's verbatim thoughts) and syntheses (ideas combined into an episode/essay/series seed). Not tasks. `reviewed_at` NULL means the idea waits in the garden inbox; `promoted_at` / `promoted_title` record a promotion to the Google Tasks "Subjects" list, which Simon or Muse writes (2nd-brain never writes Google Tasks). |
@@ -99,12 +99,18 @@ Each link carries a `target_title`. Links below `min_confidence` (default 0.5) a
 - The user asks "what have I been thinking about this week / today / lately"
 - You want to prime on the user's current preoccupations before a longer brainstorm. One call at the start of a session is fine; don't call it repeatedly.
 
-### Published work — `archive_search_text` now, `search_published` and `get_artifact` in Phase 5
+### Published work — `search_published` and `get_artifact`
 
-- Use `archive_search_text` when the user asks what they wrote or said in public ("did I write about X?", "find my column on Y") or wants to cite their own work. "Have I thought about X?" is the journal (`search_brain`); "what do I have on X?" is the Idea Garden (`explore_topic`).
-- It matches the meaning of the query against each piece's summary. It returns the best matches' title, link, date, type (`essay` or `episode`) and `flag`, and no body text. Copies that consolidation replaced never come back.
-- Say so when a hit is flagged: `review` is an essay still to be checked (it may never have been published, or its text is uncertain), and `unmatched` is an old imported row that matches no confirmed piece.
-- Phase 5 replaces `archive_search_text` with `search_published` (chunk-level, by meaning and by exact text) and `get_artifact` (reads one piece). It also brings in members-only episodes, marked as such (D10). Never quote or link a members-only piece in anything meant for the public.
+- Use `search_published` when the user asks what they wrote or said in public ("did I write about X?", "find the piece where I said …") or wants to cite their own work. "Have I thought about X?" is the journal (`search_brain`); "what do I have on X?" is the Idea Garden (`explore_topic`).
+- It searches the pieces' chunks two ways, by meaning and by exact text (the text match finds Chinese phrases and names the embedding misses). It returns one hit per piece, best first, with a short summary and up to three passages of about 500 characters each. `get_artifact` reads one piece's whole text, 12,000 characters at a time; an id that was replaced resolves to the piece that replaced it.
+- Only published rows come back. A copy that consolidation replaced (`status = 'superseded'`) is left out of search, and `get_artifact` resolves its id to the piece that replaced it. A fragment it set aside (`status = 'hidden'`) or any other unpublished row never comes back, not even by id.
+- Say so when a hit is flagged:
+  - `review`: a piece still to be checked (it may never have been published, or its text is uncertain);
+  - `video`: an old imported copy of a video's transcript;
+  - `unmatched` (older loads): an old row no piece replaced.
+
+  `confirmed_only` leaves flagged pieces out.
+- Members-only episodes are included and marked `members_only` (D10, D11). Read and discuss them with the user, but never quote, link or use one in anything meant for the public; pass `members_only: 'exclude'` when gathering material for something public. `export_idea_map`'s HTML leaves them out.
 
 ### Idea Garden — when to use these tools
 
@@ -166,7 +172,7 @@ This repository is public. Tests, fixtures and docs use synthetic data only, and
 
 ### Embeddings
 
-- Pinned model: **`text-embedding-3-small`**, 1536 dimensions. Must match `journal_entry.embedding` (`vector(1536)`), `public_artifact.embedding` (the piece's summary, which `archive_search_text` matches), `public_artifact_chunk.embedding` and `idea.embedding`. The idea embedding text recipe lives in `src/ideas/embeddingText.ts`; any field it reads must also clear the embedding in the `idea_before_update` trigger (migration 019).
+- Pinned model: **`text-embedding-3-small`**, 1536 dimensions. Must match `journal_entry.embedding` (`vector(1536)`), `public_artifact.embedding` (the piece's summary, which `garden_ideas`' outputs mode compares ideas against), `public_artifact_chunk.embedding` and `idea.embedding`. The idea embedding text recipe lives in `src/ideas/embeddingText.ts`; any field it reads must also clear the embedding in the `idea_before_update` trigger (migration 019).
 - Changing the model is a schema migration, not a code change. If you change it, you need a backfill plan for existing embeddings.
 - The Worker's embedding code (`mcp-worker/src/embeddings.ts`) is a fetch-based REST call, not the OpenAI SDK (the SDK is heavier than necessary in a Worker). Keep behavior compatible with `src/embeddings.ts` in the monolith.
 

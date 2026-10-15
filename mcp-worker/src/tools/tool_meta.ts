@@ -24,7 +24,8 @@ export const TOOL_META: Record<string, { title: string; annotations: ToolAnnotat
   get_entry: { title: 'Get journal entry', annotations: READ },
   list_recent: { title: 'List recent journal entries', annotations: READ },
   save_session: { title: 'Save session to journal', annotations: WRITE },
-  archive_search_text: { title: 'Search published archive', annotations: READ },
+  search_published: { title: 'Search published work', annotations: READ },
+  get_artifact: { title: 'Get published piece', annotations: READ },
   // Constitution & goals
   list_constitution_domains: { title: 'List constitution domains', annotations: READ },
   get_constitution_domain: { title: 'Get constitution domain', annotations: READ },

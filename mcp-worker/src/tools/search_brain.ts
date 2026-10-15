@@ -4,7 +4,7 @@ import type { ToolResult } from './registry';
 import { embed, vectorLiteral } from '../embeddings';
 import { getDb } from '../db';
 import { textArray } from './idea_shared';
-import { searchTerms } from '../ideas/text';
+import { searchTerms, termPattern } from '../ideas/text';
 
 // primary_type is no longer a filter (the classification was retired with
 // the Chief-of-Staff role); a client that still sends it gets it ignored.
@@ -153,20 +153,6 @@ export async function searchBrainHandler(
 const RRF_K = 60;
 function rrf(rank: number): number {
   return 1 / (RRF_K + rank + 1);
-}
-
-// A case-insensitive regex for one search term. Latin terms match at the
-// start of a word, and terms of up to three characters only as whole words,
-// so 'AI' finds "AI-driven" and "我覺得AI會" but not "said", "again" or
-// "aim". A word boundary here is any character that is not an ASCII letter
-// or digit, so Latin words run into Chinese text still match. Other terms
-// (Chinese has no spaces) match anywhere.
-export function termPattern(term: string): string {
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!/^[A-Za-z0-9]/.test(term)) return escaped;
-  const start = '(^|[^A-Za-z0-9])';
-  const end = /^[A-Za-z0-9]{1,3}$/.test(term) ? '($|[^A-Za-z0-9])' : '';
-  return `${start}${escaped}${end}`;
 }
 
 function roundTo(n: number, digits: number): number {
