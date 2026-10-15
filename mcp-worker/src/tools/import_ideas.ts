@@ -76,9 +76,9 @@ type ItemResult = {
   result: 'created' | 'merged' | 'already_imported' | 'error';
   idea_id?: string;
   // Subjects items only: whether this call recorded the promotion, the
-  // idea already had one, or someone cleared it with update_idea and a
-  // re-sent item leaves it cleared. Absent for a subtask merged into its
-  // parent.
+  // idea already had one, or someone cleared it with update_idea and the
+  // import leaves it cleared. Absent for a subtask merged into its
+  // parent's idea.
   promotion?: 'recorded' | 'already_recorded' | 'cleared';
   error?: string;
 };
@@ -154,16 +154,19 @@ export async function importIdeasHandler(
 
 // A Subjects task as the Google sync stored it. The same rows as
 // list_subjects_for_import: task_ref is written with user_id 'default',
-// so it is not filtered on BRAIN_USER_ID.
-type SubjectsTask = { title: string; first_synced_at: Date | string; is_subtask: boolean };
+// so it is not filtered on BRAIN_USER_ID. parent_idea_id is the idea a
+// subtask's parent was imported into, if it was.
+type SubjectsTask = { title: string; first_synced_at: Date | string; parent_idea_id: string | null };
 
-async function findSubjectsTask(sql: ReturnType<typeof getDb>, ext: string): Promise<SubjectsTask | null> {
+async function findSubjectsTask(sql: ReturnType<typeof getDb>, userId: string, ext: string): Promise<SubjectsTask | null> {
   const rows = await sql<Array<SubjectsTask>>`
-    SELECT t.title, t.created_at AS first_synced_at,
-           (t.parent_external_task_id IS NOT NULL) AS is_subtask,
-           now() AS as_of
+    SELECT t.title, t.created_at AS first_synced_at, ps.idea_id AS parent_idea_id, now() AS as_of
       FROM task_ref t
       JOIN project_ref p ON p.id = t.project_ref_id AND p.list_type = 'subjects'
+      LEFT JOIN idea_source ps
+             ON ps.user_id = ${userId}
+            AND ps.source_system = 'gtasks_subjects'
+            AND ps.source_external_id = t.parent_external_task_id
      WHERE t.external_task_id = ${ext}
        AND t.scope = 'personal'
   `;
@@ -179,10 +182,11 @@ function promotionTitle(s: string | undefined): string {
   return Array.from((s ?? '').trim()).slice(0, LIMITS.title).join('').trim();
 }
 
-// What a Subjects item records. A subtask merged into its parent's idea
-// records nothing: the parent's own promotion stands.
-function promotionFor(task: SubjectsTask, item: Item, merged: boolean): Promotion | null {
-  if (task.is_subtask && merged) return null;
+// What a Subjects item records on `ideaId` (null for a new idea). A
+// subtask merged into its parent's idea records nothing: the parent's own
+// promotion stands. Anywhere else it records its own.
+function promotionFor(task: SubjectsTask, item: Item, ideaId: string | null): Promotion | null {
+  if (task.parent_idea_id !== null && task.parent_idea_id === ideaId) return null;
   const title = promotionTitle(task.title) || promotionTitle(item.title);
   if (!title) throw new HandlerError('invalid', 'the Subjects task has a blank title: send a title to record its promotion');
   return { title, at: toIso(task.first_synced_at) };
@@ -191,8 +195,8 @@ function promotionFor(task: SubjectsTask, item: Item, merged: boolean): Promotio
 const promotionNote = (title: string) => `promoted to Subjects as "${title}" (Subjects import)`;
 
 // An edit_log entry that set or cleared the promotion (update_idea logs
-// every change to it). A re-sent item never brings back a promotion the
-// user cleared.
+// every change to it). Neither a merge nor a re-sent item brings back a
+// promotion the user cleared.
 const PROMOTION_EDITED = [{ fields: ['promoted'] }];
 
 type PromotionPlan = { status: string; fields: string[]; notes: Note[] };
@@ -237,8 +241,8 @@ async function importOne(
   const credential = capturedVia.credential as string;
   const nowIso = new Date().toISOString();
 
-  const already = await sql<Array<{ idea_id: string; merged: boolean; promoted: boolean; edited: boolean }>>`
-    SELECT s.idea_id, s.merged, (i.promoted_at IS NOT NULL) AS promoted,
+  const already = await sql<Array<{ idea_id: string; promoted: boolean; edited: boolean }>>`
+    SELECT s.idea_id, (i.promoted_at IS NOT NULL) AS promoted,
            COALESCE(i.edit_log @> ${jsonParam(sql, PROMOTION_EDITED)}, false) AS edited,
            now() AS as_of
       FROM idea_source s
@@ -247,15 +251,17 @@ async function importOne(
        AND s.source_system = ${sourceSystem}
        AND s.source_external_id = ${ext}
   `;
-  const task = sourceSystem === 'gtasks_subjects' ? await findSubjectsTask(sql, ext) : null;
+  const task = sourceSystem === 'gtasks_subjects' ? await findSubjectsTask(sql, env.BRAIN_USER_ID, ext) : null;
   if (already.length > 0) {
-    const { idea_id, merged, promoted, edited } = already[0];
+    const { idea_id, promoted, edited } = already[0];
     const done = { source_external_id: ext, result: 'already_imported' as const, idea_id };
-    const promo = task ? promotionFor(task, item, merged) : null;
+    const promo = task ? promotionFor(task, item, idea_id) : null;
     if (!promo) return done;
     if (promoted) return { ...done, promotion: 'already_recorded' as const };
     if (edited) return { ...done, promotion: 'cleared' as const };
-    // Imported by a pass that did not record promotions yet: record it now.
+    // Imported by a pass that did not record promotions yet: record it now,
+    // under the status rule alone. The item's status was that pass's to
+    // apply, and the user may have changed the status since.
     const outcome = await sql.begin(async (tx): Promise<'recorded' | 'already_recorded' | 'cleared'> => {
       const cur = await tx<Array<{ status: string; promoted: boolean; edited: boolean }>>`
         SELECT status, (promoted_at IS NOT NULL) AS promoted,
@@ -264,7 +270,7 @@ async function importOne(
          FOR UPDATE
       `;
       if (cur.length > 0 && !cur[0].promoted && cur[0].edited) return 'cleared';
-      const plan = cur.length > 0 ? planPromotion(cur[0], promo, item.status, credential, nowIso) : null;
+      const plan = cur.length > 0 ? planPromotion(cur[0], promo, undefined, credential, nowIso) : null;
       if (!plan) return 'already_recorded';
       await tx`
         UPDATE idea SET
@@ -290,10 +296,11 @@ async function importOne(
   try {
     if (item.merge_into_idea_id) {
       const target = item.merge_into_idea_id;
-      const promo = task ? promotionFor(task, item, true) : null;
+      const promo = task ? promotionFor(task, item, target) : null;
       return await sql.begin(async (tx) => {
-        const found = await tx<Array<{ id: string; tags: unknown; status: string; promoted: boolean }>>`
-          SELECT id, to_jsonb(tags) AS tags, status, (promoted_at IS NOT NULL) AS promoted, now() AS as_of
+        const found = await tx<Array<{ id: string; tags: unknown; status: string; promoted: boolean; edited: boolean }>>`
+          SELECT id, to_jsonb(tags) AS tags, status, (promoted_at IS NOT NULL) AS promoted,
+                 (edit_log @> ${jsonParam(tx, PROMOTION_EDITED)}) AS edited, now() AS as_of
             FROM idea WHERE id = ${target} AND user_id = ${env.BRAIN_USER_ID}
            FOR UPDATE
         `;
@@ -306,7 +313,8 @@ async function importOne(
         if (item.notes_raw && item.notes_raw.trim()) parts.push(item.notes_raw);
         const note: Note = { at: capturedAt ?? nowIso, by: noteBy, text: parts.join('\n\n'), credential };
         // item.status applies to a merge only with the promotion it records.
-        const plan = promo ? planPromotion(found[0], promo, item.status, credential, nowIso) : null;
+        const cleared = promo !== null && !found[0].promoted && found[0].edited;
+        const plan = promo && !cleared ? planPromotion(found[0], promo, item.status, credential, nowIso) : null;
 
         await tx`
           UPDATE idea SET
@@ -334,7 +342,9 @@ async function importOne(
           source_external_id: ext,
           result: 'merged' as const,
           idea_id: target,
-          ...(promo ? { promotion: plan ? ('recorded' as const) : ('already_recorded' as const) } : {}),
+          ...(promo
+            ? { promotion: plan ? ('recorded' as const) : cleared ? ('cleared' as const) : ('already_recorded' as const) }
+            : {}),
         };
       });
     }
@@ -342,7 +352,7 @@ async function importOne(
     const title = item.title?.trim();
     if (!title) throw new HandlerError('invalid', 'title is required unless merge_into_idea_id is given');
 
-    const promo = task ? promotionFor(task, item, false) : null;
+    const promo = task ? promotionFor(task, item, null) : null;
     const notes: Note[] = item.notes_raw
       ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({ ...n, by: noteBy, credential }))
       : [];

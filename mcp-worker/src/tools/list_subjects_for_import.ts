@@ -20,14 +20,18 @@ const inputSchema = z
   .strict();
 
 // The better of an idea's two titles for a task title: exact beats
-// contains, and the idea's own title wins a tie.
+// contains. An exact match on the promoted title wins over one on the
+// idea's own title, since it says the idea is already promoted under this
+// task title (protocol §4, Pass 2, step 4); otherwise the idea's own
+// title wins a tie.
 function bestMatch(
   i: { title: string; promoted_title: string | null },
   taskTitle: string,
 ): { match: TitleMatch; matched_on: 'title' | 'promoted_title' } | null {
   const byTitle = titleMatch(i.title, taskTitle);
   const byPromoted = i.promoted_title ? titleMatch(i.promoted_title, taskTitle) : null;
-  if (byTitle && (byTitle === 'exact' || byPromoted !== 'exact')) return { match: byTitle, matched_on: 'title' };
+  if (byPromoted === 'exact') return { match: byPromoted, matched_on: 'promoted_title' };
+  if (byTitle) return { match: byTitle, matched_on: 'title' };
   if (byPromoted) return { match: byPromoted, matched_on: 'promoted_title' };
   return null;
 }

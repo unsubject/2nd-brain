@@ -431,6 +431,102 @@ describe.skipIf(!TEST_DB)('import_ideas records Subjects items as promoted', () 
     });
   });
 
+  it('a subtask merged into an idea other than its parent’s records its own promotion', async () => {
+    const notion = await ok('import_ideas', {
+      source_system: 'notion',
+      items: [
+        { source_external_id: 'n-o', import_payload: {}, title: 'Orphan point', captured_at: '2026-03-01T00:00:00Z' },
+        { source_external_id: 'n-e', import_payload: {}, title: 'Earlier orphan', captured_at: '2026-03-01T00:00:00Z' },
+      ],
+    });
+    const [orphanIdea, earlierIdea] = notion.results.map((x: any) => x.idea_id);
+    // The parent o1 is a stale task the user skipped, so it was never imported.
+    await seedSubjects([
+      { id: 'o1', title: 'Skipped parent', syncedAt: SYNCED },
+      { id: 'o2', title: 'Orphan point', parent: 'o1', syncedAt: SYNCED },
+      { id: 'o3', title: 'Earlier orphan', parent: 'o1', syncedAt: SYNCED },
+    ]);
+    // What a pass from before promotions were recorded left behind for o3.
+    await admin`
+      INSERT INTO idea_source (idea_id, user_id, source_system, source_external_id, import_payload, merged)
+      VALUES (${earlierIdea}, ${USER}, 'gtasks_subjects', 'o3', ${admin.json({})}, true)
+    `;
+    const r = await ok('import_ideas', {
+      source_system: 'gtasks_subjects',
+      items: [
+        { source_external_id: 'o2', import_payload: {}, merge_into_idea_id: orphanIdea, title: 'Orphan point' },
+        { source_external_id: 'o3', import_payload: {}, merge_into_idea_id: earlierIdea, title: 'Earlier orphan' },
+      ],
+    });
+    expect(r.counts).toEqual({ created: 0, merged: 1, already_imported: 1, error: 0, promoted: 2 });
+    expect(r.results.map((x: any) => x.promotion)).toEqual(['recorded', 'recorded']);
+    expect(await ideaOf(orphanIdea)).toMatchObject({ status: 'exploring', promoted: { at: SYNCED, title: 'Orphan point' } });
+    expect(await ideaOf(earlierIdea)).toMatchObject({ promoted: { at: SYNCED, title: 'Earlier orphan' } });
+
+    const listed = await ok('list_subjects_for_import', {});
+    expect(listed.tasks.find((t: any) => t.external_task_id === 'o2').imported_idea_promoted).toEqual({
+      at: SYNCED,
+      title: 'Orphan point',
+    });
+    const again = await ok('import_ideas', {
+      source_system: 'gtasks_subjects',
+      items: [{ source_external_id: 'o2', import_payload: {}, merge_into_idea_id: orphanIdea }],
+    });
+    expect(again.results[0]).toMatchObject({ result: 'already_imported', promotion: 'already_recorded' });
+  });
+
+  it('a merge leaves a promotion the user cleared cleared, and ignores the item status', async () => {
+    const notion = await ok('import_ideas', {
+      source_system: 'notion',
+      items: [{ source_external_id: 'n-m', import_payload: {}, title: 'Moon cycles', captured_at: '2026-03-01T00:00:00Z' }],
+    });
+    const id = notion.results[0].idea_id;
+    await ok('update_idea', { id, promoted: { title: 'Moon cycles' } });
+    await ok('update_idea', { id, promoted: null });
+    const before = await ideaOf(id);
+    expect(before).toMatchObject({ status: 'exploring', promoted: null });
+    await seedSubjects([{ id: 'mc', title: 'Moon cycles', status: 'completed', syncedAt: SYNCED }]);
+
+    const r = await ok('import_ideas', {
+      source_system: 'gtasks_subjects',
+      items: [{ source_external_id: 'mc', import_payload: {}, merge_into_idea_id: id, title: 'Moon cycles', status: 'used' }],
+    });
+    expect(r.counts).toEqual({ created: 0, merged: 1, already_imported: 0, error: 0, promoted: 0 });
+    expect(r.results[0]).toMatchObject({ result: 'merged', promotion: 'cleared' });
+    const after = await ideaOf(id);
+    expect(after).toMatchObject({ status: 'exploring', promoted: null });
+    expect(systemNotes(after)).toEqual(systemNotes(before));
+    expect(after.edit_log.at(-1).fields).toBeUndefined();
+
+    const again = await ok('import_ideas', {
+      source_system: 'gtasks_subjects',
+      items: [{ source_external_id: 'mc', import_payload: {}, merge_into_idea_id: id, status: 'used' }],
+    });
+    expect(again.results[0]).toMatchObject({ result: 'already_imported', promotion: 'cleared' });
+  });
+
+  it('a re-send records the missing promotion under the status rule and ignores the item status', async () => {
+    await seedSubjects([{ id: 'bs', title: 'Finished earlier', status: 'completed', syncedAt: SYNCED }]);
+    const [old] = await admin<Array<{ id: string }>>`
+      INSERT INTO idea (user_id, title, status, captured_at, captured_via)
+      VALUES (${USER}, 'Finished earlier', 'composted', ${SYNCED}, ${admin.json({ role: 'importer', credential: 'Earlier' })})
+      RETURNING id
+    `;
+    await admin`
+      INSERT INTO idea_source (idea_id, user_id, source_system, source_external_id, import_payload)
+      VALUES (${old.id}, ${USER}, 'gtasks_subjects', 'bs', ${admin.json({})})
+    `;
+    // Built as in step 5, so it carries the Step 0 status for completed tasks.
+    const r = await ok('import_ideas', {
+      source_system: 'gtasks_subjects',
+      items: [{ source_external_id: 'bs', import_payload: {}, title: 'Finished earlier', status: 'used', tags: ['gtasks:completed'] }],
+    });
+    expect(r.results[0]).toMatchObject({ result: 'already_imported', promotion: 'recorded' });
+    const idea = await ideaOf(old.id);
+    expect(idea).toMatchObject({ status: 'exploring', tags: [], promoted: { at: SYNCED, title: 'Finished earlier' } });
+    expect(idea.edit_log).toEqual([expect.objectContaining({ tool: 'import_ideas', fields: ['promoted', 'status'] })]);
+  });
+
   it('a long task title is trimmed and cut to 500 characters for the promotion', async () => {
     // 13 + 480 + 20 code points before the tail; the cut lands inside the
     // run of astral characters and must not split one.
@@ -490,5 +586,16 @@ describe.skipIf(!TEST_DB)('import_ideas records Subjects items as promoted', () 
       promoted: { at: '2026-02-01T00:00:00.000Z', title: 'Episode: tides angle' },
     });
     expect(byIdea.get(same)).toMatchObject({ match: 'exact', matched_on: 'title', promoted: null });
+  });
+
+  it('an exact match on the promoted title wins over one on the idea title', async () => {
+    const tides = await seedIdea('Tides');
+    await ok('update_idea', { id: tides, promoted: { title: 'Tides' } });
+    await seedSubjects([{ id: 't1', title: 'Tides' }]);
+    const listed = await ok('list_subjects_for_import', {});
+    const task = listed.tasks.find((t: any) => t.external_task_id === 't1');
+    expect(task.possible_duplicates).toEqual([
+      expect.objectContaining({ idea_id: tides, match: 'exact', matched_on: 'promoted_title', promoted: expect.objectContaining({ title: 'Tides' }) }),
+    ]);
   });
 });
