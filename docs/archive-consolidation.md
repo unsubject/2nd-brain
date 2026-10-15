@@ -406,7 +406,9 @@ What a load writes, in one transaction:
     "Hi Simon"), leaves search: `status = 'hidden'`, `flag = 'fragment'`;
   - one with 60% of its text in a fuller old row (or the same title and
     30%) is merged into the fullest such row: one of the rest, which then
-    replaces it, or one a work already replaces, whose work then does;
+    replaces it; one a work already replaces, whose work then does; or a
+    copy of a video, whose transcript row then does (the flagged copy
+    while there is none);
   - anything else is kept as it is, searchable and unflagged: the only
     copy of the piece.
 

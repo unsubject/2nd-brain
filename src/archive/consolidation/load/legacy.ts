@@ -208,10 +208,12 @@ export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[], replaced: 
 
   const rest: OldRow[] = [];
   const titled: OldRow[] = [];
+  const videos: OldRow[] = [];
   for (const r of rows) {
     const videoId = videoIdOf(r.url);
     if (videoId) {
       out.set(r.id, { kind: "video", videoId });
+      videos.push(r);
       continue;
     }
     let best: { i: number; share: number } | null = null;
@@ -228,12 +230,13 @@ export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[], replaced: 
 
   // Duplicates among the rest: each goes to the fullest row that holds it
   // (most of its text, or the same title and a TITLE_SHARE of it): another
-  // of the rest, or a row already replaced (a copy, or one placed by
-  // title), whose replacement it then shares. Always a larger row (more
-  // shingles, then the greater id), so a chain ends, at a row that stays or
-  // one replaced. Hosts are screened as copies are, by shared samples; a
-  // row too short for that is checked against every host.
-  const hosts = [...rest, ...replaced, ...titled];
+  // of the rest, a row already replaced (a copy, or one placed by title),
+  // or a copy of a video (Codex on #114), whose replacement, if any, it then
+  // shares. Always a larger row (more shingles, then the greater id), so a
+  // chain ends, at a row that stays or one placed otherwise. Hosts are
+  // screened as copies are, by shared samples; a row too short for that is
+  // checked against every host.
+  const hosts = [...rest, ...replaced, ...titled, ...videos];
   const larger = (a: OldRow, b: OldRow) => {
     const d = rowSets.get(a.id)!.length - rowSets.get(b.id)!.length;
     return d !== 0 ? d > 0 : a.id > b.id;

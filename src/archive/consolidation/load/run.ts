@@ -472,13 +472,15 @@ export async function runLoad(
       .map((a) => ({ id: a.id, target: rowOfWork(workOfMember.get(a.ref)), legacy: false, flag: null, hide: false }));
     stats.retired = retired.length;
     // Each old row's replacement, and the rule that found it. A duplicate
-    // of a row a work replaces goes to that work.
+    // of a row a work or a video's transcript row replaces goes to that.
     const rule = new Map<string, keyof LoadStats["legacy"]["replaced"]>();
-    const workReplacing = (id: string): string | null => {
+    const replacing = (id: string): string | null => {
       const copy = copies.get(id);
       if (copy) return rowOfWork(workOfCandidate.get(copy.pieceId));
       const p = placements.get(id);
-      return p?.kind === "title" ? rowOfWork(workOfCandidate.get(p.pieceId)) : null;
+      if (p?.kind === "title") return rowOfWork(workOfCandidate.get(p.pieceId));
+      if (p?.kind === "video") return videoRow.get(p.videoId) ?? null;
+      return null;
     };
     const oldRows: Pointer[] = legacy.map((l) => {
       const pointer = (target: string | null, by: keyof LoadStats["legacy"]["replaced"]): Pointer => {
@@ -492,7 +494,7 @@ export async function runLoad(
         case "title":
           return pointer(rowOfWork(workOfCandidate.get(p.pieceId)), "title");
         case "duplicate":
-          return pointer(workReplacing(p.rowId) ?? p.rowId, "duplicate");
+          return pointer(replacing(p.rowId) ?? p.rowId, "duplicate");
         case "video": {
           const target = videoRow.get(p.videoId) ?? null;
           if (!target) waiting.add(p.videoId);

@@ -1145,7 +1145,9 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
        ('default', 'essay', '節錄', $7, 'notion', 'd2', 'processed', 'https://example.org/excerpt'),
        ('default', 'essay', '獨文', $8, 'notion', 'k1', 'processed', NULL),
        ('default', 'essay', '全份', $9, 'notion', 'c1', 'processed', NULL),
-       ('default', 'essay', '節選', $10, 'notion', 'e1', 'processed', NULL)`,
+       ('default', 'essay', '節選', $10, 'notion', 'e1', 'processed', NULL),
+       ('default', 'essay', '片段', $11, 'notion', 'v3', 'processed', NULL),
+       ('default', 'essay', '另一片段', $12, 'notion', 'v4', 'processed', NULL)`,
     [
       varied(1, 1500),
       varied(2, 1500),
@@ -1157,6 +1159,8 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
       varied(8, 1500),
       long, // a copy of the Drive piece
       long.slice(1000, 1500), // an excerpt of that copy, under another title (Codex on #114)
+      varied(2, 1500).slice(200, 900), // excerpts of the two video copies, with no link (Codex on #114)
+      varied(3, 1500).slice(200, 900),
     ]
   );
   const ids = async () =>
@@ -1180,9 +1184,9 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     log.restore();
   }
   assert.deepEqual(stats.legacy, {
-    rows: 10,
-    replaced: { text: 1, title: 1, video: 1, duplicate: 2 },
-    superseded: 2, // the video copy and the excerpt: their replacements are processed
+    rows: 12,
+    replaced: { text: 1, title: 1, video: 1, duplicate: 4 },
+    superseded: 4, // the video copy and the excerpts of it, of v2 and of d1: their replacements are processed
     waiting: 3, // the Drive piece's copy, start and excerpt, until its new row is processed
     kept: 2,
     video: 1,
@@ -1201,6 +1205,8 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     k1: ["published", null, null],
     c1: ["published", null, doc[0].id],
     e1: ["published", null, doc[0].id], // with the copy it is an excerpt of
+    v3: ["superseded", null, id.dQw4w9WgXcQ], // with the video copy: to its transcript row
+    v4: ["superseded", null, id.v2], // to the video copy itself, while it has none
   });
   // The fuller row keeps the link of the excerpt merged into it (Codex on
   // #114); a video's transcript row takes none from the copies of it.
@@ -1241,6 +1247,7 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
   assert.deepEqual(linked.videosWaiting, []);
   assert.equal(linked.legacy.replaced.video, 2);
   assert.deepEqual((await old()).v2, ["superseded", null, (await ids()).AAAAAAAAAAA]);
+  assert.deepEqual((await old()).v4, ["superseded", null, (await ids()).AAAAAAAAAAA]);
   await recordLoad(linked);
   assert.equal(await load.loadStale(db), false);
   await db.query("DELETE FROM archive_collect_run WHERE source = 'load'");
@@ -1253,6 +1260,7 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
   assert.equal(again.legacy.video, 2);
   const after = await old();
   assert.deepEqual(after.v1, ["published", "video", null]);
+  assert.deepEqual(after.v3, ["superseded", null, id.v1]);
   assert.deepEqual(after.f1, ["hidden", "fragment", null]);
   await db.query("DELETE FROM public_artifact");
 });

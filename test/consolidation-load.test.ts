@@ -182,3 +182,12 @@ test("an excerpt of an old row a work already replaces goes to that row, whateve
   // With no such row, it stays.
   assert.deepEqual(placeUnmatched([excerpt], [work]).get("excerpt"), { kind: "kept" });
 });
+
+test("an excerpt of an old copy of a video goes with that copy (Codex on #114)", () => {
+  const transcript = essay(40, 2400);
+  const video = { id: "video", title: "【片】", text: transcript, url: "https://youtu.be/dQw4w9WgXcQ", truncated: false };
+  const excerpt = { id: "excerpt", title: "片段", text: transcript.slice(300, 1000), url: null, truncated: false };
+  const placed = placeUnmatched([video, excerpt], []);
+  assert.deepEqual(placed.get("video"), { kind: "video", videoId: "dQw4w9WgXcQ" });
+  assert.deepEqual(placed.get("excerpt"), { kind: "duplicate", rowId: "video" });
+});
