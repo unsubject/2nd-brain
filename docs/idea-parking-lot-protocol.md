@@ -44,6 +44,8 @@ Design background: `docs/phase-idea-parking-lot-spec.md` and the decision record
 
 `at` may not be in the future. `promoted: null` clears a promotion recorded by mistake. Reads show `promoted: {at, title}` or `null`; `list_ideas(promoted: true)` lists the promoted ideas.
 
+**Imported promotions.** The one-time Subjects import (§4, Pass 2) records a promotion for each Subjects item it imports. The server takes it from the synced task, not from the agent: `at` is the task's `first_synced_at` and `title` is the task title (trimmed, first 500 characters). That date is approximate: Google Tasks has no creation date, so every task already on the list when the sync started shares one date. The status rule above applies, and an item's explicit `status` wins on a new idea or a merge (a re-sent item's is ignored). The difference from `update_idea`: the import does not mark the idea reviewed. Imported ideas start in the inbox like every import (§4), so the weekly review links them into the garden; don't mark them reviewed to match `update_idea`. An idea keeps the first promotion recorded on it, and the import never replaces one. Nor does it bring back a promotion the user cleared.
+
 **Links are proposed, then decided.** An AI proposes typed links, each with a one-line **gloss**: the gloss is stored in the `rationale` field (the same thing under two names). The user accepts or rejects. Proposals come from three places: right after a capture (§1, at most 3, `origin: 'capture'`), gardening and the weekly garden review (§2, `origin: 'gardening'`), and the import (§4, `origin: 'import'`). Only `decide_idea_links` (accept) and `create_synthesis` produce accepted links. Nothing is linked without the user's yes.
 
 **Link vocabulary.** The stored type names never change, and no existing link is renamed. Show the user the **label**. Read every link source → target.
@@ -327,18 +329,18 @@ Offer these as observations; the user decides the direction.
 
 ## §4 — One-time import (Notion + Google Tasks "Subjects")
 
-**Triggers.** The user explicitly starts the import and provides the Notion export (CSV). It runs in two parts: the Notion part (Pass 1, then Pass 3) now, and the Subjects pass (Pass 2) in a later release. Run each part once; both are idempotent, so a re-run reports `already_imported` and changes nothing.
+**Triggers.** The user explicitly starts the import and provides the Notion export (CSV). It runs in two parts: the Notion part (Pass 1, then Pass 3) now, and the Subjects pass (Pass 2) once the legal pages are updated (below). Run each part once; both are idempotent, so a re-run reports `already_imported` and changes nothing, except that it records a Subjects promotion an earlier pass left out (Pass 2, step 2).
 
 **Privacy.** Never copy idea content into a repository, issue, pull request or public place. The data goes only through the MCP tools.
 
 **Where imported ideas land.** Every imported idea starts in the inbox (§0) and waits for the weekly garden review. The import's link proposals (Pass 3) appear in the review's Step 0.
 
-**Subjects items are imported and recorded as promoted.** The "Subjects" list stays: it is the production shortlist the garden promotes into (§0, Promotion). So each Subjects item is imported *and* recorded as promoted. The import code that records those promotions is not built yet; it comes in a later release, and the Subjects pass also waits for updated legal pages. Until this section says how, run Pass 1 and Pass 3, and do not run Pass 2.
+**Subjects items are imported and recorded as promoted.** The "Subjects" list stays: it is the production shortlist the garden promotes into (§0, Promotion). So each Subjects item is imported *and* recorded as promoted. `import_ideas` records the promotion itself, from the synced task: `promoted_at` is the task's `first_synced_at` (the value you send as `captured_at`) and the title is the task title. You send no promotion field. Imported Subjects ideas still start in the inbox (§0, **Imported promotions**). **The Subjects pass also waits for updated legal pages.** Until this sentence is removed, run Pass 1 and Pass 3, and do not run Pass 2.
 
 ### Step 0 — Ask once
 
 1. Which timezone the Notion workspace displayed dates in → pass the IANA name as `timezone` (e.g. `"Europe/London"`, `"Asia/Hong_Kong"`), which handles daylight-saving changes. Use `default_utc_offset` only if the user can't name a zone.
-2. For Pass 2, once it is available: what completed Google Tasks items mean to them (default: import them, tagged `gtasks:completed`).
+2. For Pass 2, once it is open: what completed Google Tasks items mean to them. Default: import them, tagged `gtasks:completed`; like every Subjects item they are recorded as promoted, so new ones come in as `exploring`. If the user names a status instead (for example `used`, because each became an episode), send it as `status` on those items. It applies to a new idea, and to a merge into an idea that has no promotion yet and none the user cleared.
 
 ### Pass 1 — Notion rows → `import_ideas(source_system: 'notion')`
 
@@ -362,17 +364,18 @@ Do not put anything in `thoughts` for Notion rows unless a column is clearly the
 
 ### Pass 2 — Google Tasks "Subjects" → `import_ideas(source_system: 'gtasks_subjects')`
 
-**Not yet: this pass waits for the release that records Subjects items as promoted (see the top of §4).** The steps below describe the parts that exist today.
+**Closed until the legal pages are updated (see the top of §4).** The steps below are ready for when it opens.
 
 1. Wait until `list_ideas(source_system: 'notion')` shows the Notion rows with `embedded: true` (about a minute), so `search_ideas` can find semantic duplicates.
-2. Page through `list_subjects_for_import()` following `next_offset` (paging over the full list is stable; `only_not_imported: true` shrinks as you import, so use it only for a final check). Skip tasks that are `already_imported`.
+2. Page through `list_subjects_for_import()` following `next_offset` (paging over the full list is stable; `only_not_imported: true` shrinks as you import, so use it only for a final check). Skip tasks that are `already_imported`, unless their `imported_idea_promoted` is `null`: an earlier pass imported them before promotions were recorded, so re-send their items (built as in step 5). The server records the missing promotion under the status rule of §0 (a parked or composted idea moves to `exploring`) and ignores the item's `status`; nothing else changes. A reply of `promotion: 'cleared'` means the user cleared that promotion with `update_idea`, and it stays cleared.
 3. Tasks with `stale: true` were not in Google's latest sync — usually deleted or moved by the user. List them for the user and import only the ones they want.
 4. For each remaining task:
-   - `possible_duplicates` has an entry with `match: 'exact'` whose `source_systems` includes `notion` → **merge**: `merge_into_idea_id` = that idea.
-   - `match: 'contains'` entries, and `search_ideas(query: <title + notes>)` hits with similarity ≥ 0.85 → put them in **one** confirmation table for the user (task title | candidate idea title | merge? y/n). Merge the ones they confirm.
+   - `possible_duplicates` has an entry with `match: 'exact'` that is either `matched_on: 'title'` with `source_systems` including `notion` or `gtasks_subjects`, or `matched_on: 'promoted_title'` (the user already promoted that idea under this task title) → **merge**: `merge_into_idea_id` = that idea.
+   - Other `match: 'exact'` entries (ideas parked in a chat), `match: 'contains'` entries, and `search_ideas(query: <title + notes>)` hits with similarity ≥ 0.85 → put them in **one** confirmation table for the user (task title | candidate idea title | merge? y/n). Merge the ones they confirm.
+   - A merge target that already has a promotion (the entry's `promoted`) keeps it; this task's title stays in the merge note. One whose promotion the user cleared stays cleared (`promotion: 'cleared'`).
    - Otherwise **create**.
-5. Item mapping: `source_external_id` = `external_task_id`; `title` verbatim; task notes → `thoughts` verbatim (they are the user's own words); `captured_at` = `first_synced_at` (approximate — Google Tasks has no creation date); `encountered_where` = `"Google Tasks: Subjects list"`; completed top-level tasks get tag `gtasks:completed` unless the user said otherwise; `due_at` goes to `import_payload` only; `import_payload` = the task object as listed.
-6. Subtasks (`parent_external_task_id` set): merge into the parent's idea (each subtask keeps its own source row). Send no status tags on these merges — the subtask's state stays in its `import_payload`.
+5. Item mapping: `source_external_id` = `external_task_id`; `title` verbatim (a title over 500 characters is refused: send its first 500 characters, and the full title stays in `import_payload`); task notes → `thoughts` verbatim (they are the user's own words); `captured_at` = `first_synced_at` (approximate — Google Tasks has no creation date); `encountered_where` = `"Google Tasks: Subjects list"`; completed top-level tasks get tag `gtasks:completed` unless the user said otherwise, and the `status` the user chose at Step 0, if any; `due_at` goes to `import_payload` only; `import_payload` = the task's own fields as listed (`external_task_id`, `title`, `notes`, `status`, `completed_at`, `due_at`, `first_synced_at`, `last_seen_at`, `stale`, `list_title`, `parent_external_task_id`, `parent_title`), not `possible_duplicates` or the import flags. Send no promotion: the server records it, and each result says `promotion: 'recorded'`, `'already_recorded'` or `'cleared'` (step 2).
+6. Subtasks (`parent_external_task_id` set): merge into the parent's idea (each subtask keeps its own source row). Send no status and no status tags on these merges — the subtask's state stays in its `import_payload`. A subtask merged into its parent's idea records no promotion; the parent's stands. If the parent was not imported (a stale parent the user skipped), handle the subtask as in step 4 (create it, or merge it into a duplicate): it is recorded as promoted under its own title.
 7. Never merge two Notion rows with each other.
 
 ### Pass 3 — Cross-references → proposals only
@@ -385,7 +388,7 @@ Notion's Related Project and Notes columns often name other rows ("part 2 of …
 
 ### Step 4 — Report
 
-Counts by `source_system` (created / merged / already_imported / errors), the number of pending import proposals, and anything left as notes. Then tell the user the Notion part is done: the imported ideas are in the inbox, the next weekly garden review starts with the import proposals (§2, Step 0), and the Subjects pass follows in a later release. Don't call the import complete until Pass 2 has run.
+Counts by `source_system` (created / merged / already_imported / errors, and for the Subjects pass the promotions recorded, `counts.promoted`), the number of pending import proposals, and anything left as notes. Then tell the user the Notion part is done: the imported ideas are in the inbox, the next weekly garden review starts with the import proposals (§2, Step 0), and the Subjects pass follows once the legal pages are updated. Don't call the import complete until Pass 2 has run.
 
 ---
 
@@ -433,4 +436,4 @@ Everything here happens only when the user asks.
 | Look up ideas | `list_ideas` (`inbox`, `promoted` filters), `search_ideas`, `get_idea` |
 | "Combine these into an episode" | `create_synthesis` |
 | "Show me my idea map" | §3 → `export_idea_map(format: 'html')` → save the page as `filename`, check `bytes`, hand it over |
-| One-time Notion / Subjects import | §4 → `import_ideas`, `list_subjects_for_import`, `propose_idea_links(origin: 'import')` (Subjects pass not yet) |
+| One-time Notion / Subjects import | §4 → `import_ideas`, `list_subjects_for_import`, `propose_idea_links(origin: 'import')` (Subjects pass after the legal update) |

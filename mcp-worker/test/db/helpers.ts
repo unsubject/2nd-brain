@@ -272,8 +272,9 @@ export async function seedPiece(o: {
   return row.id;
 }
 
+// syncedAt sets task_ref.created_at, which the import reads as first_synced_at.
 export async function seedSubjects(
-  tasks: Array<{ id: string; title: string; notes?: string; status?: string; parent?: string; scope?: string }>,
+  tasks: Array<{ id: string; title: string; notes?: string; status?: string; parent?: string; scope?: string; syncedAt?: string }>,
 ): Promise<void> {
   const list = await admin<Array<{ id: string }>>`
     INSERT INTO project_ref (user_id, external_list_id, name, list_type)
@@ -291,10 +292,11 @@ export async function seedSubjects(
     await admin`
       INSERT INTO task_ref (
         user_id, external_task_id, external_list_id, project_ref_id, title, notes, status,
-        parent_external_task_id, scope
+        parent_external_task_id, scope, created_at
       ) VALUES (
         'default', ${t.id}, 'list-subjects', ${list[0].id}, ${t.title}, ${t.notes ?? null},
-        ${t.status ?? 'needsAction'}, ${t.parent ?? null}, ${t.scope ?? 'personal'}
+        ${t.status ?? 'needsAction'}, ${t.parent ?? null}, ${t.scope ?? 'personal'},
+        COALESCE(${t.syncedAt ?? null}::timestamptz, now())
       )
     `;
   }

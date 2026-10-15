@@ -48,11 +48,18 @@ export async function getEntryHandler(
     }
     const e = entries[0];
 
+    // Only links to what the refocus keeps come back: published pieces,
+    // entities and, until the Tasks sync retires (Phase 7), Google Tasks
+    // items. It is an allow-list, not a deny-list: link_edge.target_id has
+    // no foreign key, so links to the retired contacts, calendar events and
+    // emails (and any other type an older linker wrote) can outlive the rows
+    // they point at, and their explanation still names the contact or event.
+    //
     // link_edge rows are written scope-agnostic by the linker (see file
     // header of src/google/linker.ts); reader-side enforcement lives here.
     // For a family-scope entry, only family-scope targets may be returned —
-    // otherwise personal contact/task/email/calendar titles leak through.
-    // Personal-scope entries see both scopes (spillover convention).
+    // otherwise personal task titles leak through. Personal-scope entries
+    // see both scopes (spillover convention).
     //
     // postgres-js can't bind a JS array inline as a typed PG array (it
     // serializes ['personal','family'] as the literal text 'personal,family'
@@ -72,26 +79,22 @@ export async function getEntryHandler(
       }>
     >`
       SELECT le.target_id, le.target_type, le.link_type, le.confidence, le.explanation,
-             COALESCE(p.full_name, c.title, t.title, em.subject, a.title, er.display_name) AS target_title,
+             COALESCE(t.title, a.title, er.display_name) AS target_title,
              now() AS as_of
         FROM link_edge le
-        LEFT JOIN person_ref         p  ON le.target_type='person_ref'         AND p.id  = le.target_id
-        LEFT JOIN calendar_event_ref c  ON le.target_type='calendar_event_ref' AND c.id  = le.target_id
-        LEFT JOIN task_ref           t  ON le.target_type='task_ref'           AND t.id  = le.target_id
-        LEFT JOIN email_ref          em ON le.target_type='email_ref'          AND em.id = le.target_id
-        LEFT JOIN public_artifact    a  ON le.target_type='public_artifact'    AND a.id  = le.target_id
-        LEFT JOIN entity_ref         er ON le.target_type='entity_ref'         AND er.id = le.target_id
+        LEFT JOIN task_ref        t  ON le.target_type='task_ref'        AND t.id  = le.target_id
+        LEFT JOIN public_artifact a  ON le.target_type='public_artifact' AND a.id  = le.target_id
+        LEFT JOIN entity_ref      er ON le.target_type='entity_ref'      AND er.id = le.target_id
        WHERE le.source_id = ${entry_id} AND le.source_type='journal_entry'
+         AND le.target_type IN ('public_artifact', 'entity_ref', 'task_ref')
          AND le.confidence >= ${minConfidence}
          -- A piece that has left search (superseded by the archive
          -- consolidation) is not shown; its links move to its replacement.
          AND (le.target_type <> 'public_artifact' OR a.status = 'published')
          AND (
            CASE le.target_type
-             WHEN 'calendar_event_ref' THEN c.scope
-             WHEN 'task_ref'           THEN t.scope
-             WHEN 'email_ref'          THEN em.scope
-             WHEN 'entity_ref'         THEN ${e.scope}::text
+             WHEN 'task_ref'   THEN t.scope
+             WHEN 'entity_ref' THEN ${e.scope}::text
              ELSE 'personal'
            END IN ${sql(allowedTargetScopes)}
          )
