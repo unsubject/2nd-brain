@@ -1,20 +1,21 @@
 import { google } from "googleapis";
 import { pool } from "../db/client";
 
+// Calendar and Contacts are no longer requested. A token granted before
+// still carries them until the owner removes the app's access at Google and
+// reconnects; missingScopes ignores scopes that were not asked for.
 const SCOPES = [
-  // Read-only: tasks are only read, for linking and the idea import.
+  // Read-only: tasks are only read, for linking and the Subjects import,
+  // until that import is done.
   "https://www.googleapis.com/auth/tasks.readonly",
-  "https://www.googleapis.com/auth/contacts.readonly",
-  "https://www.googleapis.com/auth/calendar.readonly",
+  // Archive consolidation reads the Gmail writing label...
   "https://www.googleapis.com/auth/gmail.readonly",
-  // Archive consolidation reads the Drive archive folders and exports.
+  // ...and the Drive archive folders and exports.
   "https://www.googleapis.com/auth/drive.readonly",
 ];
 
 const SCOPE_LABELS: Record<string, string> = {
   "https://www.googleapis.com/auth/tasks.readonly": "Google Tasks (read-only)",
-  "https://www.googleapis.com/auth/contacts.readonly": "Contacts (read-only)",
-  "https://www.googleapis.com/auth/calendar.readonly": "Calendar (read-only)",
   "https://www.googleapis.com/auth/gmail.readonly": "Gmail (read-only)",
   "https://www.googleapis.com/auth/drive.readonly": "Google Drive (read-only)",
 };
