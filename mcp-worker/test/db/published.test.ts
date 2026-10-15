@@ -158,7 +158,7 @@ describe.skipIf(!TEST_DB)('search_published', () => {
     expect(r.hits.every((h: any) => h.match.includes('semantic'))).toBe(true);
   });
 
-  it('never returns a superseded copy or an unprocessed row', async () => {
+  it('never returns a superseded copy, a hidden fragment or an unprocessed row', async () => {
     stubEmbeddings(axis(0));
     const live = await seedPiece({ title: 'Harbour lights', chunks: [{ text: 'harbour lights at night', vector: axis(0) }] });
     const old = await seedPiece({
@@ -172,9 +172,18 @@ describe.skipIf(!TEST_DB)('search_published', () => {
       processingStatus: 'pending',
       chunks: [{ text: 'harbour lights at night', vector: axis(0) }],
     });
+    // Migration 034: a fragment leaves search, but get_artifact still reads it by id.
+    const fragment = await seedPiece({
+      title: 'Re: harbour lights',
+      status: 'hidden',
+      flag: 'fragment',
+      chunks: [{ text: 'harbour lights at night', vector: axis(0) }],
+    });
 
     const r = await ok('search_published', { query: 'harbour lights' });
     expect(r.hits.map((h: any) => h.artifact_id)).toEqual([live]);
+    const f = await ok('get_artifact', { artifact_id: fragment, include_text: false });
+    expect([f.artifact.status, f.artifact.flag]).toEqual(['hidden', 'fragment']);
   });
 
   it('applies each filter and marks flag and members_only on every hit', async () => {

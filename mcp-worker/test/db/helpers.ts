@@ -240,7 +240,7 @@ export async function seedPiece(o: {
   publishedAt?: string | null;
   series?: string | null;
   outlets?: string[] | null;
-  flag?: 'review' | 'unmatched' | null;
+  flag?: 'review' | 'unmatched' | 'video' | 'fragment' | null;
   membersOnly?: boolean;
   status?: string;
   processingStatus?: string;

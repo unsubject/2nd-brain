@@ -936,7 +936,7 @@ test("runLoad writes one row per work and points the first import's copies at it
        ('default', 'transcript', '影片', $4, 'youtube', 'y1', 'processed', NULL)`,
     [
       `老總：附上今期稿件。\n\n${ESSAY}`,
-      "今天天氣很好，我們一家人去公園散步，看見很多小朋友在玩耍。".repeat(6),
+      "今天天氣很好，我們一家人去公園散步，看見很多小朋友在玩耍。".repeat(10),
       OTHER,
       `影片逐字稿：${ESSAY}`,
     ]
@@ -954,16 +954,24 @@ test("runLoad writes one row per work and points the first import's copies at it
   assert.equal(stats.works, 2);
   assert.equal(stats.inserted, 2);
   assert.equal(stats.flaggedReview, 1);
-  assert.deepEqual(stats.legacy, { rows: 3, matched: 2, hidden: 0, waiting: 2, unmatched: 1 });
-  // Where the unmatched rows come from, and, as no load recorded them yet,
-  // each of them in the log.
-  assert.deepEqual(stats.legacyUnmatched.bySource, {
-    notion: { "2019": { rows: 2, unmatched: 1 }, undated: { rows: 1, unmatched: 0 } },
+  assert.deepEqual(stats.legacy, {
+    rows: 3,
+    replaced: { text: 2, title: 0, video: 0, duplicate: 0 },
+    superseded: 0,
+    waiting: 2,
+    kept: 1,
+    video: 0,
+    fragments: 0,
   });
-  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, notion: 2019 1/2, undated 0/1"));
-  const listed = log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:"));
+  // Where the rows nothing replaces come from, and, as no load recorded
+  // them yet, each of them in the log.
+  assert.deepEqual(stats.legacyUnreplaced.bySource, {
+    notion: { "2019": { rows: 2, unreplaced: 1 }, undated: { rows: 1, unreplaced: 0 } },
+  });
+  assert.ok(log.lines().includes("[consolidation] load: unreplaced/old rows by year, notion: 2019 1/2, undated 0/1"));
+  const listed = log.lines().filter((l) => l.startsWith("[consolidation] old row,"));
   assert.equal(listed.length, 1);
-  assert.match(listed[0], /^\[consolidation\] unmatched old row: 2019-05-01 notion \d+ chars - "無關" \| 今天天氣很好/);
+  assert.match(listed[0], /^\[consolidation\] old row, kept: 2019-05-01 notion \d+ chars - "無關" \| 今天天氣很好/);
 
   // A load that finds the same rows unmatched as the last one recorded
   // lists them no more.
@@ -978,8 +986,8 @@ test("runLoad writes one row per work and points the first import's copies at it
   } finally {
     log.restore();
   }
-  assert.ok(log.lines().some((l) => l.startsWith("[consolidation] load: 1 of 3 old rows match no work")));
-  assert.equal(log.lines().filter((l) => l.startsWith("[consolidation] unmatched old row:")).length, 0);
+  assert.ok(log.lines().some((l) => l.startsWith("[consolidation] load: of 3 old rows, replaced: 2 copies")));
+  assert.equal(log.lines().filter((l) => l.startsWith("[consolidation] old row,")).length, 0);
   await db.query("DELETE FROM archive_collect_run WHERE id = $1", [recorded[0].id]);
 
   const { rows: archived } = await db.query(
@@ -1013,7 +1021,7 @@ test("runLoad writes one row per work and points the first import's copies at it
   // Replaced, but still searchable until the new row is processed.
   assert.deepEqual([rows.n1.status, rows.n1.flag, rows.n1.superseded_by], ["published", null, column.id]);
   assert.deepEqual([rows.n3.status, rows.n3.superseded_by], ["published", doc.id]);
-  assert.deepEqual([rows.n2.status, rows.n2.flag, rows.n2.superseded_by], ["published", "unmatched", null]);
+  assert.deepEqual([rows.n2.status, rows.n2.flag, rows.n2.superseded_by], ["published", null, null]); // kept
   assert.deepEqual([rows.y1.status, rows.y1.flag, rows.y1.superseded_by], ["published", null, null]);
 
   // The worker processes the column: the row it replaces leaves search.
@@ -1038,7 +1046,15 @@ test("runLoad writes one row per work and points the first import's copies at it
   assert.equal(again.inserted, 0);
   assert.equal(again.unchanged, 2);
   assert.equal(again.retired, 2);
-  assert.deepEqual(again.legacy, { rows: 3, matched: 2, hidden: 1, waiting: 1, unmatched: 1 });
+  assert.deepEqual(again.legacy, {
+    rows: 3,
+    replaced: { text: 2, title: 0, video: 0, duplicate: 0 },
+    superseded: 1,
+    waiting: 1,
+    kept: 1,
+    video: 0,
+    fragments: 0,
+  });
   const { rows: after } = await db.query(
     `SELECT source_external_id AS ref, status, superseded_by, processing_status
        FROM public_artifact WHERE source_system = 'archive' ORDER BY source_external_id`
@@ -1064,7 +1080,7 @@ test("runLoad writes one row per work and points the first import's copies at it
   assert.ok(summary.some((r) => r.source_system === "archive" && r.flag === "review"));
 });
 
-test("the unmatched rows' report counts a source named like an Object property (Codex on #105)", { skip }, async () => {
+test("the report of the rows nothing replaces counts a source named like an Object property (Codex on #105)", { skip }, async () => {
   const load = await import("../src/archive/consolidation/load/run");
   await db.query("DELETE FROM public_artifact");
   await db.query(
@@ -1079,13 +1095,173 @@ test("the unmatched rows' report counts a source named like an Object property (
   } finally {
     log.restore();
   }
-  const bySource = stats.legacyUnmatched.bySource;
+  const bySource = stats.legacyUnreplaced.bySource;
   assert.deepEqual(Object.keys(bySource), ["__proto__", "constructor"]);
-  assert.deepEqual(bySource["__proto__"]["2018"], { rows: 1, unmatched: 1 });
-  assert.deepEqual(bySource["constructor"].undated, { rows: 1, unmatched: 1 });
+  assert.deepEqual(bySource["__proto__"]["2018"], { rows: 1, unreplaced: 1 });
+  assert.deepEqual(bySource["constructor"].undated, { rows: 1, unreplaced: 1 });
   assert.equal(({} as Record<string, unknown>)["2018"], undefined); // nothing written to Object.prototype
-  assert.deepEqual(JSON.parse(JSON.stringify(stats.legacyUnmatched)).bySource["__proto__"], { "2018": { rows: 1, unmatched: 1 } });
-  assert.ok(log.lines().includes("[consolidation] load: unmatched/old rows by year, __proto__: 2018 1/1"));
+  assert.deepEqual(JSON.parse(JSON.stringify(stats.legacyUnreplaced)).bySource["__proto__"], { "2018": { rows: 1, unreplaced: 1 } });
+  assert.ok(log.lines().includes("[consolidation] load: unreplaced/old rows by year, __proto__: 2018 1/1"));
+  await db.query("DELETE FROM public_artifact");
+});
+
+// Varied text: unlike ESSAY, an excerpt of it is no copy of the whole.
+const CHARS = "的一是不了人我在有他這中大來上個國到說們為子和你地出道也時年得就那要下以生會自著去之過家學對可她裡後小麼心多天而能好都然沒日於起還發成事只作當想看文無開手十用主行方又如前所本見經頭面公同三已老從動兩長知民樣現分將外但身些與高意進把法此實回二理美點月明其種聲全工己話兒者向情部正名定女問力機給等幾很業最間新什打便位因重被走電四第門相次東政海口使教西再平真聽世氣信北少關";
+function varied(seed: number, length: number): string {
+  let x = seed >>> 0;
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    out += CHARS[x % CHARS.length];
+    if (i % 60 === 59) out += "。\n\n";
+  }
+  return out;
+}
+
+test("old rows that are no copy go to a video, a same-titled work, a fuller row, out of search, or stay (Simon, 2026-10-15)", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  const extract = await import("../src/archive/consolidation/extract/run");
+  const match = await import("../src/archive/consolidation/match/run");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  const long = varied(7, 2400);
+  await staging.upsertSourceItem(
+    item({ source: "gdrive", sourceRef: "doc-2", title: "第四個生產要素", rawText: long, rawHtml: null, metadata: { path: "Article Archive" } }),
+    db
+  );
+  await extract.runExtraction(extract.emptyExtractStats(), async () => {}, () => false, db);
+  await match.runMatch(match.emptyMatchStats(), async () => {}, () => false, db);
+
+  const full = varied(9, 3000);
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status, canonical_url) VALUES
+       ('default', 'transcript', '影片', $1, 'youtube', 'dQw4w9WgXcQ', 'processed', NULL),
+       ('default', 'essay', '影片逐字稿', $2, 'notion', 'v1', 'processed', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
+       ('default', 'essay', '另一條片', $3, 'notion', 'v2', 'processed', 'https://youtu.be/AAAAAAAAAAA'),
+       ('default', 'essay', '利字當頭：第四個生產要素', $4, 'notion', 't1', 'processed', NULL),
+       ('default', 'essay', 'RE: 稿件', $5, 'notion', 'f1', 'processed', NULL),
+       ('default', 'essay', '短', '好文。', 'notion', 'f2', 'processed', NULL),
+       ('default', 'essay', '全文', $6, 'notion', 'd1', 'processed', NULL),
+       ('default', 'essay', '節錄', $7, 'notion', 'd2', 'processed', 'https://example.org/excerpt'),
+       ('default', 'essay', '獨文', $8, 'notion', 'k1', 'processed', NULL),
+       ('default', 'essay', '全份', $9, 'notion', 'c1', 'processed', NULL),
+       ('default', 'essay', '節選', $10, 'notion', 'e1', 'processed', NULL),
+       ('default', 'essay', '片段', $11, 'notion', 'v3', 'processed', NULL),
+       ('default', 'essay', '另一片段', $12, 'notion', 'v4', 'processed', NULL)`,
+    [
+      varied(1, 1500),
+      varied(2, 1500),
+      varied(3, 1500),
+      long.slice(0, 600), // only the start: too short for the copy test
+      `Dear Simon, thanks for the piece. ${varied(4, 400)}`,
+      full,
+      full.slice(0, 700),
+      varied(8, 1500),
+      long, // a copy of the Drive piece
+      long.slice(1000, 1500), // an excerpt of that copy, under another title (Codex on #114)
+      varied(2, 1500).slice(200, 900), // excerpts of the two video copies, with no link (Codex on #114)
+      varied(3, 1500).slice(200, 900),
+    ]
+  );
+  const ids = async () =>
+    Object.fromEntries(
+      (await db.query("SELECT source_external_id AS ref, id FROM public_artifact")).rows.map((r) => [r.ref, r.id])
+    );
+  const old = async () =>
+    Object.fromEntries(
+      (
+        await db.query(
+          `SELECT source_external_id AS ref, status, flag, superseded_by FROM public_artifact WHERE source_system = 'notion'`
+        )
+      ).rows.map((r) => [r.ref, [r.status, r.flag, r.superseded_by]])
+    );
+
+  const stats = load.emptyLoadStats();
+  const log = captureLog();
+  try {
+    await load.runLoad(stats, async () => {}, () => false, db);
+  } finally {
+    log.restore();
+  }
+  assert.deepEqual(stats.legacy, {
+    rows: 12,
+    replaced: { text: 1, title: 1, video: 1, duplicate: 4 },
+    superseded: 4, // the video copy and the excerpts of it, of v2 and of d1: their replacements are processed
+    waiting: 3, // the Drive piece's copy, start and excerpt, until its new row is processed
+    kept: 2,
+    video: 1,
+    fragments: 2,
+  });
+  const id = await ids();
+  const { rows: doc } = await db.query("SELECT id FROM public_artifact WHERE source_external_id = 'gdrive:doc-2'");
+  assert.deepEqual(await old(), {
+    v1: ["superseded", null, id.dQw4w9WgXcQ],
+    v2: ["published", "video", null],
+    t1: ["published", null, doc[0].id],
+    f1: ["hidden", "fragment", null],
+    f2: ["hidden", "fragment", null],
+    d1: ["published", null, null],
+    d2: ["superseded", null, id.d1],
+    k1: ["published", null, null],
+    c1: ["published", null, doc[0].id],
+    e1: ["published", null, doc[0].id], // with the copy it is an excerpt of
+    v3: ["superseded", null, id.dQw4w9WgXcQ], // with the video copy: to its transcript row
+    v4: ["superseded", null, id.v2], // to the video copy itself, while it has none
+  });
+  // The fuller row keeps the link of the excerpt merged into it (Codex on
+  // #114); a video's transcript row takes none from the copies of it.
+  const urls = Object.fromEntries(
+    (await db.query("SELECT source_external_id AS ref, canonical_url FROM public_artifact")).rows.map((r) => [r.ref, r.canonical_url])
+  );
+  assert.equal(urls.d1, "https://example.org/excerpt");
+  assert.equal(urls.dQw4w9WgXcQ, null);
+  const listed = log.lines().filter((l) => l.startsWith("[consolidation] old row,"));
+  assert.deepEqual(
+    listed.map((l) => l.split(":")[0]).sort(),
+    [
+      "[consolidation] old row, fragment",
+      "[consolidation] old row, fragment",
+      "[consolidation] old row, kept",
+      "[consolidation] old row, kept",
+      "[consolidation] old row, video",
+    ]
+  );
+
+  // The video with no transcript row: once one is imported, a load is due
+  // and points the copy at it; after that load, none is (Codex on #114).
+  assert.deepEqual(stats.videosWaiting, ["AAAAAAAAAAA"]);
+  const recordLoad = (s: object) =>
+    db.query(`INSERT INTO archive_collect_run (source, status, finished_at, stats) VALUES ('load', 'succeeded', now(), $1::jsonb)`, [
+      JSON.stringify(s),
+    ]);
+  await recordLoad(stats);
+  assert.equal(await load.loadStale(db), false);
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status)
+     VALUES ('default', 'transcript', '另一條片', $1, 'youtube', 'AAAAAAAAAAA', 'processed')`,
+    [varied(10, 1500)]
+  );
+  assert.equal(await load.loadStale(db), true);
+  const linked = load.emptyLoadStats();
+  await load.runLoad(linked, async () => {}, () => false, db);
+  assert.deepEqual(linked.videosWaiting, []);
+  assert.equal(linked.legacy.replaced.video, 2);
+  assert.deepEqual((await old()).v2, ["superseded", null, (await ids()).AAAAAAAAAAA]);
+  assert.deepEqual((await old()).v4, ["superseded", null, (await ids()).AAAAAAAAAAA]);
+  await recordLoad(linked);
+  assert.equal(await load.loadStale(db), false);
+  await db.query("DELETE FROM archive_collect_run WHERE source = 'load'");
+
+  // The rules decide again at every load: with the transcript row gone,
+  // the video copy stays, flagged; a fragment stays out of search.
+  await db.query("DELETE FROM public_artifact WHERE source_system = 'youtube'");
+  const again = load.emptyLoadStats();
+  await load.runLoad(again, async () => {}, () => false, db);
+  assert.equal(again.legacy.video, 2);
+  const after = await old();
+  assert.deepEqual(after.v1, ["published", "video", null]);
+  assert.deepEqual(after.v3, ["superseded", null, id.v1]);
+  assert.deepEqual(after.f1, ["hidden", "fragment", null]);
   await db.query("DELETE FROM public_artifact");
 });
 
@@ -1441,7 +1617,7 @@ test("old rows leave search only once their replacement is fully processed, and 
   assert.equal(claimed?.id, columnId);
   const stats = load.emptyLoadStats();
   await load.runLoad(stats, async () => {}, () => false, db);
-  assert.equal(stats.legacy.hidden + stats.retiredLate, 0);
+  assert.equal(stats.legacy.superseded + stats.retiredLate, 0);
   const oldStatus = async () => (await db.query("SELECT status FROM public_artifact WHERE id = $1", [old[0].id])).rows[0].status;
   assert.equal(await oldStatus(), "published");
 
@@ -1900,7 +2076,7 @@ test("a load leaves members_only as it is, on the rows it writes and the rows it
     { ref: "gdrive:doc-1", pointed: false, flag: "review", members_only: true },
     { ref: "gmail:sub", pointed: false, flag: null, members_only: true },
     { ref: "n1", pointed: true, flag: null, members_only: true },
-    { ref: "n2", pointed: false, flag: "unmatched", members_only: true },
+    { ref: "n2", pointed: false, flag: "fragment", members_only: true }, // under 200 characters (Simon, 2026-10-15)
   ]);
 });
 

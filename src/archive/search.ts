@@ -21,8 +21,10 @@ export interface SearchResult {
   publishedAt: Date | null;
   tags: string[] | null;
   summary: string | null;
-  // 'review' or 'unmatched': searchable, but not confirmed by the archive
-  // consolidation.
+  // 'review': a work still to check; 'video': an old copy of a video's
+  // transcript with no transcript row; 'unmatched' (older loads): an old
+  // row no work replaced. Null for a confirmed piece or an old row kept as
+  // the only copy.
   flag: string | null;
   score: number;
   sources: string[];

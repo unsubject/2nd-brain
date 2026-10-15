@@ -118,9 +118,11 @@ export async function getArtifactHandler(
         type: r.source_system === 'youtube' ? 'episode' : 'essay',
         source_system: r.source_system,
         status: r.status,
-        // null: confirmed; 'review': still to check (it may never have been
-        // published, or its text is uncertain); 'unmatched': an old
-        // imported row no confirmed piece matches.
+        // null: confirmed (or an old row kept as the only copy); 'review':
+        // still to check (it may never have been published, or its text is
+        // uncertain); 'video': an old copy of a video's transcript;
+        // 'unmatched' (older loads): an old row no piece replaced;
+        // 'fragment': a reply, pitch or blurb out of search (status 'hidden').
         flag: r.flag ?? null,
         members_only: r.members_only,
         published_at: toIsoOrNull(r.published_at),

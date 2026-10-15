@@ -93,6 +93,17 @@ export async function catchUp(
   }
 }
 
+// The same check, now: after a change the boot check would otherwise
+// only see at the next deploy, such as a YouTube transcript imported for a
+// video an old row is a copy of (loadStale).
+export function catchUpNow(why: string): void {
+  catchUp()
+    .then((r) => {
+      if (r && !("waitingFor" in r)) console.log(`[consolidation] ${MESSAGES[r.source]} after ${why}; ${r.source} run ${r.runId} started`);
+    })
+    .catch((err) => console.error("[consolidation] catch-up check failed:", describeGoogleError(err)));
+}
+
 export function startAutoExtraction(): void {
   let waiting = false;
   const check = () => {

@@ -315,8 +315,10 @@ export async function searchPublishedHandler(
           series: m.series,
           outlets: parseJsonb<string[] | null>(m.outlets, null) ?? [],
           url: m.canonical_url,
-          // null: confirmed; 'review': still to check; 'unmatched': an old
-          // imported row no confirmed piece matches.
+          // null: confirmed (or an old row kept as the only copy);
+          // 'review': still to check; 'video': an old copy of a video's
+          // transcript; 'unmatched' (older loads): an old row no piece
+          // replaced. 'fragment' rows are hidden, so never found here.
           flag: m.flag ?? null,
           members_only: m.members_only,
           language: m.language,
