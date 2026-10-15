@@ -11,8 +11,8 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "csv-parse": "^6.2.1",
-    "express": "^4.22.2",
+    "csv-parse": "^7.0.2",
+    "express": "^4.22.3",
     "fast-xml-parser": "^5.11.2",
     "googleapis": "^171.4.0",
     "mammoth": "^1.13.0",
