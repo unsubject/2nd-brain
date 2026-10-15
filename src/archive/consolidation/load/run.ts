@@ -448,7 +448,8 @@ export async function runLoad(
     legacy.filter((l) => !copies.has(l.id)).map((l) => ({ ...l, url: l.canonical_url })),
     members
       .filter((m) => loadedWorks.has(m.work_ref))
-      .map((m) => ({ id: m.candidate_id, text: m.body_text, titles: [workTitle.get(m.work_ref) ?? null, m.title] }))
+      .map((m) => ({ id: m.candidate_id, text: m.body_text, titles: [workTitle.get(m.work_ref) ?? null, m.title] })),
+    legacy.filter((l) => copies.has(l.id)).map((l) => ({ ...l, url: l.canonical_url }))
   );
   const videoRow = new Map(videos.map((v) => [v.video, v.id]));
   if (shouldStop()) return;
@@ -470,8 +471,15 @@ export async function runLoad(
       .filter((a) => !loaded.has(a.ref))
       .map((a) => ({ id: a.id, target: rowOfWork(workOfMember.get(a.ref)), legacy: false, flag: null, hide: false }));
     stats.retired = retired.length;
-    // Each old row's replacement, and the rule that found it.
+    // Each old row's replacement, and the rule that found it. A duplicate
+    // of a row a work replaces goes to that work.
     const rule = new Map<string, keyof LoadStats["legacy"]["replaced"]>();
+    const workReplacing = (id: string): string | null => {
+      const copy = copies.get(id);
+      if (copy) return rowOfWork(workOfCandidate.get(copy.pieceId));
+      const p = placements.get(id);
+      return p?.kind === "title" ? rowOfWork(workOfCandidate.get(p.pieceId)) : null;
+    };
     const oldRows: Pointer[] = legacy.map((l) => {
       const pointer = (target: string | null, by: keyof LoadStats["legacy"]["replaced"]): Pointer => {
         if (target) rule.set(l.id, by);
@@ -484,7 +492,7 @@ export async function runLoad(
         case "title":
           return pointer(rowOfWork(workOfCandidate.get(p.pieceId)), "title");
         case "duplicate":
-          return pointer(p.rowId, "duplicate");
+          return pointer(workReplacing(p.rowId) ?? p.rowId, "duplicate");
         case "video": {
           const target = videoRow.get(p.videoId) ?? null;
           if (!target) waiting.add(p.videoId);

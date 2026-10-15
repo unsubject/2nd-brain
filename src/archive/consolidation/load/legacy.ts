@@ -183,10 +183,11 @@ export function isFragment(text: string): boolean {
   return text.replace(/\s+/g, "").length < FRAGMENT_CHARS || /^\s*(dear|hi|hello)\s+simon\b/i.test(text);
 }
 
-// Where each row (one no copy test matched) goes.
-export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[]): Map<string, Placement> {
+// Where each row (one no copy test matched) goes. `replaced`: the old rows
+// the copy test did match, which a duplicate may go to (Codex on #114).
+export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[], replaced: OldRow[] = []): Map<string, Placement> {
   const out = new Map<string, Placement>();
-  const rowSets = new Map(rows.map((r) => [r.id, shingles(r.text)]));
+  const rowSets = new Map([...rows, ...replaced].map((r) => [r.id, shingles(r.text)]));
   const share = (row: Uint32Array, other: Uint32Array) => (row.length > 0 ? intersection(row, other) / row.length : 0);
 
   const piecesByTitle = new Map<string, number[]>();
@@ -206,6 +207,7 @@ export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[]): Map<strin
   };
 
   const rest: OldRow[] = [];
+  const titled: OldRow[] = [];
   for (const r of rows) {
     const videoId = videoIdOf(r.url);
     if (videoId) {
@@ -217,24 +219,51 @@ export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[]): Map<strin
       const s = share(rowSets.get(r.id)!, pieceSet(i));
       if (s >= TITLE_SHARE && (!best || s > best.share)) best = { i, share: s };
     }
-    if (best) out.set(r.id, { kind: "title", pieceId: pieces[best.i].id });
-    else if (isFragment(r.text)) out.set(r.id, { kind: "fragment" });
+    if (best) {
+      out.set(r.id, { kind: "title", pieceId: pieces[best.i].id });
+      titled.push(r);
+    } else if (isFragment(r.text)) out.set(r.id, { kind: "fragment" });
     else rest.push(r);
   }
 
-  // Duplicates among the rest: each goes to the fullest row that holds it,
-  // always a larger one (more shingles, then the greater id), so a chain
-  // ends at a row that stays.
+  // Duplicates among the rest: each goes to the fullest row that holds it
+  // (most of its text, or the same title and a TITLE_SHARE of it): another
+  // of the rest, or a row already replaced (a copy, or one placed by
+  // title), whose replacement it then shares. Always a larger row (more
+  // shingles, then the greater id), so a chain ends, at a row that stays or
+  // one replaced. Hosts are screened as copies are, by shared samples; a
+  // row too short for that is checked against every host.
+  const hosts = [...rest, ...replaced, ...titled];
   const larger = (a: OldRow, b: OldRow) => {
     const d = rowSets.get(a.id)!.length - rowSets.get(b.id)!.length;
     return d !== 0 ? d > 0 : a.id > b.id;
   };
+  const index = new Map<number, number[]>();
+  hosts.forEach((h, i) => {
+    for (const x of rowSets.get(h.id)!.filter(sampled)) {
+      const list = index.get(x);
+      if (list) list.push(i);
+      else index.set(x, [i]);
+    }
+  });
+  const count = new Uint32Array(hosts.length);
   const into = new Map<string, OldRow>();
   for (const r of rest) {
     const set = rowSets.get(r.id)!;
+    const samples = set.filter(sampled);
+    let candidates: Iterable<number>;
+    if (samples.length < MIN_SAMPLES) candidates = hosts.keys();
+    else {
+      const touched: number[] = [];
+      for (const x of samples) for (const i of index.get(x) ?? []) if (count[i]++ === 0) touched.push(i);
+      const needed = Math.ceil(TITLE_SHARE * samples.length);
+      candidates = touched.filter((i) => count[i] >= needed);
+      for (const i of touched) count[i] = 0;
+    }
     const key = titleKey(r.title);
     let host: OldRow | null = null;
-    for (const o of rest) {
+    for (const i of candidates) {
+      const o = hosts[i];
       if (o === r || !larger(o, r) || (host && !larger(o, host))) continue;
       const s = share(set, rowSets.get(o.id)!);
       if (s >= SAME_PIECE.containment || (key !== "" && key === titleKey(o.title) && s >= TITLE_SHARE)) host = o;

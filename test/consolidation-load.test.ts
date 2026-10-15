@@ -170,3 +170,15 @@ test("an old row that is no copy goes to a video, a same-titled work, a fuller r
   assert.deepEqual(placed.get("final"), { kind: "duplicate", rowId: "fuller" });
   assert.deepEqual(placed.get("alone"), { kind: "kept" });
 });
+
+test("an excerpt of an old row a work already replaces goes to that row, whatever its title (Codex on #114)", () => {
+  const work = { id: "piece", text: essay(30, 3000), titles: ["原題"] };
+  // A full copy the copy test matched, and a garbled excerpt of it under
+  // another title: too short for the copy test, no title in common.
+  const copy = { id: "copy", title: "原題", text: work.text, url: null, truncated: false };
+  const excerpt = { id: "excerpt", title: "炊富論", text: work.text.slice(0, 700).replace(/的/g, "旳"), url: null, truncated: false };
+  assert.equal(matchLegacy([excerpt], [work]).size, 0);
+  assert.deepEqual(placeUnmatched([excerpt], [work], [copy]).get("excerpt"), { kind: "duplicate", rowId: "copy" });
+  // With no such row, it stays.
+  assert.deepEqual(placeUnmatched([excerpt], [work]).get("excerpt"), { kind: "kept" });
+});

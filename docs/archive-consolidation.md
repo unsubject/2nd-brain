@@ -404,8 +404,9 @@ What a load writes, in one transaction:
     part, too short for the copy test;
   - a fragment, under 200 characters or a letter to Simon ("Dear Simon",
     "Hi Simon"), leaves search: `status = 'hidden'`, `flag = 'fragment'`;
-  - one with 60% of its text in a fuller old row of the rest (or the same
-    title and 30%) is merged into the fullest such row, which replaces it;
+  - one with 60% of its text in a fuller old row (or the same title and
+    30%) is merged into the fullest such row: one of the rest, which then
+    replaces it, or one a work already replaces, whose work then does;
   - anything else is kept as it is, searchable and unflagged: the only
     copy of the piece.
 

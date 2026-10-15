@@ -1143,7 +1143,9 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
        ('default', 'essay', '短', '好文。', 'notion', 'f2', 'processed', NULL),
        ('default', 'essay', '全文', $6, 'notion', 'd1', 'processed', NULL),
        ('default', 'essay', '節錄', $7, 'notion', 'd2', 'processed', 'https://example.org/excerpt'),
-       ('default', 'essay', '獨文', $8, 'notion', 'k1', 'processed', NULL)`,
+       ('default', 'essay', '獨文', $8, 'notion', 'k1', 'processed', NULL),
+       ('default', 'essay', '全份', $9, 'notion', 'c1', 'processed', NULL),
+       ('default', 'essay', '節選', $10, 'notion', 'e1', 'processed', NULL)`,
     [
       varied(1, 1500),
       varied(2, 1500),
@@ -1153,6 +1155,8 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
       full,
       full.slice(0, 700),
       varied(8, 1500),
+      long, // a copy of the Drive piece
+      long.slice(1000, 1500), // an excerpt of that copy, under another title (Codex on #114)
     ]
   );
   const ids = async () =>
@@ -1176,10 +1180,10 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     log.restore();
   }
   assert.deepEqual(stats.legacy, {
-    rows: 8,
-    replaced: { text: 0, title: 1, video: 1, duplicate: 1 },
+    rows: 10,
+    replaced: { text: 1, title: 1, video: 1, duplicate: 2 },
     superseded: 2, // the video copy and the excerpt: their replacements are processed
-    waiting: 1, // the start of the Drive piece, until its new row is processed
+    waiting: 3, // the Drive piece's copy, start and excerpt, until its new row is processed
     kept: 2,
     video: 1,
     fragments: 2,
@@ -1195,6 +1199,8 @@ test("old rows that are no copy go to a video, a same-titled work, a fuller row,
     d1: ["published", null, null],
     d2: ["superseded", null, id.d1],
     k1: ["published", null, null],
+    c1: ["published", null, doc[0].id],
+    e1: ["published", null, doc[0].id], // with the copy it is an excerpt of
   });
   // The fuller row keeps the link of the excerpt merged into it (Codex on
   // #114); a video's transcript row takes none from the copies of it.
