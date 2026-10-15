@@ -329,18 +329,18 @@ Offer these as observations; the user decides the direction.
 
 ## §4 — One-time import (Notion + Google Tasks "Subjects")
 
-**Triggers.** The user explicitly starts the import and provides the Notion export (CSV). It runs in two parts: the Notion part (Pass 1, then Pass 3) now, and the Subjects pass (Pass 2) once the legal pages are updated (below). Run each part once; both are idempotent, so a re-run reports `already_imported` and changes nothing, except that it records a Subjects promotion an earlier pass left out (Pass 2, step 2).
+**Triggers.** The user explicitly starts the import and provides the Notion export (CSV). It runs in two parts: the Notion part (Pass 1, then Pass 3) and the Subjects pass (Pass 2), which starts once the Notion rows are embedded (Pass 2, step 1). Run each part once; both are idempotent, so a re-run reports `already_imported` and changes nothing, except that it records a Subjects promotion an earlier pass left out (Pass 2, step 2).
 
 **Privacy.** Never copy idea content into a repository, issue, pull request or public place. The data goes only through the MCP tools.
 
 **Where imported ideas land.** Every imported idea starts in the inbox (§0) and waits for the weekly garden review. The import's link proposals (Pass 3) appear in the review's Step 0.
 
-**Subjects items are imported and recorded as promoted.** The "Subjects" list stays: it is the production shortlist the garden promotes into (§0, Promotion). So each Subjects item is imported *and* recorded as promoted. `import_ideas` records the promotion itself, from the synced task: `promoted_at` is the task's `first_synced_at` (the value you send as `captured_at`) and the title is the task title. You send no promotion field. Imported Subjects ideas still start in the inbox (§0, **Imported promotions**). **The Subjects pass also waits for updated legal pages.** Until this sentence is removed, run Pass 1 and Pass 3, and do not run Pass 2.
+**Subjects items are imported and recorded as promoted.** The "Subjects" list stays: it is the production shortlist the garden promotes into (§0, Promotion). So each Subjects item is imported *and* recorded as promoted. `import_ideas` records the promotion itself, from the synced task: `promoted_at` is the task's `first_synced_at` (the value you send as `captured_at`) and the title is the task title. You send no promotion field. Imported Subjects ideas still start in the inbox (§0, **Imported promotions**).
 
 ### Step 0 — Ask once
 
 1. Which timezone the Notion workspace displayed dates in → pass the IANA name as `timezone` (e.g. `"Europe/London"`, `"Asia/Hong_Kong"`), which handles daylight-saving changes. Use `default_utc_offset` only if the user can't name a zone.
-2. For Pass 2, once it is open: what completed Google Tasks items mean to them. Default: import them, tagged `gtasks:completed`; like every Subjects item they are recorded as promoted, so new ones come in as `exploring`. If the user names a status instead (for example `used`, because each became an episode), send it as `status` on those items. It applies to a new idea, and to a merge into an idea that has no promotion yet and none the user cleared.
+2. For Pass 2: what completed Google Tasks items mean to them. Default: import them, tagged `gtasks:completed`; like every Subjects item they are recorded as promoted, so new ones come in as `exploring`. If the user names a status instead (for example `used`, because each became an episode), send it as `status` on those items. It applies to a new idea, and to a merge into an idea that has no promotion yet and none the user cleared.
 
 ### Pass 1 — Notion rows → `import_ideas(source_system: 'notion')`
 
@@ -364,8 +364,6 @@ Do not put anything in `thoughts` for Notion rows unless a column is clearly the
 
 ### Pass 2 — Google Tasks "Subjects" → `import_ideas(source_system: 'gtasks_subjects')`
 
-**Closed until the legal pages are updated (see the top of §4).** The steps below are ready for when it opens.
-
 1. Wait until `list_ideas(source_system: 'notion')` shows the Notion rows with `embedded: true` (about a minute), so `search_ideas` can find semantic duplicates.
 2. Page through `list_subjects_for_import()` following `next_offset` (paging over the full list is stable; `only_not_imported: true` shrinks as you import, so use it only for a final check). Skip tasks that are `already_imported`, unless their `imported_idea_promoted` is `null`: an earlier pass imported them before promotions were recorded, so re-send their items (built as in step 5). The server records the missing promotion under the status rule of §0 (a parked or composted idea moves to `exploring`) and ignores the item's `status`; nothing else changes. A reply of `promotion: 'cleared'` means the user cleared that promotion with `update_idea`, and it stays cleared.
 3. Tasks with `stale: true` were not in Google's latest sync — usually deleted or moved by the user. List them for the user and import only the ones they want.
@@ -388,7 +386,7 @@ Notion's Related Project and Notes columns often name other rows ("part 2 of …
 
 ### Step 4 — Report
 
-Counts by `source_system` (created / merged / already_imported / errors, and for the Subjects pass the promotions recorded, `counts.promoted`), the number of pending import proposals, and anything left as notes. Then tell the user the Notion part is done: the imported ideas are in the inbox, the next weekly garden review starts with the import proposals (§2, Step 0), and the Subjects pass follows once the legal pages are updated. Don't call the import complete until Pass 2 has run.
+Counts by `source_system` (created / merged / already_imported / errors, and for the Subjects pass the promotions recorded, `counts.promoted`), the number of pending import proposals, and anything left as notes. Then tell the user what is done: the imported ideas are in the inbox, and the next weekly garden review starts with the import proposals (§2, Step 0). If only the Notion part has run, say the Subjects pass is still to come; don't call the import complete until Pass 2 has run.
 
 ---
 
@@ -435,4 +433,4 @@ Everything here happens only when the user asks.
 | Look up ideas | `list_ideas` (`inbox`, `promoted` filters), `search_ideas`, `get_idea` |
 | "Combine these into an episode" | `create_synthesis` |
 | "Show me my idea map" | §3 → `export_idea_map(format: 'html')` → save the page as `filename`, check `bytes`, hand it over |
-| One-time Notion / Subjects import | §4 → `import_ideas`, `list_subjects_for_import`, `propose_idea_links(origin: 'import')` (Subjects pass after the legal update) |
+| One-time Notion / Subjects import | §4 → `import_ideas`, `list_subjects_for_import`, `propose_idea_links(origin: 'import')` |
