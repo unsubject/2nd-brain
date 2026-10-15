@@ -89,20 +89,30 @@ async function seedEveryTargetType(entry: string, scope: 'personal' | 'family') 
 
 const RETIRED_NAMES = ['Contact Alpha', 'Event Beta', 'Subject Gamma', 'Note Delta'];
 
+// Everything the tests seed besides journal entries. Cleared after the
+// last test as well: CI runs the root suite next on the same database,
+// and its link-moving test expects no other journal links.
+async function clearSeeded(): Promise<void> {
+  await admin`DELETE FROM link_edge WHERE source_type = 'journal_entry'`;
+  await admin`DELETE FROM public_artifact WHERE source_system = 'youtube'`;
+  await admin`DELETE FROM task_ref WHERE external_list_id = 'list-get-entry'`;
+  await admin`DELETE FROM entity_ref WHERE normalized_name LIKE 'synthetic %'`;
+  for (const t of retiredPresent) await admin`DELETE FROM ${admin(t)}`;
+}
+
 describe.skipIf(!TEST_DB)('get_entry', () => {
   beforeEach(async () => {
     await resetJournalData();
-    await admin`DELETE FROM link_edge WHERE source_type = 'journal_entry'`;
-    await admin`DELETE FROM public_artifact WHERE source_system = 'youtube'`;
-    await admin`DELETE FROM task_ref WHERE external_list_id = 'list-get-entry'`;
-    await admin`DELETE FROM entity_ref WHERE normalized_name LIKE 'synthetic %'`;
     const tables = await admin<Array<{ table_name: string }>>`
       SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name IN ${admin(RETIRED_TABLES)}
     `;
     retiredPresent = new Set(tables.map((t) => t.table_name));
-    for (const t of retiredPresent) await admin`DELETE FROM ${admin(t)}`;
+    await clearSeeded();
   });
+
+  // Runs before the file-level afterAll closes the connection.
+  afterAll(clearSeeded);
 
   it('leaves out links to artifacts that have left search', async () => {
     const entry = await seedJournalEntry({ vector: null });
