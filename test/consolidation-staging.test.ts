@@ -2031,7 +2031,7 @@ test("a load leaves members_only as it is, on the rows it writes and the rows it
     { ref: "gdrive:doc-1", pointed: false, flag: "review", members_only: true },
     { ref: "gmail:sub", pointed: false, flag: null, members_only: true },
     { ref: "n1", pointed: true, flag: null, members_only: true },
-    { ref: "n2", pointed: false, flag: "unmatched", members_only: true },
+    { ref: "n2", pointed: false, flag: "fragment", members_only: true }, // under 200 characters (Simon, 2026-10-15)
   ]);
 });
 

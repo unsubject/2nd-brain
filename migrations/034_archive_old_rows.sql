@@ -1,4 +1,4 @@
--- 033_archive_old_rows.sql
+-- 034_archive_old_rows.sql
 --
 -- Published-archive consolidation, step 4: Simon's rules (2026-10-15) for
 -- the rows of the first import that are no copy of any version. A copy of
