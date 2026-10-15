@@ -283,7 +283,7 @@ What the page shows, so you can explain it:
 - a legend of clusters and link types;
 - an as-of slider with Play, which replays the garden over time — ideas appear when captured, links when accepted — for journey reviews;
 - a mark on inbox ideas and a star on promoted ones;
-- only published outputs (essays and episodes); unpublished ones and their links are left out.
+- only published outputs (essays and episodes), never a members-only one; the others and their links are left out.
 
 The page works offline in any browser: it loads nothing from the network.
 

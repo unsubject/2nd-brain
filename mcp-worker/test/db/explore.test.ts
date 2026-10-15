@@ -239,6 +239,31 @@ describe.skipIf(!TEST_DB)('export_idea_map html', () => {
     expect(json.clusters).toEqual([{ id: 1, name: first === a ? 'Map idea </script> A' : 'Map idea B', size: 2 }]);
   });
 
+  it('leaves members-only outputs out of the html page but not out of json', async () => {
+    const a = await seedIdea('Map idea for members');
+    const b = await seedIdea('Map idea for everyone');
+    const members = await seedArtifact('Members-only episode', null);
+    const open = await seedArtifact('Public episode', null);
+    await admin`UPDATE public_artifact SET members_only = true WHERE id = ${members}`;
+    await linkAll([
+      { source_idea_id: a, target_artifact_id: members, link_type: 'became', rationale: 'A became the members episode' },
+      { source_idea_id: b, target_artifact_id: open, link_type: 'became', rationale: 'B became the public episode' },
+    ]);
+
+    const r = await callTool('export_idea_map', { format: 'html' });
+    expect(r.isError).toBe(false);
+    const html = r.texts[1];
+    expect(html).toContain('Public episode');
+    expect(html).toContain('B became the public episode');
+    expect(html).not.toContain('Members-only episode');
+    expect(html).not.toContain('A became the members episode');
+    expect(r.json.stats).toMatchObject({ nodes: 3, edges: 1 });
+
+    const json = await ok('export_idea_map', {});
+    expect(json.nodes.map((x: any) => x.label)).toEqual(expect.arrayContaining(['Members-only episode', 'Public episode']));
+    expect(json.edges.map((e: any) => e.rationale)).toContain('A became the members episode');
+  });
+
   it('defaults html to 150 nodes and warns when the page is large', async () => {
     await admin`
       INSERT INTO idea (user_id, title)
