@@ -79,7 +79,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'get_entry',
     description:
-      "Fetch a single journal entry by id, including full text, summary, tags, and outbound links to people, calendar events, tasks, emails, public artifacts, and entities. Each link includes a resolved target_title (full_name / title / subject / display_name depending on target_type) so no second tool call is needed to identify the target. Links are filtered by min_confidence (default 0.5) and deduped by target_id keeping the highest-confidence row. Use after a search_brain hit when the user wants the full entry and its connections.",
+      "Fetch a single journal entry by id, including full text, summary, tags, and outbound links to published pieces (echoes_artifact), entities (mentions_entity) and Google Tasks items (relates_to_task). Each link includes a resolved target_title (title / display_name depending on target_type) so no second tool call is needed to identify the target. Links are filtered by min_confidence (default 0.5) and deduped by target_id keeping the highest-confidence row. Use after a search_brain hit when the user wants the full entry and its connections.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -89,7 +89,7 @@ const definitions: ToolDefinition[] = [
           minimum: 0,
           maximum: 1,
           default: 0.5,
-          description: 'Minimum link confidence to return (default 0.5 — drops noisy same-day-as-event floor and similar low-signal links)',
+          description: 'Minimum link confidence to return (default 0.5 — drops low-signal links)',
         },
       },
       required: ['entry_id'],
