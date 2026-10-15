@@ -14,7 +14,7 @@ import {
   verifyState,
   type GoogleAuthRouteOptions,
 } from "../src/google/routes";
-import { missingScopes } from "../src/google/auth";
+import { getAuthUrl, missingScopes } from "../src/google/auth";
 
 const SECRET = "test-owner-secret-0123456789abcdef";
 
@@ -127,6 +127,9 @@ test("GET shows the owner form, never cached or framed", async () => {
   const html = await res.text();
   assert.match(html, /<form method="post" action="\/auth\/google">/);
   assert.match(html, /type="password" name="secret"/);
+  // It names what the connection is read for, and nothing retired.
+  assert.match(html, /Google Tasks .*Gmail writing label .*Drive archive folders/);
+  assert.doesNotMatch(html, /Calendar|Contacts/);
 });
 
 test("a wrong secret is refused and does not redirect", async () => {
@@ -222,16 +225,41 @@ test("the callback names permissions Google did not grant", async () => {
   assert.match(body, /href="\/auth\/google"/);
 });
 
+const REQUESTED = [
+  "https://www.googleapis.com/auth/tasks.readonly",
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
+];
+const RETIRED = [
+  "https://www.googleapis.com/auth/contacts.readonly",
+  "https://www.googleapis.com/auth/calendar.readonly",
+];
+
+test("the consent URL asks for read-only Tasks, Gmail and Drive, and nothing else", (t) => {
+  // Synthetic client; building the URL makes no request.
+  for (const [k, v] of Object.entries({
+    GOOGLE_CLIENT_ID: "test-client-id.apps.googleusercontent.com",
+    GOOGLE_CLIENT_SECRET: "test-client-secret",
+    GOOGLE_REDIRECT_URI: "https://brain.example.test/auth/google/callback",
+  })) {
+    const was = process.env[k];
+    process.env[k] = v;
+    t.after(() => (was === undefined ? delete process.env[k] : (process.env[k] = was)));
+  }
+  const url = new URL(getAuthUrl("s"));
+  assert.equal(url.searchParams.get("state"), "s");
+  assert.equal(url.searchParams.get("access_type"), "offline");
+  const scopes = (url.searchParams.get("scope") ?? "").split(" ");
+  assert.deepEqual([...scopes].sort(), [...REQUESTED].sort());
+});
+
 test("missingScopes compares the granted scopes with the requested ones", () => {
-  const all = [
-    "https://www.googleapis.com/auth/tasks.readonly",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-  ];
+  const all = REQUESTED;
   assert.deepEqual(missingScopes(all.join(" ")), []);
-  assert.deepEqual(missingScopes(all.slice(0, 4).join(" ")), ["Google Drive (read-only)"]);
+  assert.deepEqual(missingScopes(all.slice(0, 2).join(" ")), ["Google Drive (read-only)"]);
+  // A token from before Calendar and Contacts were retired still carries
+  // them until the app is removed at Google: nothing is missing.
+  assert.deepEqual(missingScopes([...all, ...RETIRED].join(" ")), []);
   // Extra scopes Google adds (openid, …) don't matter; unknown grants = nothing to report.
   assert.deepEqual(missingScopes(`openid ${all.join(" ")}`), []);
   assert.deepEqual(missingScopes(undefined), []);

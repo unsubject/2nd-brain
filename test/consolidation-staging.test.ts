@@ -1872,6 +1872,38 @@ test("a load or import that changes the text ends the claim on it; one that keep
   assert.equal(await queries.renewClaim(videoId, v), false);
 });
 
+test("a load leaves members_only as it is, on the rows it writes and the rows it points", { skip }, async () => {
+  const load = await import("../src/archive/consolidation/load/run");
+  await db.query("DELETE FROM public_artifact");
+  await buildWorks();
+  await db.query(
+    `INSERT INTO public_artifact (user_id, type, title, raw_source, source_system, source_external_id, processing_status) VALUES
+       ('default', 'essay', '自由市場的代價', $1, 'notion', 'n1', 'processed'),
+       ('default', 'essay', '無關', $2, 'notion', 'n2', 'processed')`,
+    [`老總：附上今期稿件。\n\n${ESSAY}`, "今天天氣很好，我們一家人去公園散步。".repeat(8)]
+  );
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  await db.query("UPDATE public_artifact SET members_only = true");
+
+  // Loaded again with the same texts, then with a changed one.
+  await load.runLoad(load.emptyLoadStats(), async () => {}, () => false, db);
+  await db.query(`UPDATE archive_candidate SET body_text = body_text || '\n\n補記：多謝讀者指正。' WHERE id =
+                    (SELECT canonical_candidate_id FROM archive_work WHERE title = '自由市場的代價')`);
+  const changed = load.emptyLoadStats();
+  await load.runLoad(changed, async () => {}, () => false, db);
+  assert.equal(changed.updated, 1);
+
+  const { rows } = await db.query(
+    "SELECT source_external_id AS ref, superseded_by IS NOT NULL AS pointed, flag, members_only FROM public_artifact ORDER BY 1"
+  );
+  assert.deepEqual(rows, [
+    { ref: "gdrive:doc-1", pointed: false, flag: "review", members_only: true },
+    { ref: "gmail:sub", pointed: false, flag: null, members_only: true },
+    { ref: "n1", pointed: true, flag: null, members_only: true },
+    { ref: "n2", pointed: false, flag: "unmatched", members_only: true },
+  ]);
+});
+
 test("resetErroredArtifacts ends the claims it requeues (Codex on #102)", { skip }, async () => {
   const queries = await import("../src/archive/queries");
   await db.query("DELETE FROM public_artifact");
