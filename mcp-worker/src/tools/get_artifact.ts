@@ -71,6 +71,12 @@ export async function getArtifactHandler(
 
   const sql = getDb(env);
   try {
+    // A sync that changes a row's text sets it back to 'pending' and keeps
+    // the old clean_text and summary until the worker runs again (or for
+    // good, if it fails). So only a processed row reads clean_text; any
+    // other reads raw_source, and its summary and excerpt are left out.
+    const processed = () => sql`pa.processing_status = 'processed'`;
+    const textSrc = () => sql`CASE WHEN ${processed()} THEN COALESCE(pa.clean_text, pa.raw_source) ELSE pa.raw_source END`;
     // Follow superseded_by only from a row that has left search: a row
     // whose replacement still waits to be processed is the live one.
     const rows = await sql<Array<Row>>`
@@ -86,14 +92,12 @@ export async function getArtifactHandler(
       )
       SELECT pa.id, pa.title, pa.source_system, pa.status, pa.flag, pa.members_only,
              pa.published_at, pa.series, pa.series_position, to_jsonb(pa.outlets) AS outlets,
-             pa.canonical_url, to_jsonb(pa.tags) AS tags, pa.summary, pa.excerpt, pa.language,
-             pa.word_count, pa.processing_status,
-             char_length(COALESCE(pa.clean_text, pa.raw_source)) AS text_chars,
-             ${
-               includeText
-                 ? sql`substr(COALESCE(pa.clean_text, pa.raw_source), ${offset + 1}::int, ${limit}::int)`
-                 : sql`NULL::text`
-             } AS text,
+             pa.canonical_url, to_jsonb(pa.tags) AS tags,
+             CASE WHEN ${processed()} THEN pa.summary END AS summary,
+             CASE WHEN ${processed()} THEN pa.excerpt END AS excerpt,
+             pa.language, pa.word_count, pa.processing_status,
+             char_length(${textSrc()}) AS text_chars,
+             ${includeText ? sql`substr(${textSrc()}, ${offset + 1}::int, ${limit}::int)` : sql`NULL::text`} AS text,
              (SELECT jsonb_agg(c.id ORDER BY c.hop) FROM chain c WHERE c.hop < (SELECT max(hop) FROM chain))
                AS resolved_from,
              now() AS as_of

@@ -352,6 +352,22 @@ describe.skipIf(!TEST_DB)('get_artifact', () => {
     expect(meta.artifact).toMatchObject({ id, title: 'Long essay', type: 'essay', status: 'published', flag: null });
   });
 
+  it('reads the current text of a piece waiting to be reprocessed, without the old summary', async () => {
+    const id = await seedPiece({ title: 'Revised essay', chunks: [{ text: 'first version', vector: null }] });
+    // What a sync does when the text changes: new raw_source, back to
+    // pending, and the old clean_text and summary stay until the worker runs.
+    await admin`UPDATE public_artifact SET raw_source = 'second version, longer', processing_status = 'pending' WHERE id = ${id}`;
+    const r = await ok('get_artifact', { artifact_id: id });
+    expect(r.text).toBe('second version, longer');
+    expect(r.text_chars).toBe(22);
+    expect(r.artifact).toMatchObject({ processing_status: 'pending', summary: null });
+
+    await admin`UPDATE public_artifact SET clean_text = 'second version', processing_status = 'processed' WHERE id = ${id}`;
+    const p = await ok('get_artifact', { artifact_id: id });
+    expect(p.text).toBe('second version');
+    expect(p.artifact.summary).toBe('Summary of Revised essay');
+  });
+
   it('follows replacements to the current piece and says so', async () => {
     const current = await seedPiece({ title: 'Current text', chunks: [{ text: 'final', vector: null }] });
     const middle = await seedPiece({ title: 'Second import', status: 'superseded', chunks: [{ text: 'mid', vector: null }] });

@@ -291,6 +291,9 @@ export async function searchPublishedHandler(
       )
       .slice(0, limit);
 
+    // The same predicate again: a sync that commits between the legs and
+    // this read can requeue, replace, hide or mark members-only a piece the
+    // legs found. That piece is dropped rather than shown with new metadata.
     const meta =
       ranked.length > 0
         ? await sql<Array<MetaRow>>`
@@ -300,6 +303,7 @@ export async function searchPublishedHandler(
                    now() AS as_of
               FROM public_artifact pa
              WHERE pa.id = ANY(${uuidArrayLiteral(ranked.map((p) => p.id))}::uuid[])
+               AND ${searchable(sql)}
           `
         : [];
     const metaById = new Map(meta.map((m) => [m.id, m]));
