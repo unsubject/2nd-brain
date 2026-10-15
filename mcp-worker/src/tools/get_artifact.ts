@@ -3,6 +3,7 @@ import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
 import { dbError, errorResult, ok, parseJsonb, toIso, toIsoOrNull, uuidSchema } from './idea_shared';
+import { pieceType } from './search_published';
 
 // One published piece (refocus Phase 5) with its text, a bounded part at a
 // time. An id whose row was replaced (status 'superseded', as the archive
@@ -122,7 +123,7 @@ export async function getArtifactHandler(
       artifact: {
         id: r.id,
         title: r.title,
-        type: r.source_system === 'youtube' ? 'episode' : 'essay',
+        type: pieceType(r.source_system, r.flag),
         source_system: r.source_system,
         status: r.status,
         // null: confirmed (or an old row kept as the only copy); 'review':

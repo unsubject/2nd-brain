@@ -69,6 +69,8 @@ type ChunkRow = {
   heading_path: unknown;
   chunk_text: string;
   published_at: Date | null;
+  // A text-leg row past the piece's `passages`, used only if another repeats.
+  spare?: boolean;
 };
 
 type SemanticRow = ChunkRow & { similarity: number };
@@ -112,7 +114,8 @@ export async function searchPublishedHandler(
   const limit = args.limit ?? 8;
   const perPiece = args.passages ?? 2;
   const semanticRows = Math.max(CANDIDATES, limit * SEMANTIC_PER_PIECE);
-  const textRows = Math.max(CANDIDATES, limit * perPiece);
+  // Room for one spare row for each of the first `limit` pieces (below).
+  const textRows = Math.max(CANDIDATES, limit * perPiece) + limit;
   const membersOnly = args.members_only ?? 'include';
   const terms = searchTerms(args.query);
   const patterns = terms.map(termPattern);
@@ -134,9 +137,9 @@ export async function searchPublishedHandler(
     AND pa.status = 'published'
     AND ${
       args.type === 'episode'
-        ? q`pa.source_system = 'youtube'`
+        ? q`(pa.source_system = 'youtube' OR pa.flag = 'video')`
         : args.type === 'essay'
-          ? q`pa.source_system <> 'youtube'`
+          ? q`(pa.source_system <> 'youtube' AND pa.flag IS DISTINCT FROM 'video')`
           : q`TRUE`
     }
     AND ${args.since ? q`pa.published_at >= ${args.since}::timestamptz` : q`TRUE`}
@@ -226,10 +229,13 @@ export async function searchPublishedHandler(
       // Every term in the chunk or the piece's title. A piece whose title
       // matches ranks first, then newer pieces; each piece brings at most
       // `passages` chunks, those holding every term first, so one long
-      // transcript cannot fill the leg.
+      // transcript cannot fill the leg. Each piece may also bring one spare
+      // chunk, listed after every other row, for when a passage repeats
+      // another (see `repeats`).
       terms.length > 0
         ? sql<Array<ChunkRow>>`
             SELECT x.artifact_id, x.chunk_index, x.heading_path, x.chunk_text, x.published_at,
+                   x.n > ${perPiece} AS spare,
                    now() AS as_of
               FROM (
                 SELECT c.public_artifact_id AS artifact_id, c.chunk_index,
@@ -244,8 +250,8 @@ export async function searchPublishedHandler(
                  WHERE ${searchable(sql)}
                    AND ${allTerms(sql, sql`concat_ws(' ', pa.title, c.chunk_text)`)}
               ) x
-             WHERE x.n <= ${perPiece}
-             ORDER BY x.in_title DESC, x.published_at DESC NULLS LAST, x.artifact_id, x.n
+             WHERE x.n <= ${perPiece} + 1
+             ORDER BY x.n > ${perPiece}, x.in_title DESC, x.published_at DESC NULLS LAST, x.artifact_id, x.n
              LIMIT ${textRows}
           `
         : Promise.resolve([]),
@@ -313,14 +319,21 @@ export async function searchPublishedHandler(
       .filter((p) => metaById.has(p.id))
       .map((p) => {
         const m = metaById.get(p.id)!;
-        // Chunks found by both legs first, then the best rank in either.
-        const chosen = [...p.chunks.values()]
-          .sort((a, b) => b.legs.length - a.legs.length || a.rank - b.rank)
-          .slice(0, perPiece);
+        // Chunks found by both legs first, then the best rank in either, and
+        // spares last. A passage that repeats one already kept is skipped.
+        const chosen: Array<Chunk & { text: string }> = [];
+        const ordered = [...p.chunks.values()].sort(
+          (a, b) => Number(!!a.spare) - Number(!!b.spare) || b.legs.length - a.legs.length || a.rank - b.rank,
+        );
+        for (const c of ordered) {
+          if (chosen.length >= perPiece) break;
+          const text = passage(c.chunk_text, c.legs.includes('text') ? regexes : []);
+          if (!chosen.some((k) => repeats(k, k.text, c, text))) chosen.push({ ...c, text });
+        }
         return {
           artifact_id: p.id,
           title: m.title,
-          type: m.source_system === 'youtube' ? 'episode' : 'essay',
+          type: pieceType(m.source_system, m.flag),
           published_at: toIsoOrNull(m.published_at),
           series: m.series,
           outlets: parseJsonb<string[] | null>(m.outlets, null) ?? [],
@@ -340,7 +353,7 @@ export async function searchPublishedHandler(
             heading_path: parseJsonb<string[] | null>(c.heading_path, null) ?? [],
             match: c.legs,
             similarity: c.similarity,
-            text: passage(c.chunk_text, c.legs.includes('text') ? regexes : []),
+            text: c.text,
           })),
         };
       });
@@ -398,6 +411,39 @@ function chars(s: string): number {
 
 function flatten(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
+}
+
+// A long section's next chunk starts with the last ~400 characters of the
+// one before (src/archive/chunker.ts), so a match there is in both chunks
+// and their passages would show the same text. Two passages repeat when
+// their chunks are next to each other, the later one starts with the end
+// of the earlier one, and the passages share a run of about 150 characters
+// (some 100-character slice of one, taken every 50, appears in the other).
+const MIN_CARRY = 50;
+const MAX_CARRY = 1_000;
+const REPEAT_PROBE = 100;
+const REPEAT_STEP = 50;
+function repeats(a: ChunkRow, aText: string, b: ChunkRow, bText: string): boolean {
+  if (Math.abs(a.chunk_index - b.chunk_index) !== 1) return false;
+  const [prev, next] = a.chunk_index < b.chunk_index ? [a, b] : [b, a];
+  if (!carriesOver(flatten(prev.chunk_text), flatten(next.chunk_text))) return false;
+  for (let i = 0; i + REPEAT_PROBE <= bText.length; i += REPEAT_STEP) {
+    if (aText.includes(bText.slice(i, i + REPEAT_PROBE))) return true;
+  }
+  return false;
+}
+
+function carriesOver(prev: string, next: string): boolean {
+  for (let n = Math.min(prev.length, next.length, MAX_CARRY); n >= MIN_CARRY; n--) {
+    if (prev.endsWith(next.slice(0, n))) return true;
+  }
+  return false;
+}
+
+// An old imported copy of a video's transcript (flag 'video') is an episode,
+// whatever system it came from.
+export function pieceType(sourceSystem: string, flag: string | null): 'episode' | 'essay' {
+  return sourceSystem === 'youtube' || flag === 'video' ? 'episode' : 'essay';
 }
 
 // At most PASSAGE_CHARS code points of a chunk (a surrogate pair is never

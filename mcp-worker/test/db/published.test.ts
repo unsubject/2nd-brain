@@ -158,6 +158,42 @@ describe.skipIf(!TEST_DB)('search_published', () => {
     expect(r.hits.every((h: any) => h.match.includes('semantic'))).toBe(true);
   });
 
+  it('never shows the same text twice when a match sits where two chunks overlap', async () => {
+    stubEmbeddings('fail');
+    // A long section's next chunk starts with the last ~400 characters of
+    // the one before (src/archive/chunker.ts); the term is in that overlap.
+    const words = (w: string, n: number) => Array.from({ length: n }, (_, i) => `${w}${i}`).join(' ');
+    const overlap = `${words('shore', 25)} tidewater ${words('reef', 25)}`;
+    await seedPiece({
+      title: 'Long talk',
+      sourceSystem: 'youtube',
+      chunks: [
+        { text: `${words('opening', 80)} ${overlap}`, vector: null },
+        { text: `${overlap} ${words('closing', 80)}`, vector: null },
+        { text: `${words('later', 40)} tidewater again ${words('end', 40)}`, vector: null },
+      ],
+    });
+
+    // The quotes separate terms like spaces do.
+    const r = await ok('search_published', { query: '"tidewater"', passages: 2 });
+    expect(r.count).toBe(1);
+    expect(r.hits[0].passages.map((p: any) => p.chunk_index)).toEqual([0, 2]);
+    expect(r.hits[0].passages[1].text).toContain('tidewater again');
+  });
+
+  it('counts an old imported copy of a video transcript as an episode', async () => {
+    stubEmbeddings('fail');
+    const copy = await seedPiece({ title: 'Old video copy', flag: 'video', chunks: [{ text: 'monsoon notes', vector: null }] });
+    await seedPiece({ title: 'An essay', chunks: [{ text: 'monsoon notes', vector: null }] });
+
+    const ep = await ok('search_published', { query: 'monsoon', type: 'episode' });
+    expect(ep.hits.map((h: any) => [h.title, h.type, h.flag])).toEqual([['Old video copy', 'episode', 'video']]);
+    const es = await ok('search_published', { query: 'monsoon', type: 'essay' });
+    expect(titles(es)).toEqual(['An essay']);
+    const g = await ok('get_artifact', { artifact_id: copy, include_text: false });
+    expect(g.artifact.type).toBe('episode');
+  });
+
   it('never returns a superseded copy, a hidden fragment or an unprocessed row', async () => {
     stubEmbeddings(axis(0));
     const live = await seedPiece({ title: 'Harbour lights', chunks: [{ text: 'harbour lights at night', vector: axis(0) }] });

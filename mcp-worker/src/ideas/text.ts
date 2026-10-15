@@ -67,12 +67,18 @@ export function snippet(text: string | null | undefined, max: number): string | 
   return truncateChars(flat, max);
 }
 
-// Whitespace-separated search terms (max 5). A CJK phrase without spaces
-// stays one term, which ILIKE matches as a substring.
+// Search terms (max 5). Whitespace, quotes, brackets and CJK punctuation
+// separate terms, so a quoted phrase ("…", “…”, 「…」) or a list (A、B)
+// matches like its bare words, and sentence punctuation at either end of a
+// term is dropped. Inner '.', '+', '#', '-' and apostrophes stay (Node.js,
+// C++, C#, don't). A CJK phrase without spaces stays one term, which ILIKE
+// matches as a substring.
+const TERM_SEP = /[\s"“”「」『』《》〈〉【】（）()[\]{}、，。；：！？]+/u;
+const TERM_EDGE = /^[.,;:!?'‘’]+|[.,;:!?'‘’]+$/gu;
 export function searchTerms(query: string): string[] {
   return query
-    .split(/\s+/)
-    .map((t) => t.trim())
+    .split(TERM_SEP)
+    .map((t) => t.replace(TERM_EDGE, ''))
     .filter(Boolean)
     .slice(0, 5);
 }

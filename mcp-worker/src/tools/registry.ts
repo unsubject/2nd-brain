@@ -66,7 +66,7 @@ const definitions: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all must appear; English terms match from the start of a word, and terms of 1–3 letters only as whole words)' },
+        query: { type: 'string', description: 'Free-text query: embedded for semantic search and matched as text (up to 5 terms, split on spaces, quotes, brackets and commas; all must appear; English terms match from the start of a word, and terms of 1–3 letters only as whole words)' },
         limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
         since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on created_at' },
         until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on created_at' },
@@ -149,11 +149,11 @@ const definitions: ToolDefinition[] = [
           type: 'string',
           minLength: 1,
           maxLength: 2000,
-          description: 'Free text: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all in one passage or the title; English terms match from the start of a word, and terms of 1–3 letters only as whole words; a Chinese phrase without spaces is one term)',
+          description: 'Free text: embedded for semantic search and matched as text (up to 5 terms, split on spaces, quotes, brackets and commas; all in one passage or the title; English terms match from the start of a word, and terms of 1–3 letters only as whole words; a Chinese phrase without spaces is one term)',
         },
         limit: { type: 'integer', minimum: 1, maximum: 15, default: 8, description: 'Pieces to return' },
         passages: { type: 'integer', minimum: 1, maximum: 3, default: 2, description: 'Passages per piece' },
-        type: { type: 'string', enum: ['essay', 'episode'], description: 'essay: writing (the archive); episode: YouTube transcripts. Default both' },
+        type: { type: 'string', enum: ['essay', 'episode'], description: "essay: writing (the archive); episode: YouTube transcripts, old imported copies (flag 'video') included. Default both" },
         since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on published_at' },
         until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on published_at' },
         outlet: { type: 'string', minLength: 1, maxLength: 100, description: 'Part of the series or of any outlet name (case-insensitive)' },

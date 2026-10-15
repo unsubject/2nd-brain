@@ -75,6 +75,12 @@ describe('text helpers', () => {
     expect(snippet(null, 5)).toBeNull();
     expect(searchTerms('  one two  三四 ')).toEqual(['one', 'two', '三四']);
     expect(searchTerms('a b c d e f g')).toHaveLength(5);
+    // Quotes, brackets and CJK punctuation separate terms; sentence
+    // punctuation at a term's ends goes; inner '.', '+', '#' and "'" stay.
+    expect(searchTerms('"rule of law"')).toEqual(['rule', 'of', 'law']);
+    expect(searchTerms('聯繫匯率、「貨幣局制度」')).toEqual(['聯繫匯率', '貨幣局制度']);
+    expect(searchTerms("Node.js, C++ (C#) don't.")).toEqual(['Node.js', 'C++', 'C#', "don't"]);
+    expect(searchTerms('“AI”？ …')).toEqual(['AI', '…']);
   });
 });
 
