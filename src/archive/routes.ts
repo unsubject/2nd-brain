@@ -5,6 +5,7 @@ import * as archiveQueries from "./queries";
 import { auditPublicArtifacts } from "./consolidation/audit";
 import { startCollection, type CollectRequest } from "./consolidation/runner";
 import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
+import { catchUpNow } from "./consolidation/extract/auto";
 import { candidateSummary } from "./consolidation/extract/run";
 import { workSummary } from "./consolidation/match/run";
 import { loadSummary } from "./consolidation/load/run";
@@ -68,6 +69,8 @@ export function archiveRoutes(): Router {
 
     try {
       const result = await importYouTubeVideo(body as YouTubeImportBody);
+      // A new transcript may be the one an old copy of the video waits for.
+      if (result.created) catchUpNow("a YouTube import");
       res.json(result);
     } catch (err) {
       console.error(`[archive] YouTube import error for ${body.video_id}:`, err);

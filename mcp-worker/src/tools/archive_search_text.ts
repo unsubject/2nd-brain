@@ -44,8 +44,9 @@ export type ArchiveHit = {
   published_at: string | null;
   similarity: number;
   type: 'essay' | 'episode';
-  // 'review' or 'unmatched': a piece the archive consolidation has not
-  // confirmed yet; null otherwise.
+  // 'review': a work still to check; 'video': an old copy of a video's
+  // transcript; 'unmatched' (older loads): an old row no work replaced.
+  // Null for a confirmed piece or an old row kept as the only copy.
   flag: string | null;
 };
 
