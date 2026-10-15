@@ -18,7 +18,9 @@ import {
   parseJsonb,
   tagsSchema,
   textArray,
+  toIso,
   uuidSchema,
+  withdrawProposalsOf,
   type Note,
 } from './idea_shared';
 
@@ -26,6 +28,16 @@ import {
 // each source row to these fields; the raw row travels in import_payload
 // so nothing is lost. Idempotent on (user, source_system, source_external_id).
 // Items are validated one by one, so a bad row never sinks its batch.
+//
+// Subjects items are recorded as promoted (refocus D1, D2), from the
+// synced task rather than from anything the agent sends: promoted_at is
+// the task's first_synced_at (task_ref.created_at, which the protocol
+// also sends as captured_at) and promoted_title is the task title. The
+// first promotion on an idea is kept. Recording one moves a parked or
+// composted idea to exploring unless the item carries a status (D15).
+// Unlike update_idea, the import leaves reviewed_at alone: every imported
+// idea starts in the inbox (§4, D14). Phase 7 drops task_ref, so this
+// lookup goes before that migration does.
 
 const itemSchema = z
   .object({
@@ -63,6 +75,11 @@ type ItemResult = {
   source_external_id: string | null;
   result: 'created' | 'merged' | 'already_imported' | 'error';
   idea_id?: string;
+  // Subjects items only: whether this call recorded the promotion, the
+  // idea already had one, or someone cleared it with update_idea and a
+  // re-sent item leaves it cleared. Absent for a subtask merged into its
+  // parent.
+  promotion?: 'recorded' | 'already_recorded' | 'cleared';
   error?: string;
 };
 
@@ -127,9 +144,78 @@ export async function importIdeasHandler(
     ctx.waitUntil(sql.end({ timeout: 5 }));
   }
 
-  const counts = { created: 0, merged: 0, already_imported: 0, error: 0 };
-  for (const r of results) counts[r.result]++;
+  const counts = { created: 0, merged: 0, already_imported: 0, error: 0, promoted: 0 };
+  for (const r of results) {
+    counts[r.result]++;
+    if (r.promotion === 'recorded') counts.promoted++;
+  }
   return ok({ source_system: args.source_system, counts, results });
+}
+
+// A Subjects task as the Google sync stored it. The same rows as
+// list_subjects_for_import: task_ref is written with user_id 'default',
+// so it is not filtered on BRAIN_USER_ID.
+type SubjectsTask = { title: string; first_synced_at: Date | string; is_subtask: boolean };
+
+async function findSubjectsTask(sql: ReturnType<typeof getDb>, ext: string): Promise<SubjectsTask | null> {
+  const rows = await sql<Array<SubjectsTask>>`
+    SELECT t.title, t.created_at AS first_synced_at,
+           (t.parent_external_task_id IS NOT NULL) AS is_subtask,
+           now() AS as_of
+      FROM task_ref t
+      JOIN project_ref p ON p.id = t.project_ref_id AND p.list_type = 'subjects'
+     WHERE t.external_task_id = ${ext}
+       AND t.scope = 'personal'
+  `;
+  return rows[0] ?? null;
+}
+
+type Promotion = { title: string; at: string };
+
+// Trimmed and cut to LIMITS.title characters (code points, as Postgres
+// counts them), so the idea_promoted_pair CHECK holds even for a longer
+// Google Tasks title. The full title stays in import_payload.
+function promotionTitle(s: string | undefined): string {
+  return Array.from((s ?? '').trim()).slice(0, LIMITS.title).join('').trim();
+}
+
+// What a Subjects item records. A subtask merged into its parent's idea
+// records nothing: the parent's own promotion stands.
+function promotionFor(task: SubjectsTask, item: Item, merged: boolean): Promotion | null {
+  if (task.is_subtask && merged) return null;
+  const title = promotionTitle(task.title) || promotionTitle(item.title);
+  if (!title) throw new HandlerError('invalid', 'the Subjects task has a blank title: send a title to record its promotion');
+  return { title, at: toIso(task.first_synced_at) };
+}
+
+const promotionNote = (title: string) => `promoted to Subjects as "${title}" (Subjects import)`;
+
+// An edit_log entry that set or cleared the promotion (update_idea logs
+// every change to it). A re-sent item never brings back a promotion the
+// user cleared.
+const PROMOTION_EDITED = [{ fields: ['promoted'] }];
+
+type PromotionPlan = { status: string; fields: string[]; notes: Note[] };
+
+// The change that recording `promo` makes to an existing idea, or null
+// when the idea already has a promotion (the first one is kept).
+function planPromotion(
+  before: { status: string; promoted: boolean },
+  promo: Promotion,
+  explicitStatus: string | undefined,
+  credential: string,
+  at: string,
+): PromotionPlan | null {
+  if (before.promoted) return null;
+  const status =
+    explicitStatus ?? (before.status === 'parked' || before.status === 'composted' ? 'exploring' : before.status);
+  const notes: Note[] = [{ at, by: 'system', text: promotionNote(promo.title), credential }];
+  const fields = ['promoted'];
+  if (status !== before.status) {
+    notes.push({ at, by: 'system', text: `status: ${before.status} → ${status}`, credential });
+    fields.push('status');
+  }
+  return { status, fields, notes };
 }
 
 async function importOne(
@@ -148,25 +234,66 @@ async function importOne(
     if (!capturedAt) throw new HandlerError('invalid_date', `unparseable captured_at "${item.captured_at}"`);
   }
 
-  const already = await sql<Array<{ idea_id: string }>>`
-    SELECT idea_id, now() AS as_of FROM idea_source
-     WHERE user_id = ${env.BRAIN_USER_ID}
-       AND source_system = ${sourceSystem}
-       AND source_external_id = ${ext}
+  const credential = capturedVia.credential as string;
+  const nowIso = new Date().toISOString();
+
+  const already = await sql<Array<{ idea_id: string; merged: boolean; promoted: boolean; edited: boolean }>>`
+    SELECT s.idea_id, s.merged, (i.promoted_at IS NOT NULL) AS promoted,
+           COALESCE(i.edit_log @> ${jsonParam(sql, PROMOTION_EDITED)}, false) AS edited,
+           now() AS as_of
+      FROM idea_source s
+      LEFT JOIN idea i ON i.id = s.idea_id
+     WHERE s.user_id = ${env.BRAIN_USER_ID}
+       AND s.source_system = ${sourceSystem}
+       AND s.source_external_id = ${ext}
   `;
+  const task = sourceSystem === 'gtasks_subjects' ? await findSubjectsTask(sql, ext) : null;
   if (already.length > 0) {
-    return { source_external_id: ext, result: 'already_imported', idea_id: already[0].idea_id };
+    const { idea_id, merged, promoted, edited } = already[0];
+    const done = { source_external_id: ext, result: 'already_imported' as const, idea_id };
+    const promo = task ? promotionFor(task, item, merged) : null;
+    if (!promo) return done;
+    if (promoted) return { ...done, promotion: 'already_recorded' as const };
+    if (edited) return { ...done, promotion: 'cleared' as const };
+    // Imported by a pass that did not record promotions yet: record it now.
+    const outcome = await sql.begin(async (tx): Promise<'recorded' | 'already_recorded' | 'cleared'> => {
+      const cur = await tx<Array<{ status: string; promoted: boolean; edited: boolean }>>`
+        SELECT status, (promoted_at IS NOT NULL) AS promoted,
+               (edit_log @> ${jsonParam(tx, PROMOTION_EDITED)}) AS edited, now() AS as_of
+          FROM idea WHERE id = ${idea_id} AND user_id = ${env.BRAIN_USER_ID}
+         FOR UPDATE
+      `;
+      if (cur.length > 0 && !cur[0].promoted && cur[0].edited) return 'cleared';
+      const plan = cur.length > 0 ? planPromotion(cur[0], promo, item.status, credential, nowIso) : null;
+      if (!plan) return 'already_recorded';
+      await tx`
+        UPDATE idea SET
+          status = ${plan.status},
+          promoted_at = LEAST(${promo.at}::timestamptz, now()),
+          promoted_title = ${promo.title},
+          notes = notes || ${jsonParam(tx, plan.notes)},
+          edit_log = edit_log || ${jsonParam(tx, [{ at: nowIso, credential, tool: 'import_ideas', fields: plan.fields }])},
+          updated_at = now()
+        WHERE id = ${idea_id}
+      `;
+      if (plan.status === 'composted') await withdrawProposalsOf(tx, env.BRAIN_USER_ID, idea_id, credential);
+      return 'recorded';
+    });
+    return { ...done, promotion: outcome };
+  }
+  if (sourceSystem === 'gtasks_subjects' && !task) {
+    throw new HandlerError('not_found', 'no synced Subjects task has this source_external_id (see list_subjects_for_import)');
   }
 
   const tags = cleanTags(item.tags);
-  const nowIso = new Date().toISOString();
 
   try {
     if (item.merge_into_idea_id) {
       const target = item.merge_into_idea_id;
+      const promo = task ? promotionFor(task, item, true) : null;
       return await sql.begin(async (tx) => {
-        const found = await tx<Array<{ id: string; tags: unknown }>>`
-          SELECT id, to_jsonb(tags) AS tags, now() AS as_of
+        const found = await tx<Array<{ id: string; tags: unknown; status: string; promoted: boolean }>>`
+          SELECT id, to_jsonb(tags) AS tags, status, (promoted_at IS NOT NULL) AS promoted, now() AS as_of
             FROM idea WHERE id = ${target} AND user_id = ${env.BRAIN_USER_ID}
            FOR UPDATE
         `;
@@ -177,8 +304,9 @@ async function importOne(
         const parts = [`[Merged from ${SOURCE_LABEL[sourceSystem]}] ${item.title ?? ''}`.trimEnd()];
         if (item.thoughts && item.thoughts.trim()) parts.push(item.thoughts);
         if (item.notes_raw && item.notes_raw.trim()) parts.push(item.notes_raw);
-        const credential = capturedVia.credential as string;
         const note: Note = { at: capturedAt ?? nowIso, by: noteBy, text: parts.join('\n\n'), credential };
+        // item.status applies to a merge only with the promotion it records.
+        const plan = promo ? planPromotion(found[0], promo, item.status, credential, nowIso) : null;
 
         await tx`
           UPDATE idea SET
@@ -187,29 +315,38 @@ async function importOne(
               ELSE LEAST(captured_at, ${capturedAt}::timestamptz)
             END,
             tags = ${textArray(tx, mergedTags)},
-            notes = notes || ${jsonParam(tx, [note])},
-            edit_log = edit_log || ${jsonParam(tx, [{ at: new Date().toISOString(), credential, tool: 'import_ideas' }])},
+            status = COALESCE(${plan?.status ?? null}::text, status),
+            promoted_at = ${plan && promo ? tx`LEAST(${promo.at}::timestamptz, now())` : tx`promoted_at`},
+            promoted_title = ${plan && promo ? tx`${promo.title}::text` : tx`promoted_title`},
+            notes = notes || ${jsonParam(tx, [note, ...(plan?.notes ?? [])])},
+            edit_log = edit_log || ${jsonParam(tx, [
+              { at: nowIso, credential, tool: 'import_ideas', ...(plan ? { fields: plan.fields } : {}) },
+            ])},
             updated_at = now()
           WHERE id = ${target}
         `;
+        if (plan?.status === 'composted') await withdrawProposalsOf(tx, env.BRAIN_USER_ID, target, credential);
         await tx`
           INSERT INTO idea_source (idea_id, user_id, source_system, source_external_id, import_payload, merged)
           VALUES (${target}, ${env.BRAIN_USER_ID}, ${sourceSystem}, ${ext}, ${jsonParam(tx, item.import_payload)}, true)
         `;
-        return { source_external_id: ext, result: 'merged' as const, idea_id: target };
+        return {
+          source_external_id: ext,
+          result: 'merged' as const,
+          idea_id: target,
+          ...(promo ? { promotion: plan ? ('recorded' as const) : ('already_recorded' as const) } : {}),
+        };
       });
     }
 
     const title = item.title?.trim();
     if (!title) throw new HandlerError('invalid', 'title is required unless merge_into_idea_id is given');
 
+    const promo = task ? promotionFor(task, item, false) : null;
     const notes: Note[] = item.notes_raw
-      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({
-          ...n,
-          by: noteBy,
-          credential: capturedVia.credential as string,
-        }))
+      ? splitDatedNotes(item.notes_raw, capturedAt ?? nowIso, zone).map((n) => ({ ...n, by: noteBy, credential }))
       : [];
+    if (promo) notes.push({ at: nowIso, by: 'system', text: promotionNote(promo.title), credential });
     const blankToNull = (s: string | undefined) => (s !== undefined && s.trim() !== '' ? s : null);
 
     return await sql.begin(async (tx) => {
@@ -217,15 +354,17 @@ async function importOne(
         INSERT INTO idea (
           user_id, title, status, captured_at, encountered_where,
           source_url, source_title, source_excerpt, why_interesting,
-          framing, thoughts, tags, notes, captured_via
+          framing, thoughts, tags, notes, captured_via,
+          promoted_at, promoted_title
         ) VALUES (
-          ${env.BRAIN_USER_ID}, ${title}, ${item.status ?? 'parked'},
+          ${env.BRAIN_USER_ID}, ${title}, ${item.status ?? (promo ? 'exploring' : 'parked')},
           COALESCE(${capturedAt}::timestamptz, now()),
           ${blankToNull(item.encountered_where)}, ${blankToNull(item.source_url)},
           ${blankToNull(item.source_title)}, ${blankToNull(item.source_excerpt)},
           ${blankToNull(item.why_interesting)}, ${blankToNull(item.framing)},
           ${blankToNull(item.thoughts)}, ${textArray(tx, tags)},
-          ${jsonParam(tx, notes)}, ${jsonParam(tx, capturedVia)}
+          ${jsonParam(tx, notes)}, ${jsonParam(tx, capturedVia)},
+          ${promo ? tx`LEAST(${promo.at}::timestamptz, now())` : tx`NULL`}, ${promo?.title ?? null}
         )
         RETURNING id
       `;
@@ -233,7 +372,12 @@ async function importOne(
         INSERT INTO idea_source (idea_id, user_id, source_system, source_external_id, import_payload)
         VALUES (${rows[0].id}, ${env.BRAIN_USER_ID}, ${sourceSystem}, ${ext}, ${jsonParam(tx, item.import_payload)})
       `;
-      return { source_external_id: ext, result: 'created' as const, idea_id: rows[0].id };
+      return {
+        source_external_id: ext,
+        result: 'created' as const,
+        idea_id: rows[0].id,
+        ...(promo ? { promotion: 'recorded' as const } : {}),
+      };
     });
   } catch (e) {
     // A concurrent run imported the same source key first.
