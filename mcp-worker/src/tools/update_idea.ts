@@ -19,6 +19,7 @@ import {
   tagsSchema,
   textArray,
   uuidSchema,
+  withdrawProposalsOf,
   type Note,
 } from './idea_shared';
 
@@ -225,24 +226,11 @@ export async function updateIdeaHandler(
         RETURNING (embedding IS NOT NULL) AS embedded
       `;
 
-      // A composted idea is set aside, so proposals waiting on it are taken
-      // back the way decide_idea_links withdraws them. Accepted links stay.
       // Runs whenever composted is sent, so composting again also clears
       // proposals made on an idea that was already composted.
       let withdrawn: number | undefined;
       if (nextStatus === 'composted') {
-        const w = await tx`
-          UPDATE idea_link SET
-            status = 'withdrawn',
-            decided_at = now(),
-            decided_via = ${jsonParam(tx, { credential })},
-            decision_note = 'endpoint composted'
-          WHERE user_id = ${env.BRAIN_USER_ID}
-            AND status = 'proposed'
-            AND (source_idea_id = ${args.id} OR target_idea_id = ${args.id})
-          RETURNING id
-        `;
-        withdrawn = w.length;
+        withdrawn = await withdrawProposalsOf(tx, env.BRAIN_USER_ID, args.id, credential);
       }
       return { embeddedBefore: before.embedded, embeddedAfter: rows[0].embedded, fields, withdrawn };
     });
