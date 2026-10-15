@@ -3,10 +3,10 @@ import { ProcessingResult } from "../processor";
 
 export async function findPendingEntry(
   stitchWindowMs: number
-): Promise<{ id: string; full_text: string; created_at: Date } | null> {
+): Promise<{ id: string; full_text: string } | null> {
   const cutoff = new Date(Date.now() - stitchWindowMs);
   const { rows } = await pool.query(
-    `SELECT id, full_text, created_at
+    `SELECT id, full_text
      FROM journal_entry
      WHERE processing_status = 'pending'
        AND stitch_window_end < $1

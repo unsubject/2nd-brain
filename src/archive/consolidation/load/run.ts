@@ -457,7 +457,7 @@ export async function loadStale(db: DB = pool): Promise<boolean> {
 }
 
 // Links to a row that has left search move to the row that replaced it,
-// so they keep showing the piece: those the calendar/task linker made
+// so they keep showing the piece: those the journal linker made
 // (journal echoes, shared entities; one that would point at its own source
 // is dropped), and idea links ('became', 'revisits', in any status, so a
 // rejected pair stays remembered). An idea link records the row it pointed
