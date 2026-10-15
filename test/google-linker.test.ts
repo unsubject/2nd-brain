@@ -58,13 +58,18 @@ beforeEach(async () => {
   await db.query("DELETE FROM entity_ref WHERE user_id = 'default' AND normalized_name = ANY($1::text[])", [
     [ORG, PERSON, PLACE].map((n) => n.toLowerCase()),
   ]);
-  await db.query("DELETE FROM person_ref WHERE external_person_id = $1", [PERSON_ID]);
-  await db.query("DELETE FROM calendar_event_ref WHERE external_event_id = $1", [EVENT_ID]);
 });
 
-test("people and calendar events are not linked, and people are not stored as entities", { skip }, async () => {
+test("people and calendar events are not linked, and people are not stored as entities", { skip }, async (t) => {
   // The rows the Contacts and Calendar syncs left behind stay in their
-  // tables; the linker no longer reads them.
+  // tables until a migration drops them; the linker no longer reads them.
+  // Only this test touches those tables, so the drop leaves the others be.
+  const { rows: tables } = await db.query(
+    "SELECT to_regclass('public.person_ref') IS NOT NULL AND to_regclass('public.calendar_event_ref') IS NOT NULL AS present"
+  );
+  if (!tables[0].present) return t.skip("person_ref and calendar_event_ref are dropped");
+  await db.query("DELETE FROM person_ref WHERE external_person_id = $1", [PERSON_ID]);
+  await db.query("DELETE FROM calendar_event_ref WHERE external_event_id = $1", [EVENT_ID]);
   await db.query(
     `INSERT INTO person_ref (user_id, external_system, external_person_id, full_name)
      VALUES ('default', 'google_contacts', $1, $2)`,
