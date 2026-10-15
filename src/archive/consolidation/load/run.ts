@@ -165,7 +165,7 @@ async function loadMembers(db: DB): Promise<MemberRow[]> {
 // Insert or update the works' rows. A row whose text changed goes back to
 // the worker (a pass on the old text loses its claim); one whose text is
 // the same keeps its summary, chunks and embedding, and a pass on it keeps
-// its claim.
+// its claim. members_only (033) is not the load's: a row keeps what it has.
 async function upsertWorks(works: WorkRow[], q: DB): Promise<Map<string, { id: string; created: boolean; requeued: boolean }>> {
   const out = new Map<string, { id: string; created: boolean; requeued: boolean }>();
   for (const batch of chunks(works, BATCH)) {
@@ -545,7 +545,7 @@ export async function loadStale(db: DB = pool): Promise<boolean> {
 }
 
 // Links to a row that has left search move to the row that replaced it,
-// so they keep showing the piece: those the calendar/task linker made
+// so they keep showing the piece: those the journal linker made
 // (journal echoes, shared entities; one that would point at its own source
 // is dropped), and idea links ('became', 'revisits', in any status, so a
 // rejected pair stays remembered). An idea link records the row it pointed

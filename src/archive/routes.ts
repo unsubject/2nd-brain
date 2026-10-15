@@ -59,6 +59,12 @@ export function archiveRoutes(): Router {
       });
       return;
     }
+    // Only a JSON boolean: anything else would reach Postgres, which reads
+    // "yes", "on" and 1 as true.
+    if (body.members_only !== undefined && typeof body.members_only !== "boolean") {
+      res.status(400).json({ error: "members_only must be true or false" });
+      return;
+    }
 
     try {
       const result = await importYouTubeVideo(body as YouTubeImportBody);

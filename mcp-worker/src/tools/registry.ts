@@ -79,7 +79,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'get_entry',
     description:
-      "Fetch a single journal entry by id, including full text, summary, tags, and outbound links to people, calendar events, tasks, emails, public artifacts, and entities. Each link includes a resolved target_title (full_name / title / subject / display_name depending on target_type) so no second tool call is needed to identify the target. Links are filtered by min_confidence (default 0.5) and deduped by target_id keeping the highest-confidence row. Use after a search_brain hit when the user wants the full entry and its connections.",
+      "Fetch a single journal entry by id, including full text, summary, tags, and outbound links to published pieces (echoes_artifact), entities (mentions_entity) and Google Tasks items (relates_to_task). Each link includes a resolved target_title (title / display_name depending on target_type) so no second tool call is needed to identify the target. Links are filtered by min_confidence (default 0.5) and deduped by target_id keeping the highest-confidence row. Use after a search_brain hit when the user wants the full entry and its connections.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -89,7 +89,7 @@ const definitions: ToolDefinition[] = [
           minimum: 0,
           maximum: 1,
           default: 0.5,
-          description: 'Minimum link confidence to return (default 0.5 — drops noisy same-day-as-event floor and similar low-signal links)',
+          description: 'Minimum link confidence to return (default 0.5 — drops low-signal links)',
         },
       },
       required: ['entry_id'],
@@ -540,7 +540,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'import_ideas',
     description:
-      "One-time import of up to 25 ideas from the old Notion Idea Parking Lot or the Google Tasks 'Subjects' list. ONLY call while running the import protocol (§4) that the user explicitly started. Idempotent on (source_system, source_external_id): re-sent rows come back 'already_imported' and are not changed. Put the original row, verbatim, in import_payload. merge_into_idea_id attaches a duplicate source to an existing idea (earliest captured_at wins, tags union, one verbatim note) instead of creating a new one. captured_at accepts ISO 8601 or Notion's 'March 8, 2026 12:26 PM' form, read in `timezone` (IANA, DST-aware; preferred) or at default_utc_offset. notes_raw is split into dated notes on [YYYY-MM-DD] markers at the start of a line. Items are validated one by one: a bad item comes back as result 'error' without sinking the batch.",
+      "One-time import of up to 25 ideas from the old Notion Idea Parking Lot or the Google Tasks 'Subjects' list. ONLY call while running the import protocol (§4) that the user explicitly started. Idempotent on (source_system, source_external_id): re-sent rows come back 'already_imported' and are not changed (except a missing Subjects promotion, below). Put the original row, verbatim, in import_payload. merge_into_idea_id attaches a duplicate source to an existing idea (earliest captured_at wins, tags union, one verbatim note) instead of creating a new one. captured_at accepts ISO 8601 or Notion's 'March 8, 2026 12:26 PM' form, read in `timezone` (IANA, DST-aware; preferred) or at default_utc_offset. notes_raw is split into dated notes on [YYYY-MM-DD] markers at the start of a line. Items are validated one by one: a bad item comes back as result 'error' without sinking the batch. gtasks_subjects: source_external_id must be a task from list_subjects_for_import, and the server records the item as promoted from that task (at = first_synced_at; title = the task title, trimmed, first 500 characters). Send no promotion field. The first promotion on an idea is kept. Recording one moves a parked or composted idea to exploring, and creates new ideas as exploring, unless the item sends a status. Imported ideas still start in the inbox, unlike update_idea promotions. A subtask merged into its parent's idea records none. Re-sending an item imported before promotions were recorded records its promotion under the status rule alone (the item's status is ignored) and changes nothing else. A promotion the user cleared with update_idea stays cleared, on a merge or a re-send. Results say promotion: 'recorded', 'already_recorded' or 'cleared'; counts.promoted totals the recorded ones.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -592,7 +592,7 @@ const definitions: ToolDefinition[] = [
   {
     name: 'list_subjects_for_import',
     description:
-      "Read the Google Tasks 'Subjects' list items (already synced into 2nd-brain) for the one-time import. ONLY call during the import protocol (§4). Each task shows already_imported, stale (not in the latest sync — probably deleted or moved; confirm with the user) and possible_duplicates (existing ideas with a similar title, each marked match 'exact' or 'contains'). Page with next_offset over the full list; only_not_imported shrinks as you import, so use it only for a final check. first_synced_at is approximate — Google Tasks has no creation date.",
+      "Read the Google Tasks 'Subjects' list items (already synced into 2nd-brain) for the one-time import. ONLY call during the import protocol (§4). Each task shows already_imported, stale (not in the latest sync — probably deleted or moved; confirm with the user), imported_idea_promoted (the promotion on the imported idea, {at, title} or null) and possible_duplicates (existing ideas whose title or promoted title is similar: match 'exact' or 'contains', matched_on 'title' or 'promoted_title', and any recorded promotion). Page with next_offset over the full list; only_not_imported shrinks as you import, so use it only for a final check. first_synced_at is approximate — Google Tasks has no creation date.",
     inputSchema: {
       type: 'object',
       properties: {

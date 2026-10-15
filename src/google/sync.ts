@@ -1,6 +1,4 @@
 import { syncTasks } from "./tasks";
-import { syncContacts } from "./contacts";
-import { syncCalendar } from "./calendar";
 import { pool } from "../db/client";
 import { describeGoogleError } from "./errors";
 
@@ -13,6 +11,9 @@ async function isAuthenticated(): Promise<boolean> {
   return rows.length > 0;
 }
 
+// Only Google Tasks is synced, until the Subjects import is done. The
+// Calendar and Contacts syncs are retired; the rows they stored stay until
+// the migration that drops their tables.
 async function runSync(): Promise<void> {
   if (!(await isAuthenticated())) {
     return;
@@ -26,20 +27,6 @@ async function runSync(): Promise<void> {
     console.log("  Tasks synced");
   } catch (err) {
     console.error("  Tasks sync error:", describeGoogleError(err));
-  }
-
-  try {
-    await syncContacts();
-    console.log("  Contacts synced");
-  } catch (err) {
-    console.error("  Contacts sync error:", describeGoogleError(err));
-  }
-
-  try {
-    await syncCalendar();
-    console.log("  Calendar synced");
-  } catch (err) {
-    console.error("  Calendar sync error:", describeGoogleError(err));
   }
 
   console.log(`Google sync complete (${Math.round((Date.now() - start) / 1000)}s)`);

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Env } from '../env';
 import type { ToolResult } from './registry';
 import { getDb } from '../db';
-import { titleMatch } from '../ideas/text';
+import { titleMatch, type TitleMatch } from '../ideas/text';
 import { dbError, errorResult, ok, parseJsonb, toIso, toIsoOrNull } from './idea_shared';
 
 // Read-only source listing for the one-time Subjects import
@@ -18,6 +18,23 @@ const inputSchema = z
     offset: z.number().int().min(0).optional(),
   })
   .strict();
+
+// The better of an idea's two titles for a task title: exact beats
+// contains. An exact match on the promoted title wins over one on the
+// idea's own title, since it says the idea is already promoted under this
+// task title (protocol §4, Pass 2, step 4); otherwise the idea's own
+// title wins a tie.
+function bestMatch(
+  i: { title: string; promoted_title: string | null },
+  taskTitle: string,
+): { match: TitleMatch; matched_on: 'title' | 'promoted_title' } | null {
+  const byTitle = titleMatch(i.title, taskTitle);
+  const byPromoted = i.promoted_title ? titleMatch(i.promoted_title, taskTitle) : null;
+  if (byPromoted === 'exact') return { match: byPromoted, matched_on: 'promoted_title' };
+  if (byTitle) return { match: byTitle, matched_on: 'title' };
+  if (byPromoted) return { match: byPromoted, matched_on: 'promoted_title' };
+  return null;
+}
 
 export async function listSubjectsForImportHandler(
   rawArgs: unknown,
@@ -50,6 +67,8 @@ export async function listSubjectsForImportHandler(
         parent_external_task_id: string | null;
         parent_title: string | null;
         imported_idea_id: string | null;
+        imported_promoted_at: Date | null;
+        imported_promoted_title: string | null;
         total: string | number;
         as_of: Date;
       }>
@@ -63,6 +82,7 @@ export async function listSubjectsForImportHandler(
              p.name AS list_title,
              t.parent_external_task_id, parent.title AS parent_title,
              s.idea_id AS imported_idea_id,
+             ii.promoted_at AS imported_promoted_at, ii.promoted_title AS imported_promoted_title,
              count(*) OVER () AS total,
              now() AS as_of
         FROM task_ref t
@@ -74,6 +94,7 @@ export async function listSubjectsForImportHandler(
                ON s.user_id = ${env.BRAIN_USER_ID}
               AND s.source_system = 'gtasks_subjects'
               AND s.source_external_id = t.external_task_id
+        LEFT JOIN idea ii ON ii.id = s.idea_id AND ii.user_id = ${env.BRAIN_USER_ID}
        WHERE t.scope = 'personal'
          AND ${includeCompleted ? sql`TRUE` : sql`t.status <> 'completed'`}
          AND ${onlyNotImported ? sql`s.idea_id IS NULL` : sql`TRUE`}
@@ -82,9 +103,12 @@ export async function listSubjectsForImportHandler(
     `;
 
     // Title-level duplicate hints against every idea already filed
-    // (e.g. Notion rows that originally came from Google Tasks).
-    const ideas = await sql<Array<{ id: string; title: string; source_systems: unknown }>>`
-      SELECT i.id, i.title,
+    // (e.g. Notion rows that originally came from Google Tasks), on its
+    // title or on the task title an earlier promotion recorded.
+    const ideas = await sql<
+      Array<{ id: string; title: string; promoted_at: Date | null; promoted_title: string | null; source_systems: unknown }>
+    >`
+      SELECT i.id, i.title, i.promoted_at, i.promoted_title,
              COALESCE(
                (SELECT jsonb_agg(DISTINCT s.source_system) FROM idea_source s WHERE s.idea_id = i.id),
                '[]'::jsonb
@@ -98,13 +122,17 @@ export async function listSubjectsForImportHandler(
       const possible = r.imported_idea_id
         ? []
         : ideas
-            .map((i) => ({ i, match: titleMatch(i.title, r.title) }))
-            .filter((x) => x.match !== null)
+            .flatMap((i) => {
+              const m = bestMatch(i, r.title);
+              return m ? [{ i, ...m }] : [];
+            })
             .sort((a, b) => (a.match === b.match ? 0 : a.match === 'exact' ? -1 : 1))
-            .map(({ i, match }) => ({
+            .map(({ i, match, matched_on }) => ({
               idea_id: i.id,
               title: i.title,
               match,
+              matched_on,
+              promoted: i.promoted_at ? { at: toIso(i.promoted_at), title: i.promoted_title } : null,
               source_systems: parseJsonb<string[]>(i.source_systems, []),
             }));
       return {
@@ -122,6 +150,9 @@ export async function listSubjectsForImportHandler(
         parent_title: r.parent_title,
         already_imported: r.imported_idea_id !== null,
         imported_idea_id: r.imported_idea_id,
+        imported_idea_promoted: r.imported_promoted_at
+          ? { at: toIso(r.imported_promoted_at), title: r.imported_promoted_title }
+          : null,
         possible_duplicates: possible,
       };
     });
@@ -133,7 +164,7 @@ export async function listSubjectsForImportHandler(
       offset,
       next_offset: offset + tasks.length < (rows.length > 0 ? Number(rows[0].total) : 0) ? offset + tasks.length : null,
       note:
-        'Page with next_offset over the full list (only_not_imported shrinks as you import, so offsets shift — use it only for a final check). first_synced_at is when 2nd-brain first synced the task, not when it was created in Google Tasks (Google does not expose that). stale=true means the task was not in the latest sync (probably deleted or moved) — confirm with the user before importing it. due_at is context only — ideas have no due dates.',
+        'Page with next_offset over the full list (only_not_imported shrinks as you import, so offsets shift — use it only for a final check). first_synced_at is when 2nd-brain first synced the task, not when it was created in Google Tasks (Google does not expose that). stale=true means the task was not in the latest sync (probably deleted or moved) — confirm with the user before importing it. due_at is context only — ideas have no due dates. import_ideas records each item as promoted from the task itself (at first_synced_at, with the task title); imported_idea_promoted is the promotion on the imported idea ({at, title}), or null. possible_duplicates match the task title against each idea\'s title and its promoted title (matched_on), and show any recorded promotion.',
       tasks,
     });
   } catch (e) {
