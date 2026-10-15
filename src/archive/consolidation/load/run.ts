@@ -2,25 +2,29 @@
 // source_system 'archive', keyed by the source item of its canonical text,
 // and point the rows it replaces at it. A replaced row leaves search
 // (status 'superseded') once its replacement has been processed; the worker
-// retires it then (retireReplacedRows). Rows from the first import that
-// match no work stay searchable, flagged 'unmatched'. Nothing is deleted,
-// and everything is written in one transaction.
+// retires it then (retireReplacedRows). A row from the first import that is
+// no copy of any version goes where Simon's rules of 2026-10-15 send it
+// (placeUnmatched): a video's transcript row, the work of the same title, a
+// fuller old row, out of search (a fragment), or nowhere: kept as the only
+// copy. Nothing is deleted, and everything is written in one transaction.
 
 import { createHash } from "crypto";
 import { Pool } from "pg";
 import { pool, type DB } from "../../../db/client";
 import type { CollectStats } from "../gmail";
 import { units } from "../match/similarity";
-import { IMPORT_CUT, matchLegacy } from "./legacy";
+import { IMPORT_CUT, matchLegacy, placeUnmatched } from "./legacy";
 
 // Bump with every change to what a load writes: the rows are loaded again
-// on boot. 2: the report of the old rows no work replaces.
-export const LOADER_VERSION = 2;
+// on boot. 2: the report of the old rows no work replaces. 3: Simon's
+// rules for the old rows that are no copy (2026-10-15).
+export const LOADER_VERSION = 3;
 
 export const ARCHIVE_SOURCE = "archive";
 // Rows that are not from the first import: video transcripts and this
 // step's own rows.
-const NOT_LEGACY = ["youtube", ARCHIVE_SOURCE];
+const VIDEO_SOURCE = "youtube";
+const NOT_LEGACY = [VIDEO_SOURCE, ARCHIVE_SOURCE];
 const BATCH = 200;
 
 export interface LoadStats extends CollectStats {
@@ -35,11 +39,24 @@ export interface LoadStats extends CollectStats {
   // When the works it read were matched (max matched_at, as text so no
   // precision is lost): the next load is due once a match is newer.
   worksMatchedAt: string | null;
-  legacy: { rows: number; matched: number; hidden: number; waiting: number; unmatched: number };
-  // Where the old rows no work replaces come from: for each source system
-  // and year of publication, the old rows and how many of them match no
-  // work; and a digest of which rows those are.
-  legacyUnmatched: { bySource: Record<string, Record<string, { rows: number; unmatched: number }>>; digest: string | null };
+  // The rows from the first import: how many each rule replaced (a copy
+  // of a version, the same title, a video's transcript row, a fuller old
+  // row), how many of those have left search or still wait for their
+  // replacement; and those nothing replaces: kept as the only copy, a
+  // video with no transcript row (flagged 'video'), or a fragment (hidden).
+  legacy: {
+    rows: number;
+    replaced: { text: number; title: number; video: number; duplicate: number };
+    superseded: number;
+    waiting: number;
+    kept: number;
+    video: number;
+    fragments: number;
+  };
+  // Where the old rows nothing replaces come from: for each source system
+  // and year of publication, the old rows and how many of them nothing
+  // replaces; and a digest of which rows those are, and why.
+  legacyUnreplaced: { bySource: Record<string, Record<string, { rows: number; unreplaced: number }>>; digest: string | null };
 }
 
 export function emptyLoadStats(): LoadStats {
@@ -60,8 +77,16 @@ export function emptyLoadStats(): LoadStats {
     retired: 0,
     retiredLate: 0,
     worksMatchedAt: null,
-    legacy: { rows: 0, matched: 0, hidden: 0, waiting: 0, unmatched: 0 },
-    legacyUnmatched: { bySource: {}, digest: null },
+    legacy: {
+      rows: 0,
+      replaced: { text: 0, title: 0, video: 0, duplicate: 0 },
+      superseded: 0,
+      waiting: 0,
+      kept: 0,
+      video: 0,
+      fragments: 0,
+    },
+    legacyUnreplaced: { bySource: {}, digest: null },
   };
 }
 
@@ -80,6 +105,7 @@ interface WorkRow {
 interface MemberRow {
   candidate_id: string;
   body_text: string;
+  title: string | null;
   member_ref: string;
   work_ref: string;
 }
@@ -122,7 +148,7 @@ async function loadWorks(db: DB): Promise<WorkRow[]> {
 
 async function loadMembers(db: DB): Promise<MemberRow[]> {
   const { rows } = await db.query<MemberRow>(
-    `SELECT m.candidate_id, c.body_text,
+    `SELECT m.candidate_id, c.body_text, c.title,
             s.source || ':' || s.source_ref AS member_ref,
             cs.source || ':' || cs.source_ref AS work_ref
        FROM archive_work_member m
@@ -218,46 +244,62 @@ function hostOf(url: string | null): string | null {
   }
 }
 
-// Lines of the unmatched rows' list logged at a time, then a pause: the
-// platform drops log lines beyond a few hundred a second.
+// Lines of the list of rows nothing replaces logged at a time, then a
+// pause: the platform drops log lines beyond a few hundred a second.
 const LIST_BURST = 100;
 const LIST_PAUSE_MS = 500;
 
-// Where the old rows no work replaces come from, in the run's stats; and,
+// Why nothing replaces an old row: the only copy, a video with no
+// transcript row, or a fragment.
+type Unreplaced = "kept" | "video" | "fragment";
+
+// Where the old rows nothing replaces come from, in the run's stats; and,
 // when they are not the ones the last load left (or no load recorded
-// them), each of them in the log, to tell a source the collection lacks
-// from notes that were never published.
-async function reportUnmatched(legacy: LegacyRow[], unmatched: Set<string>, stats: LoadStats, lastDigest: string | null): Promise<void> {
+// them), each of them in the log, with why.
+async function reportUnreplaced(
+  legacy: LegacyRow[],
+  unreplaced: Map<string, Unreplaced>,
+  stats: LoadStats,
+  lastDigest: string | null
+): Promise<void> {
   const yearOf = (l: LegacyRow) => (l.published_at ? String(l.published_at.getUTCFullYear()) : "undated");
   // Maps, not objects: a source named like an Object property (Codex on
   // #105) is a source like any other.
-  const bySource = new Map<string, Map<string, { rows: number; unmatched: number }>>();
+  const bySource = new Map<string, Map<string, { rows: number; unreplaced: number }>>();
   for (const l of legacy) {
     let years = bySource.get(l.source_system);
     if (!years) bySource.set(l.source_system, (years = new Map()));
     let year = years.get(yearOf(l));
-    if (!year) years.set(yearOf(l), (year = { rows: 0, unmatched: 0 }));
+    if (!year) years.set(yearOf(l), (year = { rows: 0, unreplaced: 0 }));
     year.rows++;
-    if (unmatched.has(l.id)) year.unmatched++;
+    if (unreplaced.has(l.id)) year.unreplaced++;
   }
   const sorted = <T>(m: Map<string, T>) => [...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const digest = createHash("sha256").update([...unmatched].sort().join(",")).digest("hex").slice(0, 16);
-  stats.legacyUnmatched = {
+  const digest = createHash("sha256")
+    .update(sorted(unreplaced).map(([id, why]) => `${id}:${why}`).join(","))
+    .digest("hex")
+    .slice(0, 16);
+  stats.legacyUnreplaced = {
     bySource: Object.fromEntries(sorted(bySource).map(([source, years]) => [source, Object.fromEntries(sorted(years))])),
     digest,
   };
 
-  console.log(`[consolidation] load: ${unmatched.size} of ${legacy.length} old rows match no work`);
+  const { replaced, kept, video, fragments } = stats.legacy;
+  console.log(
+    `[consolidation] load: of ${legacy.length} old rows, replaced: ${replaced.text} copies, ${replaced.title} by title, ` +
+      `${replaced.video} by a video's transcript, ${replaced.duplicate} by a fuller old row; nothing replaces ${kept} kept, ` +
+      `${video} videos with no transcript row, ${fragments} fragments (hidden)`
+  );
   for (const [source, years] of sorted(bySource)) {
     const counts = sorted(years)
-      .map(([year, c]) => `${year} ${c.unmatched}/${c.rows}`)
+      .map(([year, c]) => `${year} ${c.unreplaced}/${c.rows}`)
       .join(", ");
-    console.log(`[consolidation] load: unmatched/old rows by year, ${source}: ${counts}`);
+    console.log(`[consolidation] load: unreplaced/old rows by year, ${source}: ${counts}`);
   }
 
   if (lastDigest === digest) return;
   const rows = legacy
-    .filter((l) => unmatched.has(l.id))
+    .filter((l) => unreplaced.has(l.id))
     .sort(
       (a, b) =>
         a.source_system.localeCompare(b.source_system) ||
@@ -269,7 +311,7 @@ async function reportUnmatched(legacy: LegacyRow[], unmatched: Set<string>, stat
     if (i > 0 && i % LIST_BURST === 0) await new Promise((r) => setTimeout(r, LIST_PAUSE_MS));
     const date = l.published_at ? l.published_at.toISOString().slice(0, 10) : "undated";
     console.log(
-      `[consolidation] unmatched old row: ${date} ${l.source_system} ${l.text.length} chars${l.truncated ? " (cut)" : ""} ` +
+      `[consolidation] old row, ${unreplaced.get(l.id)}: ${date} ${l.source_system} ${l.text.length} chars${l.truncated ? " (cut)" : ""} ` +
         `${hostOf(l.canonical_url) ?? "-"} "${oneLine(l.title)}" | ${oneLine(l.text).slice(0, 40)}`
     );
   }
@@ -280,26 +322,33 @@ interface Pointer {
   // The row that replaces this one, if any.
   target: string | null;
   legacy: boolean;
+  // For a row nothing replaces: 'video' or 'fragment' (which also leaves
+  // search), else none.
+  flag: "video" | "fragment" | null;
+  hide: boolean;
 }
 
 // Point rows at their replacements. A row with a processed replacement
 // leaves search now, one whose replacement is still queued stays until the
-// worker has processed it, and a row nothing replaces is hidden (an archive
-// row) or flagged 'unmatched' (a row from the first import). Statuses other
-// than published/superseded are left alone.
+// worker has processed it. Of the rows nothing replaces, an archive row
+// leaves search (status 'superseded'), a fragment too (status 'hidden'),
+// and any other old row stays. Statuses other than published, superseded
+// and hidden are left alone.
 async function pointRows(pointers: Pointer[], q: DB): Promise<Map<string, { status: string; target: string | null }>> {
   const out = new Map<string, { status: string; target: string | null }>();
   for (const batch of chunks(pointers, BATCH * 5)) {
     const { rows } = await q.query<{ id: string; status: string; target: string | null }>(
       `UPDATE public_artifact a SET
          superseded_by = r.target,
-         flag = CASE WHEN r.target IS NULL AND r.legacy THEN 'unmatched' ELSE NULL END,
-         status = CASE WHEN a.status NOT IN ('published', 'superseded') THEN a.status
+         flag = r.flag,
+         status = CASE WHEN a.status NOT IN ('published', 'superseded', 'hidden') THEN a.status
+                       WHEN r.hide THEN 'hidden'
                        WHEN r.target IS NULL THEN CASE WHEN r.legacy THEN 'published' ELSE 'superseded' END
                        WHEN t.processing_status = 'processed' THEN 'superseded'
                        ELSE 'published' END,
-         updated_at = CASE WHEN a.superseded_by IS NOT DISTINCT FROM r.target THEN a.updated_at ELSE now() END
-         FROM jsonb_to_recordset($1::jsonb) AS r(id uuid, target uuid, legacy boolean)
+         updated_at = CASE WHEN a.superseded_by IS NOT DISTINCT FROM r.target AND a.flag IS NOT DISTINCT FROM r.flag
+                           THEN a.updated_at ELSE now() END
+         FROM jsonb_to_recordset($1::jsonb) AS r(id uuid, target uuid, legacy boolean, flag text, hide boolean)
          LEFT JOIN public_artifact t ON t.id = r.target
         WHERE a.id = r.id
        RETURNING a.id, a.status, a.superseded_by AS target`,
@@ -335,7 +384,7 @@ export async function runLoad(
 ): Promise<void> {
   // One snapshot, so a match run finishing meanwhile can't leave works and
   // members out of step.
-  const { matchedAt, works, members, legacy, archived, lastDigest } = await inTransaction(
+  const { matchedAt, works, members, legacy, archived, videos, lastDigest } = await inTransaction(
     db,
     "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     async (q) => ({
@@ -356,11 +405,18 @@ export async function runLoad(
           [ARCHIVE_SOURCE]
         )
       ).rows,
-      // Which old rows the last load found no work for (reportUnmatched).
+      // Video transcripts, by video id: what an old copy of one goes to.
+      videos: (
+        await q.query<{ id: string; video: string }>(
+          `SELECT id, source_external_id AS video FROM public_artifact WHERE source_system = $1`,
+          [VIDEO_SOURCE]
+        )
+      ).rows,
+      // Which old rows nothing replaced at the last load (reportUnreplaced).
       lastDigest:
         (
           await q.query<{ digest: string | null }>(
-            `SELECT stats->'legacyUnmatched'->>'digest' AS digest FROM archive_collect_run
+            `SELECT stats->'legacyUnreplaced'->>'digest' AS digest FROM archive_collect_run
               WHERE source = 'load' AND status = 'succeeded' ORDER BY started_at DESC LIMIT 1`
           )
         ).rows[0]?.digest ?? null,
@@ -373,15 +429,27 @@ export async function runLoad(
   await onProgress();
   if (shouldStop()) return;
 
-  const matches = matchLegacy(
+  const workOfCandidate = new Map(members.map((m) => [m.candidate_id, m.work_ref]));
+  const workOfMember = new Map(members.map((m) => [m.member_ref, m.work_ref]));
+  // A copy of a version whose work has no row (its canonical has no text)
+  // is placed like a row that is no copy.
+  const loadedWorks = new Set(works.map((w) => w.ref));
+  const copies = matchLegacy(
     legacy,
     members.map((m) => ({ id: m.candidate_id, text: m.body_text }))
   );
-  const workOfCandidate = new Map(members.map((m) => [m.candidate_id, m.work_ref]));
-  const workOfMember = new Map(members.map((m) => [m.member_ref, m.work_ref]));
+  for (const [id, m] of copies) if (!loadedWorks.has(workOfCandidate.get(m.pieceId) ?? "")) copies.delete(id);
+  const workTitle = new Map(works.map((w) => [w.ref, w.title]));
+  const placements = placeUnmatched(
+    legacy.filter((l) => !copies.has(l.id)).map((l) => ({ ...l, url: l.canonical_url })),
+    members
+      .filter((m) => loadedWorks.has(m.work_ref))
+      .map((m) => ({ id: m.candidate_id, text: m.body_text, titles: [workTitle.get(m.work_ref) ?? null, m.title] }))
+  );
+  const videoRow = new Map(videos.map((v) => [v.video, v.id]));
   if (shouldStop()) return;
 
-  const unmatched = new Set<string>();
+  const unreplaced = new Map<string, Unreplaced>();
   await inTransaction(db, "BEGIN", async (q) => {
     const loaded = await upsertWorks(works, q);
     for (const r of loaded.values()) {
@@ -393,29 +461,49 @@ export async function runLoad(
 
     // An archive row whose text is no longer any work's canonical: replaced
     // by the work its item belongs to now, if any.
-    const retired = archived
+    const retired: Pointer[] = archived
       .filter((a) => !loaded.has(a.ref))
-      .map((a) => ({ id: a.id, target: rowOfWork(workOfMember.get(a.ref)), legacy: false }));
+      .map((a) => ({ id: a.id, target: rowOfWork(workOfMember.get(a.ref)), legacy: false, flag: null, hide: false }));
     stats.retired = retired.length;
-    const pointers = [
-      ...retired,
-      ...legacy.map((l) => {
-        const m = matches.get(l.id);
-        return { id: l.id, target: m ? rowOfWork(workOfCandidate.get(m.pieceId)) : null, legacy: true };
-      }),
-    ];
-    const results = await pointRows(pointers, q);
+    // Each old row's replacement, and the rule that found it.
+    const rule = new Map<string, keyof LoadStats["legacy"]["replaced"]>();
+    const oldRows: Pointer[] = legacy.map((l) => {
+      const pointer = (target: string | null, by: keyof LoadStats["legacy"]["replaced"]): Pointer => {
+        if (target) rule.set(l.id, by);
+        return { id: l.id, target, legacy: true, flag: null, hide: false };
+      };
+      const copy = copies.get(l.id);
+      if (copy) return pointer(rowOfWork(workOfCandidate.get(copy.pieceId)), "text");
+      const p = placements.get(l.id)!;
+      switch (p.kind) {
+        case "title":
+          return pointer(rowOfWork(workOfCandidate.get(p.pieceId)), "title");
+        case "duplicate":
+          return pointer(p.rowId, "duplicate");
+        case "video": {
+          const target = videoRow.get(p.videoId) ?? null;
+          return target ? pointer(target, "video") : { id: l.id, target: null, legacy: true, flag: "video", hide: false };
+        }
+        case "fragment":
+          return { id: l.id, target: null, legacy: true, flag: "fragment", hide: true };
+        case "kept":
+          return { id: l.id, target: null, legacy: true, flag: null, hide: false };
+      }
+    });
+    const results = await pointRows([...retired, ...oldRows], q);
     await moveLinks(q);
-    for (const p of pointers) {
+    for (const p of oldRows) {
       const r = results.get(p.id);
-      if (!p.legacy || !r) continue;
-      if (r.target === null) {
-        stats.legacy.unmatched++;
-        unmatched.add(p.id);
-      } else {
-        stats.legacy.matched++;
-        if (r.status === "superseded") stats.legacy.hidden++;
+      if (!r) continue;
+      if (r.target !== null) {
+        stats.legacy.replaced[rule.get(p.id)!]++;
+        if (r.status === "superseded") stats.legacy.superseded++;
         else stats.legacy.waiting++;
+      } else {
+        const why: Unreplaced = p.flag === "video" ? "video" : p.flag === "fragment" ? "fragment" : "kept";
+        unreplaced.set(p.id, why);
+        if (why === "fragment") stats.legacy.fragments++;
+        else stats.legacy[why]++;
       }
     }
 
@@ -428,14 +516,14 @@ export async function runLoad(
                 WHERE superseded_by IS NOT NULL AND NOT (source_system = ANY($1))
                   AND canonical_url ~ '^https?://'
                 ORDER BY superseded_by, published_at NULLS LAST, id) l
-        WHERE a.id = l.superseded_by AND a.canonical_url IS NULL`,
-      [NOT_LEGACY]
+        WHERE a.id = l.superseded_by AND a.canonical_url IS NULL AND a.source_system = $2`,
+      [NOT_LEGACY, ARCHIVE_SOURCE]
     );
   });
   // A replacement the worker finished while the transaction was open
   // retired nothing (its rows did not point at it yet): retire them now.
   stats.retiredLate = await retireReplacedRows(null, db);
-  await reportUnmatched(legacy, unmatched, stats, lastDigest);
+  await reportUnreplaced(legacy, unreplaced, stats, lastDigest);
 }
 
 // The works are not the ones the last successful load by this

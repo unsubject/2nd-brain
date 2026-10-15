@@ -11,6 +11,7 @@
 // rows too would double every sample's count, push stock phrases over step
 // 3's cap and send thousands of texts to its exhaustive check.
 
+import { bareTitle, cleanSubject } from "../extract/gmail";
 import { intersection, overlap, SAME_PIECE, samePiece, sampled, shingles } from "../match/similarity";
 
 // The first import cut long texts at this many characters.
@@ -112,4 +113,142 @@ export function matchLegacy(rows: LegacyRow[], pieces: Piece[]): Map<string, Leg
     for (const r of sizeRange(rowsBySize.order, rowsBySize.sizes, pieceSets[p].length)) check(r, p);
   });
   return best;
+}
+
+// ── Rows no copy test matches (Simon, 2026-10-15) ─────────────────────────
+//
+// In order, an old row that is not a copy of any version:
+//   - a copy of a video's transcript (its link names a YouTube video) goes
+//     to that video's transcript row; with none, it stays, flagged 'video';
+//   - one with the same title as a work, and at least TITLE_SHARE of its
+//     text found in a version of it, goes to that work: the import kept many
+//     pieces only in part, too short for the copy test;
+//   - a fragment (a reply, a pitch, a blurb) leaves search;
+//   - one whose text is mostly in a fuller old row (or, with the same
+//     title, a TITLE_SHARE of it) is merged into that row;
+//   - anything else is kept as it is: the only copy of the piece.
+
+export const TITLE_SHARE = 0.3;
+// Fewer characters than this (whitespace aside) is a note, not a piece.
+export const FRAGMENT_CHARS = 200;
+
+export interface OldRow extends LegacyRow {
+  title: string;
+  url: string | null;
+}
+
+export interface TitledPiece extends Piece {
+  // The titles it goes by: its work's, and its own.
+  titles: (string | null)[];
+}
+
+export type Placement =
+  | { kind: "video"; videoId: string }
+  | { kind: "title"; pieceId: string }
+  | { kind: "duplicate"; rowId: string }
+  | { kind: "fragment" }
+  | { kind: "kept" };
+
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+
+// The YouTube video a link names, if any.
+export function videoIdOf(url: string | null): string | null {
+  let u: URL;
+  try {
+    u = new URL(url ?? "");
+  } catch {
+    return null;
+  }
+  const host = u.hostname.replace(/^(www|m)\./, "");
+  const id =
+    host === "youtu.be"
+      ? u.pathname.split("/")[1]
+      : host === "youtube.com"
+        ? u.searchParams.get("v") ?? u.pathname.match(/^\/(?:shorts|live|embed)\/([^/]+)/)?.[1]
+        : undefined;
+  return id && VIDEO_ID.test(id) ? id : null;
+}
+
+// A title as compared: no reply marker, column, date or author, and no
+// punctuation, spaces or case. Empty when nothing is left (a date).
+export function titleKey(title: string | null): string {
+  return bareTitle(cleanSubject(title))
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]/gu, "");
+}
+
+// A note rather than a piece: a few words, or a letter to Simon.
+export function isFragment(text: string): boolean {
+  return text.replace(/\s+/g, "").length < FRAGMENT_CHARS || /^\s*(dear|hi|hello)\s+simon\b/i.test(text);
+}
+
+// Where each row (one no copy test matched) goes.
+export function placeUnmatched(rows: OldRow[], pieces: TitledPiece[]): Map<string, Placement> {
+  const out = new Map<string, Placement>();
+  const rowSets = new Map(rows.map((r) => [r.id, shingles(r.text)]));
+  const share = (row: Uint32Array, other: Uint32Array) => (row.length > 0 ? intersection(row, other) / row.length : 0);
+
+  const piecesByTitle = new Map<string, number[]>();
+  pieces.forEach((p, i) => {
+    for (const key of new Set(p.titles.map(titleKey))) {
+      if (!key) continue;
+      const list = piecesByTitle.get(key);
+      if (list) list.push(i);
+      else piecesByTitle.set(key, [i]);
+    }
+  });
+  const pieceSets = new Map<number, Uint32Array>();
+  const pieceSet = (i: number) => {
+    let set = pieceSets.get(i);
+    if (!set) pieceSets.set(i, (set = shingles(pieces[i].text)));
+    return set;
+  };
+
+  const rest: OldRow[] = [];
+  for (const r of rows) {
+    const videoId = videoIdOf(r.url);
+    if (videoId) {
+      out.set(r.id, { kind: "video", videoId });
+      continue;
+    }
+    let best: { i: number; share: number } | null = null;
+    for (const i of piecesByTitle.get(titleKey(r.title)) ?? []) {
+      const s = share(rowSets.get(r.id)!, pieceSet(i));
+      if (s >= TITLE_SHARE && (!best || s > best.share)) best = { i, share: s };
+    }
+    if (best) out.set(r.id, { kind: "title", pieceId: pieces[best.i].id });
+    else if (isFragment(r.text)) out.set(r.id, { kind: "fragment" });
+    else rest.push(r);
+  }
+
+  // Duplicates among the rest: each goes to the fullest row that holds it,
+  // always a larger one (more shingles, then the greater id), so a chain
+  // ends at a row that stays.
+  const larger = (a: OldRow, b: OldRow) => {
+    const d = rowSets.get(a.id)!.length - rowSets.get(b.id)!.length;
+    return d !== 0 ? d > 0 : a.id > b.id;
+  };
+  const into = new Map<string, OldRow>();
+  for (const r of rest) {
+    const set = rowSets.get(r.id)!;
+    const key = titleKey(r.title);
+    let host: OldRow | null = null;
+    for (const o of rest) {
+      if (o === r || !larger(o, r) || (host && !larger(o, host))) continue;
+      const s = share(set, rowSets.get(o.id)!);
+      if (s >= SAME_PIECE.containment || (key !== "" && key === titleKey(o.title) && s >= TITLE_SHARE)) host = o;
+    }
+    if (host) into.set(r.id, host);
+  }
+  for (const r of rest) {
+    let host = into.get(r.id);
+    if (!host) {
+      out.set(r.id, { kind: "kept" });
+      continue;
+    }
+    while (into.has(host.id)) host = into.get(host.id)!;
+    out.set(r.id, { kind: "duplicate", rowId: host.id });
+  }
+  return out;
 }

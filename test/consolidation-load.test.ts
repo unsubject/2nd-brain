@@ -3,7 +3,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IMPORT_CUT, matchLegacy } from "../src/archive/consolidation/load/legacy";
+import {
+  IMPORT_CUT,
+  isFragment,
+  matchLegacy,
+  placeUnmatched,
+  titleKey,
+  videoIdOf,
+} from "../src/archive/consolidation/load/legacy";
 import { sampled, shingles } from "../src/archive/consolidation/match/similarity";
 import { titleFor } from "../src/archive/consolidation/load/run";
 
@@ -91,4 +98,75 @@ test("a work with no title is named by the start of its text", () => {
   assert.equal(titleFor(null, "\n\n第一句。\n第二句。"), "第一句。");
   assert.equal(titleFor(null, "字".repeat(50)), `${"字".repeat(40)}…`);
   assert.equal(titleFor("", ""), "(untitled)");
+});
+
+// Simon's rules (2026-10-15) for the old rows that are no copy.
+
+test("a link names a YouTube video in any of its forms", () => {
+  for (const url of [
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://youtube.com/watch?v=dQw4w9WgXcQ&t=42",
+    "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://youtu.be/dQw4w9WgXcQ?si=x",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "https://www.youtube.com/live/dQw4w9WgXcQ",
+  ]) {
+    assert.equal(videoIdOf(url), "dQw4w9WgXcQ", url);
+  }
+  for (const url of [null, "", "not a url", "https://www.youtube.com/@leesimon", "https://example.org/watch?v=dQw4w9WgXcQ"]) {
+    assert.equal(videoIdOf(url), null, String(url));
+  }
+});
+
+test("titles compare without reply markers, columns, dates or punctuation", () => {
+  assert.equal(titleKey("FW: 利字當頭：香港出不了李光耀"), titleKey("香港出不了李光耀"));
+  assert.equal(titleKey("蘋果論壇投稿：政府的責任是甚麼？"), titleKey("政府的責任是甚麼"));
+  assert.equal(titleKey("【實用經濟學】聯繫匯率會有怎樣的結局？"), titleKey("聯繫匯率會有怎樣的結局"));
+  assert.equal(titleKey("The Long Game"), titleKey("the long game"));
+  assert.equal(titleKey("2020 04 08"), ""); // a date is no title
+  assert.notEqual(titleKey("炫富論"), titleKey("炊富論"));
+});
+
+test("a reply, a pitch or a blurb is a fragment; a short post is not", () => {
+  assert.equal(isFragment("今日沒有其他補充。"), true);
+  assert.equal(isFragment(`Dear Simon, thanks for sharing. ${essay(10, 600)}`), true);
+  assert.equal(isFragment(`Hi Simon 首先感謝你的文章。${essay(11, 900)}`), true);
+  assert.equal(isFragment(essay(12, 220)), false);
+});
+
+test("an old row that is no copy goes to a video, a same-titled work, a fuller row, out of search, or stays", () => {
+  const work = { id: "piece", text: essay(20, 2400), titles: ["第四個生產要素", "第四個生產要素 final"] };
+  const full = essay(21, 3000);
+  const fuller = `${full}${essay(22, 1200)}`;
+  const rows = [
+    { id: "video", title: "【片】", text: essay(23, 1500), url: "https://youtu.be/dQw4w9WgXcQ", truncated: false },
+    // The import kept only its start: too short for the copy test.
+    { id: "start", title: "利字當頭：第四個生產要素", text: work.text.slice(0, 600), url: null, truncated: false },
+    // The same title, another text: no.
+    { id: "namesake", title: "第四個生產要素", text: essay(24, 900), url: null, truncated: false },
+    { id: "reply", title: "RE: 第四個生產要素", text: "收到，多謝。", url: null, truncated: false },
+    // A garbled excerpt of a row that is itself in a fuller row: both go to
+    // the fullest.
+    { id: "excerpt", title: "節錄", text: full.slice(0, 700).replace(/的/g, "旳"), url: null, truncated: false },
+    { id: "full", title: "全文", text: full, url: null, truncated: false },
+    { id: "fuller", title: "全文（增訂）", text: fuller, url: null, truncated: false },
+    // The same title and a third of the text: a version of it.
+    { id: "draft", title: "增訂本", text: `${fuller.slice(0, 500)}${essay(25, 900)}`, url: null, truncated: false },
+    { id: "final", title: "增訂本", text: fuller.slice(0, 2400), url: null, truncated: false },
+    { id: "alone", title: "獨文", text: essay(26, 1500), url: null, truncated: false },
+  ];
+  // Neither the start nor the excerpt passes the copy test.
+  assert.equal(matchLegacy(rows, [work]).size, 0);
+
+  const placed = placeUnmatched(rows, [work]);
+  assert.deepEqual(placed.get("video"), { kind: "video", videoId: "dQw4w9WgXcQ" });
+  assert.deepEqual(placed.get("start"), { kind: "title", pieceId: "piece" });
+  assert.deepEqual(placed.get("namesake"), { kind: "kept" });
+  assert.deepEqual(placed.get("reply"), { kind: "fragment" });
+  assert.deepEqual(placed.get("excerpt"), { kind: "duplicate", rowId: "fuller" });
+  assert.deepEqual(placed.get("full"), { kind: "duplicate", rowId: "fuller" });
+  assert.deepEqual(placed.get("fuller"), { kind: "kept" });
+  assert.deepEqual(placed.get("draft"), { kind: "duplicate", rowId: "fuller" });
+  assert.deepEqual(placed.get("final"), { kind: "duplicate", rowId: "fuller" });
+  assert.deepEqual(placed.get("alone"), { kind: "kept" });
 });

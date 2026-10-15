@@ -16,7 +16,7 @@ sources instead of patching those rows.
 | Gmail label `Writing` (~4,300 messages) | Column submissions and revised resends (蘋果論壇, 利字當頭 for 尚生活 / Points Media, …), editor replies, drafts sent to self, newsletter copies (Revue, unsubject.me, Patreon, Substack), reader replies | Gmail API, `gmail.readonly` (already granted) |
 | Drive folder "Article Archive" | Google Docs of columns and essays (2018–), some duplicated by a 2024-02 bulk copy; subfolders Web 3, Speaking Note, CCC, Book Project | Drive API, `drive.readonly` |
 | Drive exports folder | WordPress export (WXR XML) and the Substack export zip | Drive API, `drive.readonly` |
-| Existing `public_artifact` rows | The Notion/email import and YouTube transcripts | Gap-filler only, always flagged |
+| Existing `public_artifact` rows | The Notion/email import and YouTube transcripts | Gap-filler only: replaced where a work, a transcript or a fuller copy has the piece; else kept as the only copy (step 4) |
 
 Decisions (Simon, 2026-10-04):
 
@@ -327,6 +327,13 @@ Decisions (Simon, 2026-10-08): load **every** work, the ones in review
 flagged; an old row that matches a work is superseded, one that matches
 nothing stays searchable, flagged.
 
+Decisions (Simon, 2026-10-15), after the breakdown of the 651 old rows no
+work replaced (2026-10-14): an old copy of a video's transcript goes to
+that video's transcript row; a part copy goes to the work of the same
+title; replies, pitches and blurbs leave search; and the rest (the
+2019–21 posts, the 壹擋專政 column and other 2008–16 pieces the collection
+lacks) are **kept as the archive copy**, unflagged, with duplicates merged.
+
 A load runs by itself after every successful match, after a failed one
 when no load by the current `LOADER_VERSION` has read the current works (a
 failed match leaves the works of the last one that succeeded, which may
@@ -384,8 +391,24 @@ What a load writes, in one transaction:
   idea link recording the row it pointed at in its history. An `archive`
   row that no work replaces is superseded at once; `get_entry` no longer
   shows journal links to a row that has left search.
-- **Old rows that match no work** stay searchable with
-  `flag = 'unmatched'`. Video transcripts are not touched.
+- **Old rows that are no copy of any version**, in this order
+  (`placeUnmatched` in `load/legacy.ts`):
+  - a copy of a video's transcript (its link names a YouTube video) is
+    replaced by that video's transcript row (source `youtube`); with none,
+    it stays searchable, `flag = 'video'`;
+  - one with the same title as a work (reply markers, column names, dates
+    and punctuation aside) and at least 30% of its text found in a version
+    of it is replaced by that work: the import kept many pieces only in
+    part, too short for the copy test;
+  - a fragment, under 200 characters or a letter to Simon ("Dear Simon",
+    "Hi Simon"), leaves search: `status = 'hidden'`, `flag = 'fragment'`;
+  - one with 60% of its text in a fuller old row of the rest (or the same
+    title and 30%) is merged into the fullest such row, which replaces it;
+  - anything else is kept as it is, searchable and unflagged: the only
+    copy of the piece.
+
+  The rules decide again at every load, so a row comes back when what
+  replaced it is gone. Video transcripts themselves are not touched.
 
 Search leaves out superseded rows: the `/archive/search` route and the
 calendar/task linker filter on `status = 'published'`, as the MCP tools
@@ -395,17 +418,18 @@ still to check. The status
 route lists `public_artifact` rows by source, status, flag and processing
 state; the run log gives works, rows inserted / changed / unchanged,
 `flaggedReview`, `retired` (archive rows replaced), and for the old rows
-how many matched, left search, wait for their replacement, or matched
-nothing.
+how many each rule replaced (`replaced`: copies, same titles, video
+transcripts, fuller old rows), how many of those left search or wait for
+their replacement, and how many nothing replaces (`kept`, `video`,
+`fragments`).
 
-Where the unmatched old rows come from is in the run's stats
-(`legacyUnmatched.bySource`: for each source system and year of
-publication, the old rows and how many match no work) and in the log, one
-line per source. When the unmatched rows are not the ones the last
-successful load recorded (`legacyUnmatched.digest`), the log also lists
-each of them, with its date, source, length, link host, title and opening
-words, so a source the collection lacks can be told from notes that were
-never published.
+Where the old rows nothing replaces come from is in the run's stats
+(`legacyUnreplaced.bySource`: for each source system and year of
+publication, the old rows and how many nothing replaces) and in the log,
+one line per source. When those rows, or why nothing replaces them, are
+not what the last successful load recorded (`legacyUnreplaced.digest`),
+the log also lists each of them, with why (`kept`, `video`, `fragment`),
+its date, source, length, link host, title and opening words.
 
 ## What is stored
 
