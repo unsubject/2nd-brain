@@ -380,7 +380,7 @@ Do not put anything in `thoughts` for Notion rows unless a column is clearly the
 Notion's Related Project and Notes columns often name other rows ("part 2 of …", "related to … entry", "connects to …", "absorbed into …"). Turn each resolvable reference into a **proposal** — never an accepted link:
 
 1. Resolve the referenced title with `search_ideas` / `list_ideas`. If it can't be resolved confidently, leave it as a note; never guess.
-2. Pick a type: series parts or "pair with" → `combines_with` (and mention a series synthesis in the next garden review); extends/deepens → `builds_on`; contrast → `tension_with`; instance → `example_of`; explains why → `mechanism_for`; "absorbed into <series>" with an output found via `archive_search_text` → `became`; `related` only as a last resort.
+2. Pick a type: series parts or "pair with" → `combines_with` (and mention a series synthesis in the next garden review); extends/deepens → `builds_on`; contrast → `tension_with`; instance → `example_of`; explains why → `mechanism_for`; "absorbed into <series>" with an output found via `search_published` → `became`; `related` only as a last resort.
 3. Call `propose_idea_links(origin: 'import')` with rationale `Notion <column>: "<quote ≤ 200 chars>"` (single line).
 
 ### Step 4 — Report
@@ -427,6 +427,7 @@ Everything here happens only when the user asks.
 | "Let's garden" | §2 → `list_idea_links` → `garden_ideas` → `propose_idea_links` → user decides → `decide_idea_links` |
 | "What do I have on X?" | §5 → `explore_topic` |
 | "Have I thought about X?" | `search_brain` (journal) |
+| "What have I written or said about X?" | `search_published` (published work), then `get_artifact` to read a piece; never use a `members_only` one in anything public |
 | Fix or extend an idea; change status; add a note | `update_idea` |
 | "I promoted this to Subjects" | `update_idea(promoted: {title})` — 2nd-brain records it; it never writes Google Tasks |
 | Look up ideas | `list_ideas` (`inbox`, `promoted` filters), `search_ideas`, `get_idea` |

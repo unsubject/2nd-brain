@@ -3,7 +3,8 @@ import { searchBrainHandler } from './search_brain';
 import { getEntryHandler } from './get_entry';
 import { listRecentHandler } from './list_recent';
 import { saveSessionHandler } from './save_session';
-import { archiveSearchTextHandler } from './archive_search_text';
+import { searchPublishedHandler } from './search_published';
+import { getArtifactHandler } from './get_artifact';
 import { listConstitutionDomainsHandler } from './list_constitution_domains';
 import { getConstitutionDomainHandler } from './get_constitution_domain';
 import { proposeConstitutionAmendmentHandler } from './propose_constitution_amendment';
@@ -132,19 +133,59 @@ const definitions: ToolDefinition[] = [
     },
     handler: saveSessionHandler,
   },
+
+  // ── Published work ─────────────────────────────────────────
+  // The user's essays, columns and YouTube episodes (refocus Phase 5).
+  // Assistants read all of it, members-only pieces included (D11); those
+  // never go on a public surface (D10), which every result marks.
   {
-    name: 'archive_search_text',
+    name: 'search_published',
     description:
-      "Search Simon's published essays and YouTube episodes by meaning: the query is embedded server-side (text-embedding-3-small) and matched against each piece's summary embedding. Returns top-K hits with {id, title, url, published_at, similarity, type: 'essay'|'episode', flag}. flag is null for a confirmed piece, 'review' for an essay still to be checked (unpublished, or its text uncertain), or 'unmatched' for an old imported row that matches no confirmed piece. Matches summaries only and returns no body text.",
+      "Search the user's own published work — essays and columns (the consolidated archive) and YouTube episode transcripts — by meaning and by exact text (the text match covers Chinese phrases and names). Use for 'what have I written or said about X?', 'find the piece where I said …', or to cite past work: give the title, date and link. Returns one hit per piece, best first, each with match ['semantic'|'text'] (a piece found both ways ranks first), its metadata, a short summary and up to `passages` passages (about 500 characters each) from its text; truncated: true means extra passages were left out to keep the result small. get_artifact reads a whole piece. flag: null is a confirmed piece, 'review' one still to check (it may never have been published, or its text is uncertain), 'unmatched' an old imported row that matches no confirmed piece; confirmed_only leaves flagged pieces out. Replaced (superseded) copies are never returned. members_only: true marks a members-only piece: you may read and discuss it with the user, but NEVER quote, link or use it in anything meant for the public (pass members_only: 'exclude' when gathering material for something public). For the journal use search_brain; for ideas, explore_topic. Read-only.",
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text query embedded server-side' },
-        top_k: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
+        query: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 2000,
+          description: 'Free text: embedded for semantic search and matched as text (up to 5 whitespace-separated terms, all in one passage or the title; English terms match from the start of a word, and terms of 1–3 letters only as whole words; a Chinese phrase without spaces is one term)',
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 15, default: 8, description: 'Pieces to return' },
+        passages: { type: 'integer', minimum: 1, maximum: 3, default: 2, description: 'Passages per piece' },
+        type: { type: 'string', enum: ['essay', 'episode'], description: 'essay: writing (the archive); episode: YouTube transcripts. Default both' },
+        since: { type: 'string', format: 'date-time', description: 'ISO 8601 lower bound on published_at' },
+        until: { type: 'string', format: 'date-time', description: 'ISO 8601 upper bound on published_at' },
+        outlet: { type: 'string', minLength: 1, maxLength: 100, description: 'Part of the series or of any outlet name (case-insensitive)' },
+        confirmed_only: { type: 'boolean', default: false, description: "Leave out flagged pieces ('review', 'unmatched')" },
+        members_only: {
+          type: 'string',
+          enum: ['include', 'exclude', 'only'],
+          default: 'include',
+          description: "'exclude' leaves members-only pieces out; 'only' returns just those",
+        },
       },
       required: ['query'],
+      additionalProperties: false,
     },
-    handler: archiveSearchTextHandler,
+    handler: searchPublishedHandler,
+  },
+  {
+    name: 'get_artifact',
+    description:
+      "Read one of the user's published pieces (essay, column or YouTube episode transcript) by id: from search_published, a journal link (get_entry) or an idea's became/revisits output. Returns its metadata (title, type, date, url, series and outlets, flag, members_only, summary) and its text, up to 12,000 characters at a time: text_chars is the whole length, and next_offset (null at the end) is the offset of the next part. include_text: false returns the metadata only. An id that was replaced (superseded) resolves to the piece that replaced it, with resolved_from listing the ids followed: cite the current one. flag as in search_published. members_only: true marks a members-only piece: you may read and discuss it with the user, but NEVER quote, link or use it in anything meant for the public. Read-only.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        artifact_id: { type: 'string', format: 'uuid', description: 'public_artifact.id' },
+        offset: { type: 'integer', minimum: 0, default: 0, description: 'Characters to skip (use next_offset)' },
+        limit: { type: 'integer', minimum: 1, maximum: 12000, default: 12000, description: 'Characters of text to return' },
+        include_text: { type: 'boolean', default: true },
+      },
+      required: ['artifact_id'],
+      additionalProperties: false,
+    },
+    handler: getArtifactHandler,
   },
 
   // ── Constitution (5 north-star domains) ───────────────────

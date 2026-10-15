@@ -230,6 +230,48 @@ export async function seedArtifact(title: string, v: number[] | null, publishedA
   return rows[0].id;
 }
 
+// A published piece with its chunks (synthetic text): an archive essay
+// unless sourceSystem says 'youtube', processed, and each chunk embedded
+// with its own vector (none when null). The text is the chunks joined.
+export async function seedPiece(o: {
+  title: string;
+  chunks: Array<{ text: string; vector: number[] | null; headings?: string[] }>;
+  sourceSystem?: 'archive' | 'youtube';
+  publishedAt?: string | null;
+  series?: string | null;
+  outlets?: string[] | null;
+  flag?: 'review' | 'unmatched' | null;
+  membersOnly?: boolean;
+  status?: string;
+  processingStatus?: string;
+  summary?: string | null;
+  text?: string;
+}): Promise<string> {
+  const source = o.sourceSystem ?? 'archive';
+  const text = o.text ?? o.chunks.map((c) => c.text).join('\n\n');
+  const [row] = await admin<Array<{ id: string }>>`
+    INSERT INTO public_artifact (
+      user_id, type, title, status, raw_source, clean_text, summary, source_system, source_external_id,
+      processing_status, published_at, canonical_url, series, outlets, flag, members_only
+    ) VALUES (
+      'default', ${source === 'youtube' ? 'transcript' : 'essay'}, ${o.title}, ${o.status ?? 'published'},
+      ${text}, ${text}, ${o.summary === undefined ? `Summary of ${o.title}` : o.summary}, ${source},
+      ${`${o.title}-${Math.random().toString(36).slice(2)}`}, ${o.processingStatus ?? 'processed'},
+      ${o.publishedAt === undefined ? '2026-06-01T00:00:00Z' : o.publishedAt},
+      ${`https://example.com/${encodeURIComponent(o.title)}`}, ${o.series ?? null}, ${o.outlets ?? null},
+      ${o.flag ?? null}, ${o.membersOnly ?? false}
+    )
+    RETURNING id
+  `;
+  for (const [i, c] of o.chunks.entries()) {
+    await admin`
+      INSERT INTO public_artifact_chunk (public_artifact_id, chunk_index, chunk_text, heading_path, embedding)
+      VALUES (${row.id}, ${i}, ${c.text}, ${c.headings ?? null}, ${c.vector ? vecLiteral(c.vector) : null}::vector)
+    `;
+  }
+  return row.id;
+}
+
 export async function seedSubjects(
   tasks: Array<{ id: string; title: string; notes?: string; status?: string; parent?: string; scope?: string }>,
 ): Promise<void> {

@@ -394,9 +394,12 @@ that leaves it out keeps the stored value, and a new video is public).
 
 Search leaves out superseded rows: the `/archive/search` route and the
 calendar/task linker filter on `status = 'published'`, as the MCP tools
-already did. The `/archive/search` route and the MCP `archive_search_text`
-tool also return `flag`, so a reader can tell a confirmed piece from one
-still to check. The status
+already did. The `/archive/search` route and the MCP tools
+`search_published` and `get_artifact` also return `flag`, so a reader can
+tell a confirmed piece from one still to check (`search_published` can
+leave flagged pieces out), and the MCP tools return `members_only`.
+`get_artifact` follows a superseded row's `superseded_by` to the row that
+replaced it. The status
 route lists `public_artifact` rows by source, status, flag and processing
 state; the run log gives works, rows inserted / changed / unchanged,
 `flaggedReview`, `retired` (archive rows replaced), and for the old rows
