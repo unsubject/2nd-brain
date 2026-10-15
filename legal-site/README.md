@@ -27,7 +27,7 @@ Before the first deploy, check these once:
 
 ## Editing the text
 
-- When you change a page, update its dates at the top: "Effective" and "Last updated" on Terms and Privacy, "Last updated" on workflow.
+- When you change the text of Terms, Privacy or workflow, update the "Effective" and "Last updated" dates at the top of that page.
 - A material change needs advance notice to users: Terms §18 and Privacy §11 promise it.
 - Links between pages are root-relative (`/terms`, `/privacy`), so they work locally and in production.
 

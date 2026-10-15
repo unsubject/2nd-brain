@@ -22,7 +22,7 @@
 
 <main class="wrap">
   <h1>workflow</h1>
-  <p class="meta">A personal application operated by Unsubject LLC · Last updated October 15, 2026</p>
+  <p class="meta">A personal application operated by Unsubject LLC · Effective October 15, 2026 · Last updated October 15, 2026</p>
 
   <p class="lede">workflow connects Simon Lee’s own Google account to his private journal and planning assistant. It is built for one person’s personal use. It is not offered to the public, and nobody else can sign up or connect an account.</p>
 
@@ -34,26 +34,26 @@
   <p>Simon keeps a private journal of his thoughts, ideas and tasks, saved mostly from his conversations with AI assistants. workflow brings in context from his Google account so that this journal can:</p>
   <ul>
     <li><strong>Link journal entries</strong> to the tasks they mention.</li>
-    <li><strong>Keep an archive of his published writing.</strong> workflow gathers the columns and essays Simon has published, from the emails he sent to editors and from his own archive folders in Google Drive, so they can be cleaned up, searched and kept in one place.</li>
+    <li><strong>Keep an archive of his writing.</strong> workflow gathers the columns and essays Simon has published, from the emails he sent to editors and from his own archive folders in Google Drive, so they can be cleaned up, searched and kept in one place. Writing it can’t confirm as a published piece is kept with them, marked for his review. That includes drafts he emailed to himself, documents in his Drive folders that match no published piece, WordPress pages and private posts, and long email replies he sent to people outside the outlets he writes for. Some of it may never have been published.</li>
     <li><strong>Bring his “Subjects” ideas into his Idea Garden.</strong> Next to the journal, Simon keeps a private collection of ideas, his Idea Garden. A one-time import copies the ideas on his Google Tasks “Subjects” list into it, so they can be found and linked with the rest.</li>
   </ul>
 
   <h2 id="google-data">Google data it uses, and why</h2>
   <ul>
     <li><strong>Google Tasks</strong> (read-only): reads the titles and status of tasks in all lists, to link journal entries to the open tasks they mention. For his “Subjects” list it also reads notes and due and completion dates, which his idea import copies from.</li>
-    <li><strong>Gmail</strong> (read-only): reads the emails, of any age, under the label Simon keeps for his writing, including attached Word documents, to rebuild the archive of his published columns and essays. It never sends, deletes or changes email.</li>
-    <li><strong>Google Drive</strong> (read-only): reads the documents in the folders Simon designates (his article archive and his exports from WordPress and Substack) to rebuild the archive of his published writing. From a Substack export it reads only the posts, never the subscriber lists. It never creates, changes, shares or deletes files.</li>
+    <li><strong>Gmail</strong> (read-only): reads the emails, of any age, under the label Simon keeps for his writing, including attached Word documents, to rebuild the archive of his writing described above. It never sends, deletes or changes email.</li>
+    <li><strong>Google Drive</strong> (read-only): reads the documents in the folders Simon designates (his article archive, with its subfolders, and his exports from WordPress and Substack) to rebuild the same archive. From a Substack export it reads only the posts, never the subscriber lists. It never creates, changes, shares or deletes files.</li>
   </ul>
-  <p>workflow no longer reads Google Calendar or Google Contacts. The event titles and contact names it read earlier stay in its private database, out of reach of connected assistants, until they are deleted.</p>
+  <p>workflow no longer reads Google Calendar or Google Contacts. The event titles and times and the contact names it read earlier, and the links between them and his journal entries, stay in its private database, out of reach of connected assistants, until they are deleted.</p>
 
   <h2 id="handling">How the data is handled</h2>
   <ul>
     <li>Google data is stored in a private database that only the owner can reach.</li>
-    <li>Two kinds of Google data are sent to OpenAI’s API. The text of the columns and essays gathered from Gmail and Google Drive is sent to summarize and tag each piece, pick out the people, places, organizations, works and concepts it discusses, and index it for search. The ideas Simon imports from his “Subjects” task list, with their titles, notes and tags, are sent to index them for search and, during the import, to look for ideas they duplicate. OpenAI’s API terms don’t let it train models on this data. workflow sends no other Google data to AI model providers.</li>
+    <li>Two kinds of Google data are sent to OpenAI’s API. The text of the writing gathered from Gmail and Google Drive, both the published pieces and those kept for his review, is sent to summarize and tag each piece, pick out the people, places, organizations, works and concepts it discusses, and index it for search. The ideas Simon imports from his “Subjects” task list, with their titles, notes and tags, are sent to index them for search and, during the import, to look for ideas they duplicate. OpenAI’s API terms don’t let it train models on this data. workflow sends no other Google data to AI model providers.</li>
     <li>AI assistants that Simon connects to his journal, such as Claude, ChatGPT, Meta’s Muse and Google’s Spark, receive the following only when he asks them to:
       <ul>
         <li>the titles of the Google Tasks linked to his journal entries;</li>
-        <li>the full text of his published writing, as short passages or whole pieces, some of it rebuilt from Gmail and Google Drive;</li>
+        <li>the full text of the writing in his archive, as short passages or whole pieces, some of it rebuilt from Gmail and Google Drive: his published pieces, and also the pieces kept for his review, which may never have been published;</li>
         <li>during the “Subjects” import, the titles, notes, status and dates of the tasks on that list; and</li>
         <li>his Idea Garden, through every tool that searches, lists, reads, reviews or maps it. After the import it includes the “Subjects” ideas: their titles and notes, the status and dates kept with each, and the task titles recorded when they were promoted. When he asks to file a new idea, the reply also lists the closest existing ideas, which can be imported ones.</li>
       </ul>
