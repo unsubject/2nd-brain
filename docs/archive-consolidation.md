@@ -35,24 +35,28 @@ Decisions (Simon, 2026-10-04):
 1. **Collect** (done 2026-10-05). Copy every candidate verbatim into
    `archive_source_item` (migration `021_archive_staging.sql`). Nothing is cleaned, matched or
    deleted; re-runs are idempotent.
-2. **Extract.** Turn each staged item into a candidate in `archive_candidate`
+2. **Extract** (live since 2026-10-05, #92; rules revised in #93, #96
+   and #101). Turn each staged item into a candidate in `archive_candidate`
    (migration `027_archive_candidates.sql`): for an email, the version Simon
    sent, without quoted replies, notes to the editor or signatures; reader
    replies and duplicate newsletter copies dropped; HTML converted to text.
    Rule-based, with uncertain items marked `review`. See "Running step 2".
-3. **Match.** Group candidates of the same piece across sources into works
-   in `archive_work` / `archive_work_member` (migration
+3. **Match** (live since 2026-10-07, #97; rules revised in #98 and #101).
+   Group candidates of the same piece across sources into works in
+   `archive_work` / `archive_work_member` (migration
    `029_archive_works.sql`), by text similarity. Canonical text, in order:
    final emailed version → Substack / WordPress as published → newsletter →
    Drive doc (the old `public_artifact` rows come in at step 4). See
    "Running step 3".
-4. **Load.** Write every work to `public_artifact` (source system
-   `archive`, migration `030_archive_load.sql`) and mark the old
-   Notion/email rows it replaces superseded (not deleted). See "Running
-   step 4".
-5. **Keep current.** New Substack posts arrive by email at Simon's own
-   address with the full text, including paid posts, so they can be picked
-   up from Gmail daily without re-exporting.
+4. **Load** (live since 2026-10-08, #99; revised in #103, #105 and #114). Write
+   every work to `public_artifact` (source system `archive`, migration
+   `030_archive_load.sql`) and mark the old Notion/email rows it replaces
+   superseded (not deleted). See "Running step 4".
+5. **Keep current** (not built yet). New Substack posts arrive by email at
+   Simon's own address with the full text, including paid posts, so they
+   can be picked up from Gmail daily without re-exporting. Until this is
+   built, a collection runs only when it is started by hand (see "Running
+   step 1").
 
 ## How the steps run
 

@@ -4,6 +4,8 @@ Build phase for a remote MCP server exposing the 2nd-brain journal to AI tools (
 
 This doc reflects the **shipped reality** as of 2026-05-16 — the architecture, four working tools, OAuth flow, and CI deploy. The Implementation Order section below is preserved as historical record of how we got here.
 
+> **Superseded in part (2026-10).** The refocus decision record [`docs/decisions/2026-10-05-refocus.md`](decisions/2026-10-05-refocus.md) retired the COS classification of journal entries (#90): the tools no longer filter by or return `primary_type`, `primary_type_confidence` or `suggested_actions`, so the tool contracts and the verification step below that show them are history. The morning review named under Non-goals was retired in #87. For the tools as they are now, see `mcp-worker/src/tools/registry.ts`.
+
 ## Goal
 
 Two-way bridge between AI chat tools and the journal:
@@ -197,7 +199,8 @@ Two paths, same underlying `BRAIN_MCP_TOKEN`:
 
 | Name | Purpose | Source |
 |---|---|---|
-| `BRAIN_MCP_TOKEN` | Owner secret: approves OAuth connections, signs in to `/tokens`, and (while `ALLOW_MASTER_BEARER` is `"true"`) a legacy `/mcp` bearer | `openssl rand -hex 32` |
+| `OWNER_SECRET` | Owner secret: approves OAuth connections and signs in to `/tokens` | `openssl rand -hex 32` |
+| `BRAIN_MCP_TOKEN` | Legacy `/mcp` bearer while `ALLOW_MASTER_BEARER` is `"true"`; also the owner secret if `OWNER_SECRET` is unset | `openssl rand -hex 32` |
 | `OPENAI_API_KEY` | Query embeddings in `search_brain` | Same key the monolith uses |
 | `BRAIN_USER_ID` | Text identifier stamped on `ai_chat` entries | Telegram numeric id (matches existing personal entries; current value `236871164`) |
 
