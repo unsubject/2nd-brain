@@ -379,7 +379,7 @@ What a load writes, in one transaction:
   Such a row leaves search (`status = 'superseded'`) only once its
   replacement has been processed, so a piece never drops out of search
   while its new row waits in the queue. Links to it then move to the
-  replacement: those the calendar/task linker made (journal echoes,
+  replacement: those the journal linker made (journal echoes,
   shared entities) and idea links (`became`, `revisits`, any status), each
   idea link recording the row it pointed at in its history. An `archive`
   row that no work replaces is superseded at once; `get_entry` no longer
@@ -388,7 +388,7 @@ What a load writes, in one transaction:
   `flag = 'unmatched'`. Video transcripts are not touched.
 
 Search leaves out superseded rows: the `/archive/search` route and the
-calendar/task linker filter on `status = 'published'`, as the MCP tools
+journal linker filter on `status = 'published'`, as the MCP tools
 already did. The `/archive/search` route and the MCP `archive_search_text`
 tool also return `flag`, so a reader can tell a confirmed piece from one
 still to check. The status

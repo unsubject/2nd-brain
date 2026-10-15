@@ -1,12 +1,16 @@
-// One-shot backfill: wipe and regenerate the entity-driven link types on every
-// processed journal_entry. Embedding-derived links (relates_to_email,
-// echoes_artifact) and the keyword-based linkRelatedTasks output are preserved.
+// One-shot backfill: wipe and regenerate the entity links on every processed
+// journal_entry. Embedding-derived links (echoes_artifact) and the
+// keyword-based linkRelatedTasks output are kept; missing ones are added.
+//
+// The person and calendar-event links the retired matchers wrote are not
+// touched: nothing would write them back. They are deleted by the migration
+// that drops their target tables.
 //
 // Run once from a workstation with DATABASE_URL pointed at production, AFTER
 // the linker rewrite is deployed:
 //   tsx scripts/relink_journal_entries.ts
 //
-// Not a top-up: it first deletes these link types for every entry, then
+// Not a top-up: it first deletes the entity links for every entry, then
 // makes one OpenAI extraction call per processed entry. The extraction varies
 // from run to run, so a re-run replaces the links rather than only adding
 // missing ones. An entry whose extraction or a matcher fails keeps only the
@@ -17,20 +21,14 @@ import { pool } from "../src/db/client";
 import { generateLinksStrict } from "../src/google/linker";
 
 // Link types this script regenerates (and therefore wipes first to avoid
-// stacking old + new rows on the unique index).
-const STALE_LINK_TYPES = [
-  "mentions_person",
-  "mentions_entity",
-  "same_day_as_event",
-  "relates_to_event",
-  "relates_to_location",
-];
+// stacking old + new rows on the unique index). Only types the linker still
+// writes: wiping any other would delete links for good.
+const STALE_LINK_TYPES = ["mentions_entity"];
 
 interface JournalRow {
   id: string;
   full_text: string;
   tags: string[] | null;
-  created_at: Date;
   embedding: string | null; // pgvector returns as text literal "[0.1,0.2,...]"
 }
 
@@ -56,7 +54,7 @@ async function main() {
   console.log(`[relink] deleted ${wiped.rowCount ?? 0} stale link_edge rows`);
 
   const { rows } = await pool.query<JournalRow>(
-    `SELECT id, full_text, tags, created_at, embedding::text AS embedding
+    `SELECT id, full_text, tags, embedding::text AS embedding
        FROM journal_entry
       WHERE processing_status = 'processed'
         AND embedding IS NOT NULL
@@ -76,7 +74,6 @@ async function main() {
         id: row.id,
         full_text: row.full_text,
         tags: row.tags ?? [],
-        created_at: row.created_at,
         embedding: parseVector(row.embedding),
       });
       succeeded++;

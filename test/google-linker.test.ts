@@ -46,11 +46,74 @@ after(async () => {
 
 const TASK_ID = "linker-test-task";
 const ORG = "Linker Test Foundation";
+// Synthetic contact and calendar event, as the retired syncs stored them.
+const PERSON = "Avery Quillfeather";
+const PLACE = "Quillfeather Hall";
+const PERSON_ID = "people/linker-test-person";
+const EVENT_ID = "linker-test-event";
 
 beforeEach(async () => {
   if (!url) return;
   await db.query("DELETE FROM task_ref WHERE external_task_id = $1", [TASK_ID]);
-  await db.query("DELETE FROM entity_ref WHERE user_id = 'default' AND normalized_name = $1", [ORG.toLowerCase()]);
+  await db.query("DELETE FROM entity_ref WHERE user_id = 'default' AND normalized_name = ANY($1::text[])", [
+    [ORG, PERSON, PLACE].map((n) => n.toLowerCase()),
+  ]);
+  await db.query("DELETE FROM person_ref WHERE external_person_id = $1", [PERSON_ID]);
+  await db.query("DELETE FROM calendar_event_ref WHERE external_event_id = $1", [EVENT_ID]);
+});
+
+test("people and calendar events are not linked, and people are not stored as entities", { skip }, async () => {
+  // The rows the Contacts and Calendar syncs left behind stay in their
+  // tables; the linker no longer reads them.
+  await db.query(
+    `INSERT INTO person_ref (user_id, external_system, external_person_id, full_name)
+     VALUES ('default', 'google_contacts', $1, $2)`,
+    [PERSON_ID, PERSON]
+  );
+  await db.query(
+    `INSERT INTO calendar_event_ref (user_id, external_system, external_event_id, title, start_at, end_at, scope)
+     VALUES ('default', 'google_calendar', $1, $2, '2026-01-15T14:00:00Z', '2026-01-15T15:00:00Z', 'personal')`,
+    [EVENT_ID, "Quillfeather Avery planning session"]
+  );
+  const entry = {
+    id: randomUUID(),
+    full_text: `Planning session with ${PERSON} about the foundation.`,
+    tags: [],
+    // The entry's day: the retired calendar matcher linked the events on it.
+    created_at: new Date("2026-01-15T10:00:00Z"),
+    embedding: [],
+  };
+  const entities = async () => [
+    { entity_type: "person" as const, display_name: PERSON, aliases: ["Avery"], salience: 0.9 },
+    { entity_type: "place" as const, display_name: PLACE, aliases: [], salience: 0.9 },
+    { entity_type: "organization" as const, display_name: ORG, aliases: [], salience: 0.8 },
+  ];
+
+  try {
+    await linker.generateLinksStrict(entry, entities);
+    // Only the organization is linked: nothing points at the contact or the
+    // event...
+    const { rows } = await db.query(
+      "SELECT target_type, link_type FROM link_edge WHERE source_type = 'journal_entry' AND source_id = $1",
+      [entry.id]
+    );
+    assert.deepEqual(rows, [{ target_type: "entity_ref", link_type: "mentions_entity" }]);
+    // ...and the person and the place are dropped, not kept as entities.
+    const stored = await db.query(
+      "SELECT entity_type FROM entity_ref WHERE user_id = 'default' AND normalized_name = ANY($1::text[]) ORDER BY 1",
+      [[ORG, PERSON, PLACE].map((n) => n.toLowerCase())]
+    );
+    assert.deepEqual(stored.rows.map((r) => r.entity_type), ["organization"]);
+    // The synced rows themselves are untouched.
+    const kept = await db.query(
+      `SELECT (SELECT count(*) FROM person_ref WHERE external_person_id = $1)::int AS people,
+              (SELECT count(*) FROM calendar_event_ref WHERE external_event_id = $2)::int AS events`,
+      [PERSON_ID, EVENT_ID]
+    );
+    assert.deepEqual(kept.rows[0], { people: 1, events: 1 });
+  } finally {
+    await db.query("DELETE FROM link_edge WHERE source_id = $1", [entry.id]);
+  }
 });
 
 test("one failing matcher keeps the other matchers' links, then reports the failure", { skip }, async () => {
@@ -63,7 +126,6 @@ test("one failing matcher keeps the other matchers' links, then reports the fail
     id: randomUUID(),
     full_text: "Spent the morning on the quarterly budget with the foundation.",
     tags: [],
-    created_at: new Date("2026-01-15T10:00:00Z"),
     // pgvector refuses NaN, so the artifact matcher's query fails.
     embedding: [Number.NaN],
   };
@@ -107,7 +169,6 @@ test("a failed entity extraction keeps the other links, then is reported like a 
     id: randomUUID(),
     full_text: "Spent the morning on the quarterly budget with the foundation.",
     tags: [],
-    created_at: new Date("2026-01-15T10:00:00Z"),
     embedding: [],
   };
   const extractionDown = async (): Promise<never> => {
