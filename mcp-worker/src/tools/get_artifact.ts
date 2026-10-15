@@ -16,11 +16,14 @@ import { dbError, errorResult, ok, parseJsonb, toIso, toIsoOrNull, uuidSchema } 
 const PART_CHARS = 12_000;
 // Replacements followed at most; a longer chain stops at the last row read.
 const MAX_HOPS = 5;
+// Past any text Postgres can hold (1 GB), and offset + 1 still fits the
+// int the SQL substr takes.
+const MAX_OFFSET = 2_000_000_000;
 
 const inputSchema = z
   .object({
     artifact_id: uuidSchema,
-    offset: z.number().int().min(0).optional(),
+    offset: z.number().int().min(0).max(MAX_OFFSET).optional(),
     limit: z.number().int().min(1).max(PART_CHARS).optional(),
     include_text: z.boolean().optional(),
   })

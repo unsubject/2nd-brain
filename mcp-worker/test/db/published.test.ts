@@ -118,6 +118,25 @@ describe.skipIf(!TEST_DB)('search_published', () => {
     expect(r.hits[1].passages.map((p: any) => p.chunk_index)).toEqual([0, 1]);
   });
 
+  it('lets no long piece fill the semantic leg', async () => {
+    stubEmbeddings(axis(0));
+    // No text matches: only the semantic leg finds these.
+    await seedPiece({
+      title: 'Long transcript',
+      sourceSystem: 'youtube',
+      chunks: Array.from({ length: 45 }, (_, i) => ({ text: `Part ${i} of a long talk.`, vector: mix(0, 1, 0.99 - i / 10_000) })),
+    });
+    for (let i = 0; i < 5; i++) {
+      await seedPiece({ title: `Short essay ${i}`, chunks: [{ text: 'A short essay.', vector: mix(0, 1, 0.9) }] });
+    }
+
+    const r = await ok('search_published', { query: 'quiet rivers' });
+    expect(r.count).toBe(6);
+    expect(titles(r)[0]).toBe('Long transcript');
+    expect(sorted(titles(r).slice(1))).toEqual([0, 1, 2, 3, 4].map((i) => `Short essay ${i}`));
+    expect(r.hits[0].passages.map((p: any) => p.chunk_index)).toEqual([0, 1]);
+  });
+
   it('never returns a superseded copy or an unprocessed row', async () => {
     stubEmbeddings(axis(0));
     const live = await seedPiece({ title: 'Harbour lights', chunks: [{ text: 'harbour lights at night', vector: axis(0) }] });
@@ -269,6 +288,13 @@ describe.skipIf(!TEST_DB)('get_artifact', () => {
 
     const emoji = await ok('get_artifact', { artifact_id: id, offset: 11_999, limit: 1 });
     expect(emoji).toMatchObject({ text: '🙂', next_offset: 12_000 });
+
+    // Past the end is an empty part; past any text, an argument error, not
+    // a database one.
+    expect(await ok('get_artifact', { artifact_id: id, offset: 2_000_000_000 })).toMatchObject({ text: '', next_offset: null });
+    const huge = await callTool('get_artifact', { artifact_id: id, offset: 3_000_000_000 });
+    expect(huge.isError).toBe(true);
+    expect(huge.texts[0]).toMatch(/^Invalid arguments/);
 
     const meta = await ok('get_artifact', { artifact_id: id, include_text: false });
     expect(meta.text).toBeUndefined();

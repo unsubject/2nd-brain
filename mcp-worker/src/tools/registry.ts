@@ -178,7 +178,7 @@ const definitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         artifact_id: { type: 'string', format: 'uuid', description: 'public_artifact.id' },
-        offset: { type: 'integer', minimum: 0, default: 0, description: 'Characters to skip (use next_offset)' },
+        offset: { type: 'integer', minimum: 0, maximum: 2000000000, default: 0, description: 'Characters to skip (use next_offset)' },
         limit: { type: 'integer', minimum: 1, maximum: 12000, default: 12000, description: 'Characters of text to return' },
         include_text: { type: 'boolean', default: true },
       },

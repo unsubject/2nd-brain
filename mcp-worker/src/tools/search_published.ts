@@ -42,6 +42,11 @@ const inputSchema = z
 // Chunk rows each leg brings back. A chunk is about 2,000-3,200 characters
 // (src/archive/chunker.ts), so only a window of it becomes a passage.
 const CANDIDATES = 40;
+// Nearest chunks the semantic leg reads before keeping at most
+// SEMANTIC_PER_PIECE of each piece (the most passages a hit shows), so one
+// long transcript cannot fill the leg.
+const SEMANTIC_POOL = 200;
+const SEMANTIC_PER_PIECE = 3;
 const PASSAGE_CHARS = 500;
 // Context kept before the first text match in a passage.
 const PASSAGE_LEAD = 150;
@@ -146,18 +151,28 @@ export async function searchPublishedHandler(
         ? (sql.begin(async (tx) => {
             // An HNSW scan hands back ef_search rows (pgvector's default is
             // 40) before the filters run, and superseded copies' chunks take
-            // some of them; widen it so a filtered search still fills up.
-            await tx`SET LOCAL hnsw.ef_search = 100`;
+            // some of them; widen it so a filtered search still fills the pool.
+            await tx`SET LOCAL hnsw.ef_search = 400`;
             return tx<Array<ChunkRow & { similarity: number }>>`
-              SELECT c.public_artifact_id AS artifact_id, c.chunk_index,
-                     to_jsonb(c.heading_path) AS heading_path, c.chunk_text, pa.published_at,
-                     1 - (c.embedding <=> ${v}::vector) AS similarity,
+              SELECT x.artifact_id, x.chunk_index, x.heading_path, x.chunk_text, x.published_at,
+                     1 - x.d AS similarity,
                      now() AS as_of
-                FROM public_artifact_chunk c
-                JOIN public_artifact pa ON pa.id = c.public_artifact_id
-               WHERE c.embedding IS NOT NULL
-                 AND ${searchable(tx)}
-               ORDER BY c.embedding <=> ${v}::vector
+                FROM (
+                  SELECT y.*, row_number() OVER (PARTITION BY y.artifact_id ORDER BY y.d, y.chunk_index) AS n
+                    FROM (
+                      SELECT c.public_artifact_id AS artifact_id, c.chunk_index,
+                             to_jsonb(c.heading_path) AS heading_path, c.chunk_text, pa.published_at,
+                             c.embedding <=> ${v}::vector AS d
+                        FROM public_artifact_chunk c
+                        JOIN public_artifact pa ON pa.id = c.public_artifact_id
+                       WHERE c.embedding IS NOT NULL
+                         AND ${searchable(tx)}
+                       ORDER BY d
+                       LIMIT ${SEMANTIC_POOL}
+                    ) y
+                ) x
+               WHERE x.n <= ${SEMANTIC_PER_PIECE}
+               ORDER BY x.d
                LIMIT ${CANDIDATES}
             `;
           }) as Promise<Array<ChunkRow & { similarity: number }>>)
