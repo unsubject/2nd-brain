@@ -48,7 +48,7 @@ Decisions (Simon, 2026-10-04):
    final emailed version → Substack / WordPress as published → newsletter →
    Drive doc (the old `public_artifact` rows come in at step 4). See
    "Running step 3".
-4. **Load** (live since 2026-10-08, #99; revised in #103 and #105). Write
+4. **Load** (live since 2026-10-08, #99; revised in #103, #105 and #114). Write
    every work to `public_artifact` (source system `archive`, migration
    `030_archive_load.sql`) and mark the old Notion/email rows it replaces
    superseded (not deleted). See "Running step 4".
