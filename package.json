@@ -11,7 +11,6 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.91.1",
     "csv-parse": "^6.2.1",
     "express": "^4.22.2",
     "fast-xml-parser": "^5.11.2",
