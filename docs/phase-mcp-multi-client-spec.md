@@ -142,13 +142,13 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
   - `clientInfo` comes from `_meta` and is stored on the credential only when it changes.
   - The CORS preflight allows `Mcp-Method` and `Mcp-Name`.
 - **Tool descriptions**
-  - All 38 tools have a `title` and full `annotations`. ChatGPT asks for confirmation before any tool not marked read-only, and Gemini CLI reads `readOnlyHint`. Gemini Spark confirms write actions; July 2026 field notes saw it confirm every call on a server without annotations, so it is unverified whether it honours `readOnlyHint`.
+  - Every tool has a `title` and full `annotations`. ChatGPT asks for confirmation before any tool not marked read-only, and Gemini CLI reads `readOnlyHint`. Gemini Spark confirms write actions; July 2026 field notes saw it confirm every call on a server without annotations, so it is unverified whether it honours `readOnlyHint`.
   - Every write tool's "ONLY call when…" / "NEVER call autonomously" sentence appears in its first 300 characters, so clients that truncate still see it.
   - Nullable fields use `anyOf`, never JSON-Schema type arrays (Gemini).
   - `INSTRUCTIONS` is ≤ 2,000 characters (Claude Code truncates at 2,048).
   - `test/schema-portability.test.ts` enforces all of this.
 - **`read_protocol` tool:** returns the same protocol text as the MCP resources, for clients that can't read resources (Muse, and possibly Spark and ChatGPT). Tool descriptions point to it.
-- **Tool count:** 38 is close to Cursor's limit of roughly 40 tools.
+- **Tool count:** the server had 38 tools when this phase shipped, close to Cursor's limit of roughly 40. The current count is in [`mcp-client-setup.md`](mcp-client-setup.md).
 
 ## 7. Verification
 
@@ -175,7 +175,7 @@ Handlers receive the resulting `Principal {credentialId, label, scope, via}` as 
    - Optionally set `MCP_CALL_LOG_RETENTION_DAYS` on the Railway service (default 90).
 2. Run `npm run smoke` with the master token. Then create a PAT and run `--write`, and after revoking it run `--expect-401`.
 3. Reconnect each client following the setup guide, so that each one gets its own label.
-4. Watch the console's master-token banner. Give each remaining caller (for example socialisn2) its own PAT.
+4. Watch the console's master-token banner. Give each remaining caller its own PAT. socialisn and socialisn2 are retired: revoke their access instead of giving them one (refocus record, [Phase 1 owner actions](decisions/2026-10-05-refocus.md#owner-actions-simon)).
 5. After a quiet week:
    1. Commit `ALLOW_MASTER_BEARER: "false"`.
    2. Rotate `BRAIN_MCP_TOKEN`.

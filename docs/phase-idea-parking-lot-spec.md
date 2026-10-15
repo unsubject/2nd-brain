@@ -84,7 +84,7 @@ The Worker never processes rows (norms doc, Part 2): it inserts ideas with `embe
 - `idea_link.link_type` CHECK adds `mechanism_for` and `inverts`; `idea_link_symmetric_canonical` adds `inverts`.
 - `idea_link.proposed_by` CHECK adds `capture`.
 
-Why a dedicated `idea_link` instead of `link_edge`: `link_edge` is the machine-made graph (no lifecycle, no FKs, `user_id = 'default'`); idea links are human-confirmed with a lifecycle and rationale. Keeping them apart means no dual writes and no change for `link_edge` readers (morning review, `get_entry`).
+Why a dedicated `idea_link` instead of `link_edge`: `link_edge` is the machine-made graph (no lifecycle, no FKs, `user_id = 'default'`); idea links are human-confirmed with a lifecycle and rationale. Keeping them apart means no dual writes and no change for `link_edge` readers (`get_entry`).
 
 ## 6. Link vocabulary
 
@@ -106,7 +106,7 @@ The vocabulary is a CHECK enum mirrored in `mcp-worker/src/ideas/linkTypes.ts`. 
 
 ## 7. Tools
 
-Fourteen idea tools (v2 added `explore_topic`; the server has 36 tools in all):
+Fourteen idea tools (v2 added `explore_topic`; the server's total is in [`mcp-client-setup.md`](mcp-client-setup.md)):
 
 | Tool | Kind | Rule |
 |---|---|---|
