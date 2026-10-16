@@ -661,13 +661,21 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   await message("g-utf8", `專欄：${asUtf8}`);
   await message("g-unknown", "文字", { unknownCharsets: ["x-big5"] });
   await message("g-latin1", `壹擋專政 ${asLatin1}`);
+  // An HTML-only message keeps its body in raw_html alone.
+  await staging.upsertSourceItem(
+    item({ sourceRef: "g-latin1-html", rawText: null, rawHtml: `<p>${asLatin1}</p>`, metadata: { kind: "message" } }),
+    db
+  );
   await message("g-clean", "香港經濟的問題不在於短期的周期");
   await message("g-french", "café au lait, déjà vu");
   await message("g-current", `專欄：${asUtf8}`, { decoderVersion: DECODER_VERSION });
   await staging.upsertSourceItem(item({ sourceRef: "g-utf8#1", rawText: asUtf8, metadata: { kind: "attachment" } }), db);
 
-  const refs = ["g-utf8", "g-unknown", "g-latin1", "g-clean", "g-french", "g-current", "g-utf8#1"];
-  assert.deepEqual([...(await staging.garbledGmailMessages(refs, db))].sort(), ["g-latin1", "g-unknown", "g-utf8"]);
+  const refs = ["g-utf8", "g-unknown", "g-latin1", "g-latin1-html", "g-clean", "g-french", "g-current", "g-utf8#1"];
+  assert.deepEqual(
+    [...(await staging.garbledGmailMessages(refs, db))].sort(),
+    ["g-latin1", "g-latin1-html", "g-unknown", "g-utf8"]
+  );
   assert.equal(await staging.gmailRefetchDue(db), true);
 
   // The boot check collects the label again before anything else.
@@ -687,7 +695,7 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   // Fetched again by this decoder, even still garbled: not again.
   await db.query(
     `UPDATE archive_source_item SET metadata = metadata || jsonb_build_object('decoderVersion', $1::int)
-      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1')`,
+      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1', 'g-latin1-html')`,
     [DECODER_VERSION]
   );
   assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);

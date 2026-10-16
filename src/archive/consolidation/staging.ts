@@ -124,7 +124,8 @@ const GARBLED = `coalesce((metadata->>'decoderVersion')::int, 1) < $1
    AND (metadata ? 'unknownCharsets'
         OR strpos(coalesce(raw_text, ''), chr(65533)) > 0
         OR strpos(coalesce(raw_html, ''), chr(65533)) > 0
-        OR coalesce(raw_text, '') ~ '[\u00a1-\u00ff]{4,}')`;
+        OR coalesce(raw_text, '') ~ '[\u00a1-\u00ff]{4,}'
+        OR coalesce(raw_html, '') ~ '[\u00a1-\u00ff]{4,}')`;
 
 export async function garbledGmailMessages(refs: string[], db: DB = pool): Promise<Set<string>> {
   if (refs.length === 0) return new Set();
