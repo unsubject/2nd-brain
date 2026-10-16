@@ -61,15 +61,19 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
   return rows[0].stale;
 }
 
-const MESSAGES = {
+type Step = "gmail" | "extract" | "match" | "load";
+
+const MESSAGES: Record<Step, string> = {
   gmail: `Gmail messages garbled by an older decoder (decoder v${DECODER_VERSION})`,
   extract: `candidates out of date (extractor v${EXTRACTOR_VERSION})`,
   match: `works out of date (matcher v${MATCHER_VERSION})`,
   load: `archive rows out of date (loader v${LOADER_VERSION})`,
 };
 
-// The step started and its run id; `waitingFor` when extraction is due but
-// a collection is live; null when everything was current or a run of the
+// The step started and its run id; `waitingFor` (and the step due) when
+// extraction is due but a collection is live, or a re-fetch of garbled
+// Gmail messages is due but another Gmail run is live (a label's run may
+// not list them all); null when everything was current or a run of the
 // step is already going.
 export async function catchUp(
   start: (req: CollectRequest) => Promise<string> = startCollection,
@@ -84,7 +88,7 @@ export async function catchUp(
     works: () => worksStale(),
     load: () => loadStale(),
   }
-): Promise<{ source: "gmail" | "extract" | "match" | "load"; runId: string } | { waitingFor: CollectorSource } | null> {
+): Promise<{ source: Step; runId: string } | { waitingFor: CollectorSource; step: Step } | null> {
   // Messages an older decoder garbled are collected again first; the
   // collection then starts extraction (runner.nextStep), and so on.
   const source = (await stale.gmail?.())
@@ -103,8 +107,8 @@ export async function catchUp(
     const req: CollectRequest = source === "gmail" ? { source, garbledOnly: true } : { source };
     return { source, runId: await start(req) };
   } catch (err) {
-    if (err instanceof RunBlockedError) return { waitingFor: err.blockedBy };
-    if (err instanceof RunAlreadyActiveError) return null;
+    if (err instanceof RunBlockedError) return { waitingFor: err.blockedBy, step: source };
+    if (err instanceof RunAlreadyActiveError) return source === "gmail" ? { waitingFor: "gmail", step: source } : null;
     throw err;
   }
 }
@@ -126,7 +130,7 @@ export function startAutoExtraction(): void {
     catchUp()
       .then((r) => {
         if (r && "waitingFor" in r) {
-          if (!waiting) console.log(`[consolidation] candidates out of date; waiting for the ${r.waitingFor} collection run`);
+          if (!waiting) console.log(`[consolidation] ${MESSAGES[r.step]}; waiting for the ${r.waitingFor} collection run`);
           waiting = true;
           setTimeout(check, RECHECK_MS);
         } else if (r) {

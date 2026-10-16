@@ -702,6 +702,12 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   };
   assert.deepEqual(await auto.catchUp(start, stale), { source: "gmail", runId: "run-1" });
   assert.deepEqual(started, [{ source: "gmail", garbledOnly: true }]);
+  // Another Gmail run going (a label's, resumed after a deploy) may not
+  // list them all: the boot check waits for it and checks again.
+  const gmailBusy = async () => {
+    throw new staging.RunAlreadyActiveError("gmail");
+  };
+  assert.deepEqual(await auto.catchUp(gmailBusy, stale), { waitingFor: "gmail", step: "gmail" });
 
   // Fetched again by this decoder, even still garbled: not again.
   await db.query(
@@ -791,7 +797,7 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   const collecting = async () => {
     throw new staging.RunBlockedError("gmail");
   };
-  assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail" });
+  assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail", step: "extract" });
 });
 
 // A run that has ended, started now: nextStep reads its start.
