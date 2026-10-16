@@ -678,6 +678,28 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   );
   assert.equal(await staging.gmailRefetchDue(db), true);
 
+  // A collection fetches the garbled ones its label lists, and by id those
+  // it doesn't (staged from another label, or moved out of this one).
+  const stats = gmail.emptyStats();
+  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean", "g-utf8"], false, stats, db), [
+    "g-new",
+    "g-utf8",
+    "g-latin1",
+    "g-latin1-html",
+    "g-unknown",
+  ]);
+  assert.equal(stats.retriedGarbled, 4);
+  assert.equal(stats.skippedExisting, 1);
+  const refetch = gmail.emptyStats();
+  assert.deepEqual(await gmail.messagesToFetch(["g-clean", "g-utf8"], true, refetch, db), [
+    "g-clean",
+    "g-utf8",
+    "g-latin1",
+    "g-latin1-html",
+    "g-unknown",
+  ]);
+  assert.equal(refetch.retriedGarbled, 3);
+
   // The boot check collects the label again before anything else.
   const started: unknown[] = [];
   const start = async (req: unknown) => {
@@ -700,7 +722,39 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   );
   assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);
   assert.equal(await staging.gmailRefetchDue(db), false);
+  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean"], false, gmail.emptyStats(), db), ["g-new"]);
   assert.deepEqual((await auto.catchUp(start, stale))?.source, "extract");
+  await db.query("DELETE FROM archive_source_item");
+});
+
+test("a garbled message Gmail no longer has stops the boot check collecting for it", { skip }, async () => {
+  await db.query("DELETE FROM archive_source_item");
+  const garbled = Buffer.from("adbbb4e4b867c0d9", "hex").toString("utf8");
+  await staging.upsertSourceItem(item({ sourceRef: "g-gone", rawText: garbled, metadata: { kind: "message" } }), db);
+  assert.equal(await staging.gmailRefetchDue(db), true);
+
+  const gone = stubGmail({}, {});
+  (gone.users.messages as any).get = async () => {
+    throw Object.assign(new Error("Requested entity was not found."), { code: 404, response: { status: 404 } });
+  };
+  await assert.rejects(gmail.collectMessage(gone, "g-gone", new Map(), gmail.emptyStats()), /not found/);
+  // A message never staged is left alone: nothing to mark.
+  await assert.rejects(gmail.collectMessage(gone, "g-never", new Map(), gmail.emptyStats()), /not found/);
+
+  const { rows } = await db.query("SELECT source_ref, raw_text, metadata FROM archive_source_item ORDER BY source_ref");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].raw_text, garbled);
+  assert.equal(rows[0].metadata.goneFromGmail, true);
+  assert.equal(await staging.gmailRefetchDue(db), false);
+
+  // Any other failure leaves it due, so the next collection tries again.
+  await staging.upsertSourceItem(item({ sourceRef: "g-flaky", rawText: garbled, metadata: { kind: "message" } }), db);
+  const flaky = stubGmail({}, {});
+  (flaky.users.messages as any).get = async () => {
+    throw Object.assign(new Error("Backend Error"), { code: 500, response: { status: 500 } });
+  };
+  await assert.rejects(gmail.collectMessage(flaky, "g-flaky", new Map(), gmail.emptyStats()), /Backend Error/);
+  assert.equal(await staging.gmailRefetchDue(db), true);
   await db.query("DELETE FROM archive_source_item");
 });
 

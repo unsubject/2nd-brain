@@ -137,6 +137,28 @@ export async function garbledGmailMessages(refs: string[], db: DB = pool): Promi
   return new Set(rows.map((r) => r.source_ref));
 }
 
+// All of them: the collector fetches by id those its label doesn't list
+// (staged from another label, or moved out of it since).
+export async function allGarbledGmailMessages(db: DB = pool): Promise<string[]> {
+  const { rows } = await db.query<{ source_ref: string }>(
+    `SELECT source_ref FROM archive_source_item WHERE source = 'gmail' AND ${GARBLED} ORDER BY source_ref`,
+    [DECODER_VERSION]
+  );
+  return rows.map((r) => r.source_ref);
+}
+
+// One that Gmail no longer has: marked as seen by this decoder, so the boot
+// check stops collecting for it. Its body stays as it was.
+export async function markGarbledGone(ref: string, db: DB = pool): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE archive_source_item
+        SET metadata = metadata || jsonb_build_object('decoderVersion', $1::int, 'goneFromGmail', true)
+      WHERE source = 'gmail' AND source_ref = $2 AND ${GARBLED}`,
+    [DECODER_VERSION, ref]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 // Any such message: the boot check collects again (extract/auto.ts).
 export async function gmailRefetchDue(db: DB = pool): Promise<boolean> {
   const { rows } = await db.query<{ due: boolean }>(

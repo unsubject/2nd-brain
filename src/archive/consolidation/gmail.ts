@@ -5,14 +5,17 @@
 
 import { google } from "googleapis";
 import mammoth from "mammoth";
+import { pool, type DB } from "../../db/client";
 import { getAuthenticatedClient } from "../../google/auth";
 import { describeGoogleError } from "../../google/errors";
 import { DECODER_VERSION, decodeBody, extractBodies, header, isDocxAttachment, splitAddresses, type ExternalBody } from "./mime";
 import { RateLimiter, unlimited, type CallRunner } from "./ratelimit";
 import {
+  allGarbledGmailMessages,
   existingSourceRefs,
   garbledGmailMessages,
   incompleteGmailMessages,
+  markGarbledGone,
   upsertSourceItem,
   type UpsertResult,
 } from "./staging";
@@ -155,7 +158,15 @@ export async function collectMessage(
   stats: CollectStats,
   limiter: CallRunner = unlimited
 ): Promise<void> {
-  const { data: msg } = await limiter.run(() => gmail.users.messages.get({ userId: "me", id, format: "full" }));
+  const msg = await limiter.run(() => gmail.users.messages.get({ userId: "me", id, format: "full" })).then(
+    (r) => r.data,
+    async (err) => {
+      // Gone from Gmail: a copy an older decoder garbled can't be fetched
+      // again, so the boot check stops collecting for it.
+      if (notFound(err)) await markGarbledGone(id);
+      throw err;
+    }
+  );
   const headers = msg.payload?.headers;
   const bodies = extractBodies(msg.payload);
   // Fetched before the row is written: if this fails the message stays
@@ -265,6 +276,46 @@ export async function collectMessage(
   }
 }
 
+// The listed messages to fetch, then the staged ones an older decoder
+// garbled that the label doesn't list (staged from another label, or moved
+// out of this one since), by id: otherwise the boot check would collect
+// the label on every boot and never reach them.
+export async function messagesToFetch(
+  ids: string[],
+  refetch: boolean,
+  stats: CollectStats,
+  db: DB = pool
+): Promise<string[]> {
+  let todo = ids;
+  if (!refetch) {
+    // Staged messages are skipped unless one of their attachment rows is
+    // missing (a fetch failed, or the run stopped between the two writes),
+    // or an older decoder garbled their body.
+    const existing = new Set<string>();
+    const incomplete = new Set<string>();
+    const garbled = new Set<string>();
+    for (let i = 0; i < ids.length; i += 1000) {
+      const chunk = ids.slice(i, i + 1000);
+      for (const r of await existingSourceRefs("gmail", chunk, db)) existing.add(r);
+      for (const r of await incompleteGmailMessages(chunk, db)) incomplete.add(r);
+      for (const r of await garbledGmailMessages(chunk, db)) garbled.add(r);
+    }
+    todo = ids.filter((id) => !existing.has(id) || incomplete.has(id) || garbled.has(id));
+    stats.retriedIncomplete = incomplete.size;
+    stats.retriedGarbled = garbled.size;
+    stats.skippedExisting = ids.length - todo.length;
+  }
+  const listed = new Set(ids);
+  const elsewhere = (await allGarbledGmailMessages(db)).filter((id) => !listed.has(id));
+  stats.retriedGarbled = (stats.retriedGarbled ?? 0) + elsewhere.length;
+  return [...todo, ...elsewhere];
+}
+
+const notFound = (err: unknown): boolean => {
+  const e = err as { code?: unknown; status?: unknown; response?: { status?: unknown } } | null;
+  return e?.response?.status === 404 || e?.status === 404 || e?.code === 404;
+};
+
 export async function collectGmail(
   params: GmailCollectParams,
   stats: CollectStats,
@@ -278,26 +329,7 @@ export async function collectGmail(
 
   const ids = await listMessageIds(gmail, labelId, limiter);
   stats.listed = ids.length;
-
-  let todo = ids;
-  if (!params.refetch) {
-    // Staged messages are skipped unless one of their attachment rows is
-    // missing (a fetch failed, or the run stopped between the two writes),
-    // or an older decoder garbled their body.
-    const existing = new Set<string>();
-    const incomplete = new Set<string>();
-    const garbled = new Set<string>();
-    for (let i = 0; i < ids.length; i += 1000) {
-      const chunk = ids.slice(i, i + 1000);
-      for (const r of await existingSourceRefs("gmail", chunk)) existing.add(r);
-      for (const r of await incompleteGmailMessages(chunk)) incomplete.add(r);
-      for (const r of await garbledGmailMessages(chunk)) garbled.add(r);
-    }
-    todo = ids.filter((id) => !existing.has(id) || incomplete.has(id) || garbled.has(id));
-    stats.retriedIncomplete = incomplete.size;
-    stats.retriedGarbled = garbled.size;
-    stats.skippedExisting = ids.length - todo.length;
-  }
+  const todo = await messagesToFetch(ids, params.refetch ?? false, stats);
 
   let next = 0;
   let done = 0;
