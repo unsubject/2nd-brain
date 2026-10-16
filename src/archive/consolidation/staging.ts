@@ -115,6 +115,11 @@ export async function incompleteGmailMessages(refs: string[], db: DB = pool): Pr
   return new Set(rows.map((r) => r.source_ref));
 }
 
+// Big5 read as Latin-1: a run of Latin-1 letters, or of Big5-shaped pairs
+// (a Latin-1 lead byte, then an ASCII or Latin-1 trail byte: 一丁七九
+// becomes ¤@¤B¤C¤E).
+const LATIN1_BIG5 = `[\u00a1-\u00ff]{4,}|([\u00a1-\u00ff][\u0040-\u007e\u00a1-\u00ff]){3,}`;
+
 // A staged Gmail message whose body looks garbled (replacement characters,
 // a charset that was not known, or Big5 read as Latin-1) and was decoded
 // before DECODER_VERSION: the collector fetches it again, once per
@@ -124,8 +129,8 @@ const GARBLED = `coalesce((metadata->>'decoderVersion')::int, 1) < $1
    AND (metadata ? 'unknownCharsets'
         OR strpos(coalesce(raw_text, ''), chr(65533)) > 0
         OR strpos(coalesce(raw_html, ''), chr(65533)) > 0
-        OR coalesce(raw_text, '') ~ '[\u00a1-\u00ff]{4,}'
-        OR coalesce(raw_html, '') ~ '[\u00a1-\u00ff]{4,}')`;
+        OR coalesce(raw_text, '') ~ '${LATIN1_BIG5}'
+        OR coalesce(raw_html, '') ~ '${LATIN1_BIG5}')`;
 
 export async function garbledGmailMessages(refs: string[], db: DB = pool): Promise<Set<string>> {
   if (refs.length === 0) return new Set();

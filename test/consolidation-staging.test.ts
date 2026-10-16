@@ -666,15 +666,29 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
     item({ sourceRef: "g-latin1-html", rawText: null, rawHtml: `<p>${asLatin1}</p>`, metadata: { kind: "message" } }),
     db
   );
+  // 一丁七九 in Big5 as Latin-1: its trail bytes are ASCII.
+  await message("g-latin1-pairs", `專欄 ${Buffer.from("a440a442a443a445", "hex").toString("latin1")}`);
   await message("g-clean", "香港經濟的問題不在於短期的周期");
   await message("g-french", "café au lait, déjà vu");
+  await message("g-accents", "école élève étage épée, Größe, ação");
   await message("g-current", `專欄：${asUtf8}`, { decoderVersion: DECODER_VERSION });
   await staging.upsertSourceItem(item({ sourceRef: "g-utf8#1", rawText: asUtf8, metadata: { kind: "attachment" } }), db);
 
-  const refs = ["g-utf8", "g-unknown", "g-latin1", "g-latin1-html", "g-clean", "g-french", "g-current", "g-utf8#1"];
+  const refs = [
+    "g-utf8",
+    "g-unknown",
+    "g-latin1",
+    "g-latin1-html",
+    "g-latin1-pairs",
+    "g-clean",
+    "g-french",
+    "g-accents",
+    "g-current",
+    "g-utf8#1",
+  ];
   assert.deepEqual(
     [...(await staging.garbledGmailMessages(refs, db))].sort(),
-    ["g-latin1", "g-latin1-html", "g-unknown", "g-utf8"]
+    ["g-latin1", "g-latin1-html", "g-latin1-pairs", "g-unknown", "g-utf8"]
   );
   assert.equal(await staging.gmailRefetchDue(db), true);
 
@@ -686,8 +700,14 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   assert.equal(stats.retriedGarbled, 1);
   assert.equal(stats.skippedExisting, 1);
   const byId = gmail.emptyStats();
-  assert.deepEqual(await gmail.messagesToFetch(null, false, byId, db), ["g-latin1", "g-latin1-html", "g-unknown", "g-utf8"]);
-  assert.equal(byId.retriedGarbled, 4);
+  assert.deepEqual(await gmail.messagesToFetch(null, false, byId, db), [
+    "g-latin1",
+    "g-latin1-html",
+    "g-latin1-pairs",
+    "g-unknown",
+    "g-utf8",
+  ]);
+  assert.equal(byId.retriedGarbled, 5);
 
   // The boot check collects those messages before anything else.
   const started: unknown[] = [];
@@ -712,7 +732,7 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   // Fetched again by this decoder, even still garbled: not again.
   await db.query(
     `UPDATE archive_source_item SET metadata = metadata || jsonb_build_object('decoderVersion', $1::int)
-      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1', 'g-latin1-html')`,
+      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1', 'g-latin1-html', 'g-latin1-pairs')`,
     [DECODER_VERSION]
   );
   assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);

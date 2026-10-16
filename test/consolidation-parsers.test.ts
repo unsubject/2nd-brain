@@ -99,6 +99,14 @@ test("decodeBody reads Big5 under labels TextDecoder lacks, under none, and unde
   assert.equal(decodeBody(b64(big5), "iso-8859-1"), text);
   const french = Buffer.from("café au lait, déjà vu", "latin1");
   assert.equal(decodeBody(b64(french), "iso-8859-1"), "café au lait, déjà vu");
+  // Latin-1 whose accented letters happen to pair up as Big5 (嶰ole 幨鋦e…)
+  // isn't Chinese: no common characters.
+  const accents = Buffer.from("école élève étage épée", "latin1");
+  assert.equal(decodeBody(b64(accents), "iso-8859-1"), "école élève étage épée");
+  // GBK with no label is valid Big5 too (笢弊冪撳…) but reads as Chinese
+  // only in GB18030.
+  const gbk = Buffer.from("d6d0b9fabeadbcc3b5c4cecacce2b2bbd4dad3dab6ccc6dab5c4d6dcc6da", "hex");
+  assert.equal(decodeBody(b64(gbk), null), "中国经济的问题不在于短期的周期");
   // An HTML body that names its charset only in a meta tag.
   const html = Buffer.concat([Buffer.from('<html><head><meta http-equiv="Content-Type" content="text/html; charset=big5"></head><body>'), big5, Buffer.from("</body></html>")]);
   assert.ok(decodeBody(b64(html), null).includes(text));

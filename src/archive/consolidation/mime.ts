@@ -72,9 +72,6 @@ const CHARSET_ALIASES = new Map([
   ["windows-936", "gbk"],
 ]);
 
-// What bytes with no usable label, or a label they don't fit, are tried as.
-const FALLBACKS = ["utf-8", "big5", "gb18030"];
-
 function decodeAs(label: string, bytes: Uint8Array, fatal: boolean): string | null {
   try {
     return new TextDecoder(label, { fatal }).decode(bytes);
@@ -100,22 +97,39 @@ function metaCharset(bytes: Uint8Array): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
-// Most of its non-ASCII text is Chinese: Big5 rather than the Latin-1 a
-// part claimed.
-function mostlyHan(text: string): boolean {
+// The commonest Chinese characters, Traditional and Simplified. Chinese
+// text is full of them; bytes read in the wrong charset (GBK as Big5, Big5
+// as GB18030, Latin-1 as Big5) give rare characters instead.
+const COMMON_HAN = new Set(
+  "的一是不了人我在有他這这個个們们中來来上大為为和國国地到以說说時时要就出會会可也你對对生能而子那得於于著着下自之年" +
+    "過过發发後后作裡里用道行所然家種种事成方多經经麼么去法學学如都同現现當当沒没動动面起看定天分還还進进好小部其些" +
+    "主樣样理心她本前開开但因只從从想實实日者意無无力它與与長长把機机十民第公此已工使情明性知全"
+);
+
+function commonHan(text: string): number {
+  let n = 0;
+  for (const c of text) if (COMMON_HAN.has(c)) n += 1;
+  return n;
+}
+
+// Reads as Chinese: most of its non-ASCII text is Han, and enough of that
+// is common characters. Big5 rather than the Latin-1 a part claimed.
+function readsAsChinese(text: string): boolean {
   const nonAscii = text.match(/[^\x00-\x7f]/gu) ?? [];
   const han = text.match(/[\p{Script=Han}\u3000-\u303f\uff00-\uffef]/gu) ?? [];
-  return han.length >= 4 && han.length >= 0.8 * nonAscii.length;
+  const common = commonHan(text);
+  return han.length >= 4 && han.length >= 0.8 * nonAscii.length && common >= Math.max(2, 0.1 * han.length);
 }
 
 // Gmail returns part bodies as base64url of the (transfer-decoded) bytes,
 // still in the part's own charset; old Hong Kong mail is often Big5, and
 // often labelled with a name TextDecoder does not know, labelled wrongly,
 // or not labelled at all. So: the label (or an alias of it, or a charset
-// the HTML declares), as long as the bytes are valid in it; else the first
-// of UTF-8, Big5 and GB18030 they are valid in. Bytes labelled Latin-1 that
-// read as Chinese in Big5 are Big5. Labels not known are listed in
-// `unknown`.
+// the HTML declares), as long as the bytes are valid in it; else UTF-8 if
+// they are valid in it, else Big5 or GB18030, whichever reads as more
+// common Chinese characters (Big5 on a tie: much GBK is valid Big5, and
+// almost any Big5 is valid GB18030). Bytes labelled Latin-1 that read as
+// Chinese in Big5 are Big5. Labels not known are listed in `unknown`.
 export function decodeBody(
   data: string,
   charset: string | null,
@@ -133,15 +147,17 @@ export function decodeBody(
     if (text !== null) {
       if (new TextDecoder(label).encoding === "windows-1252" && bytes.some((b) => b >= 0x80)) {
         const big5 = decodeAs("big5", bytes, true);
-        if (big5 !== null && mostlyHan(big5)) return big5;
+        if (big5 !== null && readsAsChinese(big5)) return big5;
       }
       return text;
     }
   }
-  for (const fallback of FALLBACKS) {
-    const text = decodeAs(fallback, bytes, true);
-    if (text !== null) return text;
-  }
+  const utf8 = decodeAs("utf-8", bytes, true);
+  if (utf8 !== null) return utf8;
+  const big5 = decodeAs("big5", bytes, true);
+  const gb = decodeAs("gb18030", bytes, true);
+  if (big5 !== null && (gb === null || commonHan(big5) >= commonHan(gb))) return big5;
+  if (gb !== null) return gb;
   return new TextDecoder(label ?? "utf-8").decode(bytes);
 }
 
