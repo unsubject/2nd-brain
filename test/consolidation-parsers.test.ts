@@ -107,6 +107,11 @@ test("decodeBody reads Big5 under labels TextDecoder lacks, under none, and unde
   // only in GB18030.
   const gbk = Buffer.from("d6d0b9fabeadbcc3b5c4cecacce2b2bbd4dad3dab6ccc6dab5c4d6dcc6da", "hex");
   assert.equal(decodeBody(b64(gbk), null), "中国经济的问题不在于短期的周期");
+  // Short Big5 whose GB18030 reading happens to hold a common character
+  // (滁咀盡現) stays Big5: neither reads as Chinese, so Big5.
+  assert.equal(decodeBody(b64(Buffer.from("b3fcbed7b14dac46", "hex")), null), "壹擋專政");
+  const short = Buffer.from("adbbb4e4ac46a9b2a5a2c646a141b3fcbed7b14dac46a143", "hex");
+  assert.equal(decodeBody(b64(short), null), "香港政府失靈，壹擋專政。");
   // An HTML body that names its charset only in a meta tag.
   const html = Buffer.concat([Buffer.from('<html><head><meta http-equiv="Content-Type" content="text/html; charset=big5"></head><body>'), big5, Buffer.from("</body></html>")]);
   assert.ok(decodeBody(b64(html), null).includes(text));

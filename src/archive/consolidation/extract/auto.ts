@@ -32,6 +32,10 @@ export { candidatesStale, loadStale };
 // in case that collection never ends normally to start extraction itself.
 const DELAY_MS = 90_000;
 const RECHECK_MS = 60_000;
+// Re-fetches of garbled Gmail messages the boot check starts at most: one
+// whose fetch failed (a 500, say) leaves its message due, so the check
+// looks again once that run has ended.
+const GMAIL_TRIES = 3;
 
 // The works are out of date: made by an older MATCHER_VERSION, missing a
 // kept candidate, older than a candidate, or made by a match that started
@@ -124,18 +128,28 @@ export function catchUpNow(why: string): void {
     .catch((err) => console.error("[consolidation] catch-up check failed:", describeGoogleError(err)));
 }
 
+// Whether the boot check looks again: while a collection it waits for is
+// live, and after a re-fetch it started, up to GMAIL_TRIES of them (while
+// that run is going the next look waits for it).
+export function looksAgain(r: Awaited<ReturnType<typeof catchUp>>, gmailRuns: number): boolean {
+  if (!r) return false;
+  return "waitingFor" in r || (r.source === "gmail" && gmailRuns < GMAIL_TRIES);
+}
+
 export function startAutoExtraction(): void {
   let waiting = false;
+  let gmailRuns = 0;
   const check = () => {
     catchUp()
       .then((r) => {
         if (r && "waitingFor" in r) {
           if (!waiting) console.log(`[consolidation] ${MESSAGES[r.step]}; waiting for the ${r.waitingFor} collection run`);
           waiting = true;
-          setTimeout(check, RECHECK_MS);
         } else if (r) {
           console.log(`[consolidation] ${MESSAGES[r.source]}; ${r.source} run ${r.runId} started`);
+          if (r.source === "gmail") gmailRuns += 1;
         }
+        if (looksAgain(r, gmailRuns)) setTimeout(check, RECHECK_MS);
       })
       .catch((err) => console.error("[consolidation] catch-up check failed:", describeGoogleError(err)));
   };

@@ -728,6 +728,14 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
     throw new staging.RunAlreadyActiveError("gmail");
   };
   assert.deepEqual(await auto.catchUp(gmailBusy, stale), { waitingFor: "gmail", step: "gmail" });
+  // After a re-fetch it started (a failed fetch leaves its message due),
+  // the boot check looks again, up to three re-fetches; after other steps,
+  // not.
+  assert.equal(auto.looksAgain({ source: "gmail", runId: "run-1" }, 1), true);
+  assert.equal(auto.looksAgain({ source: "gmail", runId: "run-3" }, 3), false);
+  assert.equal(auto.looksAgain({ waitingFor: "gmail", step: "gmail" }, 3), true);
+  assert.equal(auto.looksAgain({ source: "extract", runId: "run-2" }, 0), false);
+  assert.equal(auto.looksAgain(null, 0), false);
 
   // Fetched again by this decoder, even still garbled: not again.
   await db.query(

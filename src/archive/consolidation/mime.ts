@@ -126,10 +126,10 @@ function readsAsChinese(text: string): boolean {
 // often labelled with a name TextDecoder does not know, labelled wrongly,
 // or not labelled at all. So: the label (or an alias of it, or a charset
 // the HTML declares), as long as the bytes are valid in it; else UTF-8 if
-// they are valid in it, else Big5 or GB18030, whichever reads as more
-// common Chinese characters (Big5 on a tie: much GBK is valid Big5, and
-// almost any Big5 is valid GB18030). Bytes labelled Latin-1 that read as
-// Chinese in Big5 are Big5. Labels not known are listed in `unknown`.
+// they are valid in it, else Big5, unless only the GB18030 reading reads
+// as Chinese (much GBK is valid Big5, and almost any Big5 is valid
+// GB18030; old Hong Kong mail is Big5). Bytes labelled Latin-1 that read
+// as Chinese in Big5 are Big5. Labels not known are listed in `unknown`.
 export function decodeBody(
   data: string,
   charset: string | null,
@@ -156,7 +156,7 @@ export function decodeBody(
   if (utf8 !== null) return utf8;
   const big5 = decodeAs("big5", bytes, true);
   const gb = decodeAs("gb18030", bytes, true);
-  if (big5 !== null && (gb === null || commonHan(big5) >= commonHan(gb))) return big5;
+  if (big5 !== null && (gb === null || readsAsChinese(big5) || !readsAsChinese(gb))) return big5;
   if (gb !== null) return gb;
   return new TextDecoder(label ?? "utf-8").decode(bytes);
 }
