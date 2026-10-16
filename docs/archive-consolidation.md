@@ -448,10 +448,30 @@ not what the last successful load recorded (`legacyUnreplaced.digest`),
 the log also lists each of them, with why (`kept`, `video`, `fragment`),
 its date, source, length, link host, title and opening words.
 
+## Decoding old mail
+
+Gmail hands over each body part in its own charset. Old Hong Kong mail is
+mostly Big5, often under a name TextDecoder does not know (`x-big5`,
+`ms950`, `cp950`, `hkscs`), under the wrong name, under none, or named only
+in the HTML. Read as UTF-8, its bodies came out garbled while the subjects
+(which Gmail decodes itself) looked right, so the 2012–16 columns of
+壹擋專政 and 利字當頭 became works with the right titles and unreadable
+text (found 2026-10-15). `decodeBody` now maps those names to Big5, reads a
+charset an HTML body declares, falls back to UTF-8, Big5 and GB18030 in turn
+when the bytes are not valid in the named charset, and reads Big5 sent as
+Latin-1 as Big5.
+
+Each staged message records the decoder that read it (`decoderVersion`,
+`DECODER_VERSION` in `mime.ts`). A message read by an older one whose body
+looks garbled (a replacement character, an unknown charset, or runs of
+Latin-1 letters) is fetched again by the next Gmail collection, once per
+decoder version, and the boot check starts that collection itself; its
+extraction, match and load follow as usual.
+
 ## What is stored
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
-  `isSent`, attachment list), plus one row per `.docx` attachment
+  `isSent`, attachment list, `decoderVersion`), plus one row per `.docx` attachment
   (`<message id>#<part id>`) with its text (its recipients stay on the
   message's row). Long bodies that Gmail stores out of line are fetched
   separately (`externalBodies` in the metadata).

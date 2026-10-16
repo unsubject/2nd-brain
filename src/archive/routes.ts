@@ -3,6 +3,7 @@ import { importYouTubeVideo, YouTubeImportBody } from "./ingest/youtube";
 import { hybridSearch, SearchRequest } from "./search";
 import * as archiveQueries from "./queries";
 import { auditPublicArtifacts } from "./consolidation/audit";
+import { DEFAULT_GMAIL_LABEL } from "./consolidation/gmail";
 import { startCollection, type CollectRequest } from "./consolidation/runner";
 import { getStagingStatus, RunAlreadyActiveError } from "./consolidation/staging";
 import { catchUpNow } from "./consolidation/extract/auto";
@@ -28,7 +29,7 @@ export function parseCollectRequest(body: unknown): CollectRequest | string {
   const b = (body ?? {}) as Record<string, unknown>;
   const refetch = b.refetch === true;
   if (b.source === "gmail") {
-    const label = b.label === undefined ? "Writing" : b.label;
+    const label = b.label === undefined ? DEFAULT_GMAIL_LABEL : b.label;
     if (typeof label !== "string" || label.trim().length === 0 || label.length > 200) {
       return "label must be a non-empty string";
     }

@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { Pool } from "pg";
 import { pool, type DB } from "../../db/client";
+import { DECODER_VERSION } from "./mime";
 
 export type ArchiveSource = "gmail" | "gdrive" | "wordpress" | "substack";
 // "extract" (step 2), "match" (step 3) and "load" (step 4) are tracked
@@ -112,6 +113,36 @@ export async function incompleteGmailMessages(refs: string[], db: DB = pool): Pr
     [refs]
   );
   return new Set(rows.map((r) => r.source_ref));
+}
+
+// A staged Gmail message whose body looks garbled (replacement characters,
+// a charset that was not known, or Big5 read as Latin-1) and was decoded
+// before DECODER_VERSION: the collector fetches it again, once per
+// decoder version, even without refetch.
+const GARBLED = `coalesce((metadata->>'decoderVersion')::int, 1) < $1
+   AND metadata->>'kind' = 'message'
+   AND (metadata ? 'unknownCharsets'
+        OR strpos(coalesce(raw_text, ''), chr(65533)) > 0
+        OR strpos(coalesce(raw_html, ''), chr(65533)) > 0
+        OR coalesce(raw_text, '') ~ '[\u00a1-\u00ff]{4,}')`;
+
+export async function garbledGmailMessages(refs: string[], db: DB = pool): Promise<Set<string>> {
+  if (refs.length === 0) return new Set();
+  const { rows } = await db.query<{ source_ref: string }>(
+    `SELECT source_ref FROM archive_source_item
+      WHERE source = 'gmail' AND source_ref = ANY($2) AND ${GARBLED}`,
+    [DECODER_VERSION, refs]
+  );
+  return new Set(rows.map((r) => r.source_ref));
+}
+
+// Any such message: the boot check collects again (extract/auto.ts).
+export async function gmailRefetchDue(db: DB = pool): Promise<boolean> {
+  const { rows } = await db.query<{ due: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM archive_source_item WHERE source = 'gmail' AND ${GARBLED}) AS due`,
+    [DECODER_VERSION]
+  );
+  return rows[0].due;
 }
 
 export class RunAlreadyActiveError extends Error {

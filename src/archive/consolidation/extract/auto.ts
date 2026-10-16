@@ -1,6 +1,7 @@
 // Keep candidates (step 2), works (step 3) and their public_artifact rows
 // (step 4) in step with the rules without anyone starting a run: shortly
-// after boot (so after every deploy), re-extract when a staged item has no
+// after boot (so after every deploy), collect Gmail again when a staged
+// message looks garbled by an older DECODER_VERSION, else re-extract when a staged item has no
 // candidate yet, one made by an older EXTRACTOR_VERSION or one older than
 // the item, else re-match when the works are older than the candidates or
 // MATCHER_VERSION (worksStale), else load when no load by this
@@ -9,16 +10,18 @@
 // an extraction is followed by matching and loading, even one that failed
 // on an item (whose candidate then stays out of date, so this check
 // extracts again on every boot until the rules handle it). When all is
-// current this costs three queries. Collections start extraction
+// current this costs four queries. Collections start extraction
 // themselves when they end; this check covers what a deploy or a rule
 // change left behind.
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
+import { DEFAULT_GMAIL_LABEL } from "../gmail";
 import { LOADER_VERSION, loadStale } from "../load/run";
 import { MATCHER_VERSION } from "../match/run";
+import { DECODER_VERSION } from "../mime";
 import { startCollection, type CollectRequest } from "../runner";
-import { RunAlreadyActiveError, RunBlockedError, type CollectorSource } from "../staging";
+import { gmailRefetchDue, RunAlreadyActiveError, RunBlockedError, type CollectorSource } from "../staging";
 import { candidatesStale } from "./run";
 import { EXTRACTOR_VERSION } from "./types";
 
@@ -60,6 +63,7 @@ export async function worksStale(db: DB = pool): Promise<boolean> {
 }
 
 const MESSAGES = {
+  gmail: `Gmail messages garbled by an older decoder (decoder v${DECODER_VERSION})`,
   extract: `candidates out of date (extractor v${EXTRACTOR_VERSION})`,
   match: `works out of date (matcher v${MATCHER_VERSION})`,
   load: `archive rows out of date (loader v${LOADER_VERSION})`,
@@ -70,22 +74,33 @@ const MESSAGES = {
 // step is already going.
 export async function catchUp(
   start: (req: CollectRequest) => Promise<string> = startCollection,
-  stale: { candidates: () => Promise<boolean>; works: () => Promise<boolean>; load?: () => Promise<boolean> } = {
+  stale: {
+    gmail?: () => Promise<boolean>;
+    candidates: () => Promise<boolean>;
+    works: () => Promise<boolean>;
+    load?: () => Promise<boolean>;
+  } = {
+    gmail: () => gmailRefetchDue(),
     candidates: () => candidatesStale(),
     works: () => worksStale(),
     load: () => loadStale(),
   }
-): Promise<{ source: "extract" | "match" | "load"; runId: string } | { waitingFor: CollectorSource } | null> {
-  const source = (await stale.candidates())
-    ? "extract"
-    : (await stale.works())
-      ? "match"
-      : (await stale.load?.())
-        ? "load"
-        : null;
+): Promise<{ source: "gmail" | "extract" | "match" | "load"; runId: string } | { waitingFor: CollectorSource } | null> {
+  // Messages an older decoder garbled are collected again first; the
+  // collection then starts extraction (runner.nextStep), and so on.
+  const source = (await stale.gmail?.())
+    ? "gmail"
+    : (await stale.candidates())
+      ? "extract"
+      : (await stale.works())
+        ? "match"
+        : (await stale.load?.())
+          ? "load"
+          : null;
   if (!source) return null;
   try {
-    return { source, runId: await start({ source }) };
+    const req: CollectRequest = source === "gmail" ? { source, label: DEFAULT_GMAIL_LABEL } : { source };
+    return { source, runId: await start(req) };
   } catch (err) {
     if (err instanceof RunBlockedError) return { waitingFor: err.blockedBy };
     if (err instanceof RunAlreadyActiveError) return null;

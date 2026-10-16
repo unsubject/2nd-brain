@@ -246,6 +246,7 @@ test("collectMessage fetches out-of-line bodies and retries a failed attachment"
   assert.equal(rows[0].raw_html, "<p>利世民</p>");
   assert.deepEqual(rows[0].metadata.expectedAttachmentRefs, ["m-long#1"]);
   assert.deepEqual(rows[0].metadata.externalBodies, ["text/plain"]);
+  assert.equal(rows[0].metadata.decoderVersion, (await import("../src/archive/consolidation/mime")).DECODER_VERSION);
   assert.equal(rows[0].metadata.emptyBody, undefined);
   assert.deepEqual([...(await staging.incompleteGmailMessages(["m-long"], db))], ["m-long"]);
 
@@ -645,6 +646,54 @@ test("an extraction run is tracked like a collection run", { skip }, async () =>
   }
   assert.equal(loadRow?.status, "succeeded");
   assert.equal(loadRow?.stats.works, 1);
+});
+
+test("messages an older decoder garbled are fetched again, once per decoder version", { skip }, async () => {
+  const { DECODER_VERSION } = await import("../src/archive/consolidation/mime");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  await db.query("DELETE FROM archive_source_item");
+  // 香港經濟 in Big5, read as UTF-8 and as Latin-1.
+  const big5 = Buffer.from("adbbb4e4b867c0d9", "hex");
+  const asUtf8 = big5.toString("utf8");
+  const asLatin1 = big5.toString("latin1");
+  const message = (ref: string, rawText: string, metadata: Record<string, unknown> = {}) =>
+    staging.upsertSourceItem(item({ sourceRef: ref, rawText, metadata: { kind: "message", ...metadata } }), db);
+  await message("g-utf8", `專欄：${asUtf8}`);
+  await message("g-unknown", "文字", { unknownCharsets: ["x-big5"] });
+  await message("g-latin1", `壹擋專政 ${asLatin1}`);
+  await message("g-clean", "香港經濟的問題不在於短期的周期");
+  await message("g-french", "café au lait, déjà vu");
+  await message("g-current", `專欄：${asUtf8}`, { decoderVersion: DECODER_VERSION });
+  await staging.upsertSourceItem(item({ sourceRef: "g-utf8#1", rawText: asUtf8, metadata: { kind: "attachment" } }), db);
+
+  const refs = ["g-utf8", "g-unknown", "g-latin1", "g-clean", "g-french", "g-current", "g-utf8#1"];
+  assert.deepEqual([...(await staging.garbledGmailMessages(refs, db))].sort(), ["g-latin1", "g-unknown", "g-utf8"]);
+  assert.equal(await staging.gmailRefetchDue(db), true);
+
+  // The boot check collects the label again before anything else.
+  const started: unknown[] = [];
+  const start = async (req: unknown) => {
+    started.push(req);
+    return "run-1";
+  };
+  const stale = {
+    gmail: () => staging.gmailRefetchDue(db),
+    candidates: async () => true,
+    works: async () => true,
+  };
+  assert.deepEqual(await auto.catchUp(start, stale), { source: "gmail", runId: "run-1" });
+  assert.deepEqual(started, [{ source: "gmail", label: "Writing" }]);
+
+  // Fetched again by this decoder, even still garbled: not again.
+  await db.query(
+    `UPDATE archive_source_item SET metadata = metadata || jsonb_build_object('decoderVersion', $1::int)
+      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1')`,
+    [DECODER_VERSION]
+  );
+  assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);
+  assert.equal(await staging.gmailRefetchDue(db), false);
+  assert.deepEqual((await auto.catchUp(start, stale))?.source, "extract");
+  await db.query("DELETE FROM archive_source_item");
 });
 
 test("catch-up: extract when candidates are stale, then match when works are", { skip }, async () => {

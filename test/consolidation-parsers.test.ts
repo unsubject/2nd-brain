@@ -80,6 +80,36 @@ test("decodeBody honours Big5 and falls back to UTF-8 for unknown charsets", () 
   assert.deepEqual(unknown, ["x-made-up"]);
 });
 
+test("decodeBody reads Big5 under labels TextDecoder lacks, under none, and under the wrong one", () => {
+  // 香港經濟的問題不在於短期的周期, in Big5.
+  const text = "香港經濟的問題不在於短期的周期";
+  const big5 = Buffer.from("adbbb4e4b867c0d9aabab0ddc344a4a3a662a9f3b575b4c1aabaa950b4c1", "hex");
+  for (const label of ["x-big5", "ms950", "cp950", "hkscs", "big5-hkscs"]) {
+    const unknown: string[] = [];
+    assert.equal(decodeBody(b64(big5), label, unknown), text, label);
+    assert.deepEqual(unknown, [], label);
+  }
+  // No label, a label the bytes don't fit, and one TextDecoder doesn't know.
+  assert.equal(decodeBody(b64(big5), null), text);
+  assert.equal(decodeBody(b64(big5), "utf-8"), text);
+  const unknown: string[] = [];
+  assert.equal(decodeBody(b64(big5), "x-made-up", unknown), text);
+  assert.deepEqual(unknown, ["x-made-up"]);
+  // Big5 sent as Latin-1; real Latin-1 stays Latin-1.
+  assert.equal(decodeBody(b64(big5), "iso-8859-1"), text);
+  const french = Buffer.from("café au lait, déjà vu", "latin1");
+  assert.equal(decodeBody(b64(french), "iso-8859-1"), "café au lait, déjà vu");
+  // An HTML body that names its charset only in a meta tag.
+  const html = Buffer.concat([Buffer.from('<html><head><meta http-equiv="Content-Type" content="text/html; charset=big5"></head><body>'), big5, Buffer.from("</body></html>")]);
+  assert.ok(decodeBody(b64(html), null).includes(text));
+  // UTF-8 with no label is read as UTF-8; a label named like an Object
+  // property is just an unknown label.
+  assert.equal(decodeBody(b64(text), null), text);
+  const odd: string[] = [];
+  assert.equal(decodeBody(b64(text), "constructor", odd), text);
+  assert.deepEqual(odd, ["constructor"]);
+});
+
 test("extractBodies handles a single-part message and missing payloads", () => {
   assert.equal(extractBodies({ mimeType: "text/plain", body: { data: b64("只有文字") } }).text, "只有文字");
   const empty = extractBodies(undefined);

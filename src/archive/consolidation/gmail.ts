@@ -1,21 +1,26 @@
 // Collect every message under a Gmail label (default "Writing") into
 // archive_source_item, verbatim. Gmail messages never change, so re-runs
-// only fetch messages not already staged (unless refetch is set).
+// only fetch messages not already staged (unless refetch is set), and
+// those staged incomplete or garbled by an older decoder.
 
 import { google } from "googleapis";
 import mammoth from "mammoth";
 import { getAuthenticatedClient } from "../../google/auth";
 import { describeGoogleError } from "../../google/errors";
-import { decodeBody, extractBodies, header, isDocxAttachment, splitAddresses, type ExternalBody } from "./mime";
+import { DECODER_VERSION, decodeBody, extractBodies, header, isDocxAttachment, splitAddresses, type ExternalBody } from "./mime";
 import { RateLimiter, unlimited, type CallRunner } from "./ratelimit";
 import {
   existingSourceRefs,
+  garbledGmailMessages,
   incompleteGmailMessages,
   upsertSourceItem,
   type UpsertResult,
 } from "./staging";
 
 export type Gmail = ReturnType<typeof google.gmail>;
+
+// The label the archive's writing is filed under.
+export const DEFAULT_GMAIL_LABEL = "Writing";
 
 export interface GmailCollectParams {
   label: string;
@@ -28,6 +33,8 @@ export interface CollectStats {
   skippedExisting: number;
   // Staged messages fetched again because an attachment row is missing.
   retriedIncomplete: number;
+  // Staged messages fetched again because an older decoder garbled them.
+  retriedGarbled?: number;
   inserted: number;
   updated: number;
   unchanged: number;
@@ -192,6 +199,7 @@ export async function collectMessage(
     expectedAttachmentRefs: docxAttachments.map((a) => `${id}#${a.partId}`),
     ...(externalBodies.length > 0 ? { externalBodies } : {}),
     ...(bodies.unknownCharsets.length > 0 ? { unknownCharsets: bodies.unknownCharsets } : {}),
+    decoderVersion: DECODER_VERSION,
     ...(text === null && html === null ? { emptyBody: true } : {}),
   };
 
@@ -274,16 +282,20 @@ export async function collectGmail(
   let todo = ids;
   if (!params.refetch) {
     // Staged messages are skipped unless one of their attachment rows is
-    // missing (a fetch failed, or the run stopped between the two writes).
+    // missing (a fetch failed, or the run stopped between the two writes),
+    // or an older decoder garbled their body.
     const existing = new Set<string>();
     const incomplete = new Set<string>();
+    const garbled = new Set<string>();
     for (let i = 0; i < ids.length; i += 1000) {
       const chunk = ids.slice(i, i + 1000);
       for (const r of await existingSourceRefs("gmail", chunk)) existing.add(r);
       for (const r of await incompleteGmailMessages(chunk)) incomplete.add(r);
+      for (const r of await garbledGmailMessages(chunk)) garbled.add(r);
     }
-    todo = ids.filter((id) => !existing.has(id) || incomplete.has(id));
+    todo = ids.filter((id) => !existing.has(id) || incomplete.has(id) || garbled.has(id));
     stats.retriedIncomplete = incomplete.size;
+    stats.retriedGarbled = garbled.size;
     stats.skippedExisting = ids.length - todo.length;
   }
 

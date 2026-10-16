@@ -51,23 +51,98 @@ export function charsetOf(contentType: string | null): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+// Bumped whenever decodeBody reads some bytes differently: a staged
+// message decoded by an older version that looks garbled is fetched again
+// (staging.garbledGmailMessages).
+export const DECODER_VERSION = 2;
+
+// Labels old Hong Kong mail used that TextDecoder does not know; WHATWG's
+// big5 is Big5-HKSCS. A Map, so a label named like an Object property is a
+// label like any other.
+const CHARSET_ALIASES = new Map([
+  ["x-big5", "big5"],
+  ["big5hkscs", "big5"],
+  ["hkscs", "big5"],
+  ["ms950", "big5"],
+  ["cp950", "big5"],
+  ["windows-950", "big5"],
+  ["x-ms950", "big5"],
+  ["cp936", "gbk"],
+  ["ms936", "gbk"],
+  ["windows-936", "gbk"],
+]);
+
+// What bytes with no usable label, or a label they don't fit, are tried as.
+const FALLBACKS = ["utf-8", "big5", "gb18030"];
+
+function decodeAs(label: string, bytes: Uint8Array, fatal: boolean): string | null {
+  try {
+    return new TextDecoder(label, { fatal }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function known(label: string): boolean {
+  try {
+    new TextDecoder(label);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A charset an HTML body declares for itself, for a part whose header
+// names none.
+function metaCharset(bytes: Uint8Array): string | null {
+  const head = Buffer.from(bytes.subarray(0, 4096)).toString("latin1");
+  const m = head.match(/<meta[^>]+charset\s*=\s*["']?([\w.:-]+)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Most of its non-ASCII text is Chinese: Big5 rather than the Latin-1 a
+// part claimed.
+function mostlyHan(text: string): boolean {
+  const nonAscii = text.match(/[^\x00-\x7f]/gu) ?? [];
+  const han = text.match(/[\p{Script=Han}\u3000-\u303f\uff00-\uffef]/gu) ?? [];
+  return han.length >= 4 && han.length >= 0.8 * nonAscii.length;
+}
+
 // Gmail returns part bodies as base64url of the (transfer-decoded) bytes,
-// still in the part's own charset — old Hong Kong mail is often Big5.
+// still in the part's own charset; old Hong Kong mail is often Big5, and
+// often labelled with a name TextDecoder does not know, labelled wrongly,
+// or not labelled at all. So: the label (or an alias of it, or a charset
+// the HTML declares), as long as the bytes are valid in it; else the first
+// of UTF-8, Big5 and GB18030 they are valid in. Bytes labelled Latin-1 that
+// read as Chinese in Big5 are Big5. Labels not known are listed in
+// `unknown`.
 export function decodeBody(
   data: string,
   charset: string | null,
   unknown: string[] = []
 ): string {
   const bytes = Buffer.from(data, "base64url");
-  const label = charset ?? "utf-8";
-  let decoder: TextDecoder;
-  try {
-    decoder = new TextDecoder(label);
-  } catch {
+  let label = charset ?? metaCharset(bytes);
+  if (label) label = CHARSET_ALIASES.get(label) ?? label;
+  if (label && !known(label)) {
     if (!unknown.includes(label)) unknown.push(label);
-    decoder = new TextDecoder("utf-8");
+    label = null;
   }
-  return decoder.decode(bytes);
+  if (label) {
+    const text = decodeAs(label, bytes, true);
+    if (text !== null) {
+      if (new TextDecoder(label).encoding === "windows-1252" && bytes.some((b) => b >= 0x80)) {
+        const big5 = decodeAs("big5", bytes, true);
+        if (big5 !== null && mostlyHan(big5)) return big5;
+      }
+      return text;
+    }
+  }
+  for (const fallback of FALLBACKS) {
+    const text = decodeAs(fallback, bytes, true);
+    if (text !== null) return text;
+  }
+  return new TextDecoder(label ?? "utf-8").decode(bytes);
 }
 
 // Walk the MIME tree: the first text/plain and text/html bodies win
