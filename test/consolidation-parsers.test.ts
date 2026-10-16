@@ -334,6 +334,9 @@ test("resumeRequest continues a run with its settings, up to MAX_RESUMES times",
   // skip what the interrupted run never reached.
   const refetch = resumeRequest({ id: "run-1", source: "gmail", params: { label: "Writing", refetch: true } });
   assert.deepEqual(refetch, { source: "gmail", label: "Writing", refetch: true, resumedFrom: "run-1", resumeCount: 1 });
+  // The boot check's re-fetch of garbled messages has no label.
+  const garbled = resumeRequest({ id: "run-1", source: "gmail", params: { garbledOnly: true } });
+  assert.deepEqual(garbled, { source: "gmail", garbledOnly: true, resumedFrom: "run-1", resumeCount: 1 });
 
   const folders = ["1-t93X29Zx94KBa0E2WxM7Izu4S8CLOvl", "19xMNprsamGSLdZw6EgRd2uCeppKS2gzZ"];
   const drive = resumeRequest({

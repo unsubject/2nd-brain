@@ -466,10 +466,10 @@ Each staged message records the decoder that read it (`decoderVersion`,
 looks garbled (a replacement character, an unknown charset, or runs of
 Latin-1 letters) is fetched again by the next Gmail collection, once per
 decoder version, and the boot check starts that collection itself; its
-extraction, match and load follow as usual. The collection fetches such a
-message by id when its label doesn't list it (staged from another label,
-or moved out of this one since). One Gmail no longer has keeps its body
-and is marked `goneFromGmail`, so the boot check stops collecting for it.
+extraction, match and load follow as usual. That collection has no label
+(`garbledOnly`): it fetches just those messages, by id, whatever label they
+were collected from. One Gmail no longer has keeps its body and is marked
+`goneFromGmail`, so the boot check stops collecting for it.
 
 ## What is stored
 

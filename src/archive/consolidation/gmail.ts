@@ -1,7 +1,8 @@
 // Collect every message under a Gmail label (default "Writing") into
 // archive_source_item, verbatim. Gmail messages never change, so re-runs
 // only fetch messages not already staged (unless refetch is set), and
-// those staged incomplete or garbled by an older decoder.
+// those staged incomplete or garbled by an older decoder. The boot check
+// collects without a label: just the garbled ones, by id.
 
 import { google } from "googleapis";
 import mammoth from "mammoth";
@@ -25,10 +26,11 @@ export type Gmail = ReturnType<typeof google.gmail>;
 // The label the archive's writing is filed under.
 export const DEFAULT_GMAIL_LABEL = "Writing";
 
-export interface GmailCollectParams {
-  label: string;
-  refetch?: boolean;
-}
+export type GmailCollectParams =
+  | { label: string; refetch?: boolean }
+  // No label: only the staged messages an older decoder garbled, fetched
+  // by id whatever label they came from (the boot check, extract/auto.ts).
+  | { garbledOnly: true };
 
 export interface CollectStats {
   [key: string]: unknown;
@@ -99,14 +101,16 @@ export function recordError(stats: CollectStats, ref: string, err: unknown): voi
   }
 }
 
+// The label's id (null without a name) and every label's name by id.
 async function resolveLabelId(
   gmail: Gmail,
-  name: string,
+  name: string | null,
   limiter: CallRunner
-): Promise<{ id: string; names: Map<string, string> }> {
+): Promise<{ id: string | null; names: Map<string, string> }> {
   const { data } = await limiter.run(() => gmail.users.labels.list({ userId: "me" }));
   const names = new Map<string, string>();
   for (const l of data.labels ?? []) if (l.id && l.name) names.set(l.id, l.name);
+  if (name === null) return { id: null, names };
   const exact = (data.labels ?? []).find((l) => l.name === name);
   const loose = exact ?? (data.labels ?? []).find((l) => l.name?.toLowerCase() === name.toLowerCase());
   if (!loose?.id) throw new Error(`Gmail label not found: ${name}`);
@@ -276,16 +280,21 @@ export async function collectMessage(
   }
 }
 
-// The listed messages to fetch, then the staged ones an older decoder
-// garbled that the label doesn't list (staged from another label, or moved
-// out of this one since), by id: otherwise the boot check would collect
-// the label on every boot and never reach them.
+// What a collection fetches: of the messages its label lists, those not
+// staged yet (all of them with refetch), staged incomplete, or garbled by
+// an older decoder; without a label (ids null), the staged messages an
+// older decoder garbled, by id.
 export async function messagesToFetch(
-  ids: string[],
+  ids: string[] | null,
   refetch: boolean,
   stats: CollectStats,
   db: DB = pool
 ): Promise<string[]> {
+  if (ids === null) {
+    const garbled = await allGarbledGmailMessages(db);
+    stats.retriedGarbled = garbled.length;
+    return garbled;
+  }
   let todo = ids;
   if (!refetch) {
     // Staged messages are skipped unless one of their attachment rows is
@@ -305,10 +314,7 @@ export async function messagesToFetch(
     stats.retriedGarbled = garbled.size;
     stats.skippedExisting = ids.length - todo.length;
   }
-  const listed = new Set(ids);
-  const elsewhere = (await allGarbledGmailMessages(db)).filter((id) => !listed.has(id));
-  stats.retriedGarbled = (stats.retriedGarbled ?? 0) + elsewhere.length;
-  return [...todo, ...elsewhere];
+  return todo;
 }
 
 const notFound = (err: unknown): boolean => {
@@ -325,11 +331,12 @@ export async function collectGmail(
   const auth = await getAuthenticatedClient();
   const gmail = google.gmail({ version: "v1", auth });
   const limiter = gmailRateLimiter(stats, () => void onProgress());
-  const { id: labelId, names } = await resolveLabelId(gmail, params.label, limiter);
+  const byLabel = "label" in params ? params : null;
+  const { id: labelId, names } = await resolveLabelId(gmail, byLabel?.label ?? null, limiter);
 
-  const ids = await listMessageIds(gmail, labelId, limiter);
-  stats.listed = ids.length;
-  const todo = await messagesToFetch(ids, params.refetch ?? false, stats);
+  const ids = labelId === null ? null : await listMessageIds(gmail, labelId, limiter);
+  stats.listed = ids?.length ?? 0;
+  const todo = await messagesToFetch(ids, byLabel?.refetch ?? false, stats);
 
   let next = 0;
   let done = 0;

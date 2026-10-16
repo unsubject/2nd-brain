@@ -678,29 +678,18 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   );
   assert.equal(await staging.gmailRefetchDue(db), true);
 
-  // A collection fetches the garbled ones its label lists, and by id those
-  // it doesn't (staged from another label, or moved out of this one).
+  // A label's collection fetches the garbled messages it lists; one
+  // without a label (the boot check's) fetches all of them, by id, from
+  // whatever label they came.
   const stats = gmail.emptyStats();
-  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean", "g-utf8"], false, stats, db), [
-    "g-new",
-    "g-utf8",
-    "g-latin1",
-    "g-latin1-html",
-    "g-unknown",
-  ]);
-  assert.equal(stats.retriedGarbled, 4);
+  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean", "g-utf8"], false, stats, db), ["g-new", "g-utf8"]);
+  assert.equal(stats.retriedGarbled, 1);
   assert.equal(stats.skippedExisting, 1);
-  const refetch = gmail.emptyStats();
-  assert.deepEqual(await gmail.messagesToFetch(["g-clean", "g-utf8"], true, refetch, db), [
-    "g-clean",
-    "g-utf8",
-    "g-latin1",
-    "g-latin1-html",
-    "g-unknown",
-  ]);
-  assert.equal(refetch.retriedGarbled, 3);
+  const byId = gmail.emptyStats();
+  assert.deepEqual(await gmail.messagesToFetch(null, false, byId, db), ["g-latin1", "g-latin1-html", "g-unknown", "g-utf8"]);
+  assert.equal(byId.retriedGarbled, 4);
 
-  // The boot check collects the label again before anything else.
+  // The boot check collects those messages before anything else.
   const started: unknown[] = [];
   const start = async (req: unknown) => {
     started.push(req);
@@ -712,7 +701,7 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
     works: async () => true,
   };
   assert.deepEqual(await auto.catchUp(start, stale), { source: "gmail", runId: "run-1" });
-  assert.deepEqual(started, [{ source: "gmail", label: "Writing" }]);
+  assert.deepEqual(started, [{ source: "gmail", garbledOnly: true }]);
 
   // Fetched again by this decoder, even still garbled: not again.
   await db.query(
@@ -722,7 +711,7 @@ test("messages an older decoder garbled are fetched again, once per decoder vers
   );
   assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);
   assert.equal(await staging.gmailRefetchDue(db), false);
-  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean"], false, gmail.emptyStats(), db), ["g-new"]);
+  assert.deepEqual(await gmail.messagesToFetch(null, false, gmail.emptyStats(), db), []);
   assert.deepEqual((await auto.catchUp(start, stale))?.source, "extract");
   await db.query("DELETE FROM archive_source_item");
 });

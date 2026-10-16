@@ -16,7 +16,6 @@
 
 import { pool, type DB } from "../../../db/client";
 import { describeGoogleError } from "../../../google/errors";
-import { DEFAULT_GMAIL_LABEL } from "../gmail";
 import { LOADER_VERSION, loadStale } from "../load/run";
 import { MATCHER_VERSION } from "../match/run";
 import { DECODER_VERSION } from "../mime";
@@ -99,7 +98,9 @@ export async function catchUp(
           : null;
   if (!source) return null;
   try {
-    const req: CollectRequest = source === "gmail" ? { source, label: DEFAULT_GMAIL_LABEL } : { source };
+    // The collection fetches just those messages, by id, so it needs no
+    // label (they may have come from any).
+    const req: CollectRequest = source === "gmail" ? { source, garbledOnly: true } : { source };
     return { source, runId: await start(req) };
   } catch (err) {
     if (err instanceof RunBlockedError) return { waitingFor: err.blockedBy };
