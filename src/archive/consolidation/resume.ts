@@ -34,6 +34,7 @@ export function resumeRequest(run: InterruptedRun): CollectRequest | null {
   }
   const resume = { refetch: p.refetch === true, resumedFrom: run.id, resumeCount: count + 1 };
   if (run.source === "gmail") {
+    if (p.garbledOnly === true) return { source: "gmail", garbledOnly: true, resumedFrom: run.id, resumeCount: count + 1 };
     if (typeof p.label !== "string" || p.label.trim() === "") return null;
     return { source: "gmail", label: p.label, ...resume };
   }

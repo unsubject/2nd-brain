@@ -448,10 +448,40 @@ not what the last successful load recorded (`legacyUnreplaced.digest`),
 the log also lists each of them, with why (`kept`, `video`, `fragment`),
 its date, source, length, link host, title and opening words.
 
+## Decoding old mail
+
+Gmail hands over each body part in its own charset. Old Hong Kong mail is
+mostly Big5, often under a name TextDecoder does not know (`x-big5`,
+`ms950`, `cp950`, `hkscs`), under the wrong name, under none, or named only
+in the HTML. Read as UTF-8, its bodies came out garbled while the subjects
+(which Gmail decodes itself) looked right, so the 2012–16 columns of
+壹擋專政 and 利字當頭 became works with the right titles and unreadable
+text (found 2026-10-15). `decodeBody` now maps those names to Big5, reads a
+charset an HTML body declares, and when the bytes are not valid in the
+named charset reads them as UTF-8 if they are valid in it, else as Big5,
+unless only the GB18030 reading reads as Chinese, judged by how many of
+the commonest Chinese characters it holds (much GBK is valid Big5, and
+almost any Big5 is valid GB18030). Big5 sent as Latin-1
+is read as Big5 when it reads as Chinese the same way, so Western text whose
+accented letters happen to pair up as Big5 stays Latin-1.
+
+Each staged message records the decoder that read it (`decoderVersion`,
+`DECODER_VERSION` in `mime.ts`). A message read by an older one whose body
+looks garbled (a replacement character, an unknown charset, or Big5 read
+as Latin-1: runs of Latin-1 letters, or of Big5-shaped pairs such as
+`¤@¤B¤C`) is fetched again by the next Gmail collection, once per
+decoder version, and the boot check starts that collection itself; its
+extraction, match and load follow as usual. That collection has no label
+(`garbledOnly`): it fetches just those messages, by id, whatever label they
+were collected from. A fetch that fails leaves its message due, so the boot
+check looks again once that run has ended, up to three re-fetches per boot.
+One Gmail no longer has keeps its body and is marked `goneFromGmail`, so the
+boot check stops collecting for it.
+
 ## What is stored
 
 - **gmail**: one row per message (body as text and/or HTML, headers, labels,
-  `isSent`, attachment list), plus one row per `.docx` attachment
+  `isSent`, attachment list, `decoderVersion`), plus one row per `.docx` attachment
   (`<message id>#<part id>`) with its text (its recipients stay on the
   message's row). Long bodies that Gmail stores out of line are fetched
   separately (`externalBodies` in the metadata).

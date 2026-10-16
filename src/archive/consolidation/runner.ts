@@ -156,7 +156,12 @@ export async function startCollection(req: CollectRequest): Promise<string> {
 
   const job =
     req.source === "gmail"
-      ? collectGmail({ label: req.label, refetch: req.refetch }, stats, progress, shouldStop)
+      ? collectGmail(
+          "garbledOnly" in req ? { garbledOnly: true } : { label: req.label, refetch: req.refetch },
+          stats,
+          progress,
+          shouldStop
+        )
       : req.source === "gdrive"
         ? collectDrive(
             { folderIds: req.folderIds, refetch: req.refetch },

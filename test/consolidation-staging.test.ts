@@ -246,6 +246,7 @@ test("collectMessage fetches out-of-line bodies and retries a failed attachment"
   assert.equal(rows[0].raw_html, "<p>利世民</p>");
   assert.deepEqual(rows[0].metadata.expectedAttachmentRefs, ["m-long#1"]);
   assert.deepEqual(rows[0].metadata.externalBodies, ["text/plain"]);
+  assert.equal(rows[0].metadata.decoderVersion, (await import("../src/archive/consolidation/mime")).DECODER_VERSION);
   assert.equal(rows[0].metadata.emptyBody, undefined);
   assert.deepEqual([...(await staging.incompleteGmailMessages(["m-long"], db))], ["m-long"]);
 
@@ -647,6 +648,139 @@ test("an extraction run is tracked like a collection run", { skip }, async () =>
   assert.equal(loadRow?.stats.works, 1);
 });
 
+test("messages an older decoder garbled are fetched again, once per decoder version", { skip }, async () => {
+  const { DECODER_VERSION } = await import("../src/archive/consolidation/mime");
+  const auto = await import("../src/archive/consolidation/extract/auto");
+  await db.query("DELETE FROM archive_source_item");
+  // 香港經濟 in Big5, read as UTF-8 and as Latin-1.
+  const big5 = Buffer.from("adbbb4e4b867c0d9", "hex");
+  const asUtf8 = big5.toString("utf8");
+  const asLatin1 = big5.toString("latin1");
+  const message = (ref: string, rawText: string, metadata: Record<string, unknown> = {}) =>
+    staging.upsertSourceItem(item({ sourceRef: ref, rawText, metadata: { kind: "message", ...metadata } }), db);
+  await message("g-utf8", `專欄：${asUtf8}`);
+  await message("g-unknown", "文字", { unknownCharsets: ["x-big5"] });
+  await message("g-latin1", `壹擋專政 ${asLatin1}`);
+  // An HTML-only message keeps its body in raw_html alone.
+  await staging.upsertSourceItem(
+    item({ sourceRef: "g-latin1-html", rawText: null, rawHtml: `<p>${asLatin1}</p>`, metadata: { kind: "message" } }),
+    db
+  );
+  // 一丁七九 in Big5 as Latin-1: its trail bytes are ASCII.
+  await message("g-latin1-pairs", `專欄 ${Buffer.from("a440a442a443a445", "hex").toString("latin1")}`);
+  await message("g-clean", "香港經濟的問題不在於短期的周期");
+  await message("g-french", "café au lait, déjà vu");
+  await message("g-accents", "école élève étage épée, Größe, ação");
+  await message("g-current", `專欄：${asUtf8}`, { decoderVersion: DECODER_VERSION });
+  await staging.upsertSourceItem(item({ sourceRef: "g-utf8#1", rawText: asUtf8, metadata: { kind: "attachment" } }), db);
+
+  const refs = [
+    "g-utf8",
+    "g-unknown",
+    "g-latin1",
+    "g-latin1-html",
+    "g-latin1-pairs",
+    "g-clean",
+    "g-french",
+    "g-accents",
+    "g-current",
+    "g-utf8#1",
+  ];
+  assert.deepEqual(
+    [...(await staging.garbledGmailMessages(refs, db))].sort(),
+    ["g-latin1", "g-latin1-html", "g-latin1-pairs", "g-unknown", "g-utf8"]
+  );
+  assert.equal(await staging.gmailRefetchDue(db), true);
+
+  // A label's collection fetches the garbled messages it lists; one
+  // without a label (the boot check's) fetches all of them, by id, from
+  // whatever label they came.
+  const stats = gmail.emptyStats();
+  assert.deepEqual(await gmail.messagesToFetch(["g-new", "g-clean", "g-utf8"], false, stats, db), ["g-new", "g-utf8"]);
+  assert.equal(stats.retriedGarbled, 1);
+  assert.equal(stats.skippedExisting, 1);
+  const byId = gmail.emptyStats();
+  assert.deepEqual(await gmail.messagesToFetch(null, false, byId, db), [
+    "g-latin1",
+    "g-latin1-html",
+    "g-latin1-pairs",
+    "g-unknown",
+    "g-utf8",
+  ]);
+  assert.equal(byId.retriedGarbled, 5);
+
+  // The boot check collects those messages before anything else.
+  const started: unknown[] = [];
+  const start = async (req: unknown) => {
+    started.push(req);
+    return "run-1";
+  };
+  const stale = {
+    gmail: () => staging.gmailRefetchDue(db),
+    candidates: async () => true,
+    works: async () => true,
+  };
+  assert.deepEqual(await auto.catchUp(start, stale), { source: "gmail", runId: "run-1" });
+  assert.deepEqual(started, [{ source: "gmail", garbledOnly: true }]);
+  // Another Gmail run going (a label's, resumed after a deploy) may not
+  // list them all: the boot check waits for it and checks again.
+  const gmailBusy = async () => {
+    throw new staging.RunAlreadyActiveError("gmail");
+  };
+  assert.deepEqual(await auto.catchUp(gmailBusy, stale), { waitingFor: "gmail", step: "gmail" });
+  // After a re-fetch it started (a failed fetch leaves its message due),
+  // the boot check looks again, up to three re-fetches; after other steps,
+  // not.
+  assert.equal(auto.looksAgain({ source: "gmail", runId: "run-1" }, 1), true);
+  assert.equal(auto.looksAgain({ source: "gmail", runId: "run-3" }, 3), false);
+  assert.equal(auto.looksAgain({ waitingFor: "gmail", step: "gmail" }, 3), true);
+  assert.equal(auto.looksAgain({ source: "extract", runId: "run-2" }, 0), false);
+  assert.equal(auto.looksAgain(null, 0), false);
+
+  // Fetched again by this decoder, even still garbled: not again.
+  await db.query(
+    `UPDATE archive_source_item SET metadata = metadata || jsonb_build_object('decoderVersion', $1::int)
+      WHERE source_ref IN ('g-utf8', 'g-unknown', 'g-latin1', 'g-latin1-html', 'g-latin1-pairs')`,
+    [DECODER_VERSION]
+  );
+  assert.equal((await staging.garbledGmailMessages(refs, db)).size, 0);
+  assert.equal(await staging.gmailRefetchDue(db), false);
+  assert.deepEqual(await gmail.messagesToFetch(null, false, gmail.emptyStats(), db), []);
+  assert.deepEqual((await auto.catchUp(start, stale))?.source, "extract");
+  await db.query("DELETE FROM archive_source_item");
+});
+
+test("a garbled message Gmail no longer has stops the boot check collecting for it", { skip }, async () => {
+  await db.query("DELETE FROM archive_source_item");
+  const garbled = Buffer.from("adbbb4e4b867c0d9", "hex").toString("utf8");
+  await staging.upsertSourceItem(item({ sourceRef: "g-gone", rawText: garbled, metadata: { kind: "message" } }), db);
+  assert.equal(await staging.gmailRefetchDue(db), true);
+
+  const gone = stubGmail({}, {});
+  (gone.users.messages as any).get = async () => {
+    throw Object.assign(new Error("Requested entity was not found."), { code: 404, response: { status: 404 } });
+  };
+  await assert.rejects(gmail.collectMessage(gone, "g-gone", new Map(), gmail.emptyStats()), /not found/);
+  // A message never staged is left alone: nothing to mark.
+  await assert.rejects(gmail.collectMessage(gone, "g-never", new Map(), gmail.emptyStats()), /not found/);
+
+  const { rows } = await db.query("SELECT source_ref, raw_text, metadata FROM archive_source_item ORDER BY source_ref");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].raw_text, garbled);
+  assert.equal(rows[0].metadata.goneFromGmail, true);
+  assert.equal(await staging.gmailRefetchDue(db), false);
+
+  // Any other failure leaves it due, so the next collection tries again.
+  await staging.upsertSourceItem(item({ sourceRef: "g-flaky", rawText: garbled, metadata: { kind: "message" } }), db);
+  const flaky = stubGmail({}, {});
+  (flaky.users.messages as any).get = async () => {
+    throw Object.assign(new Error("Backend Error"), { code: 500, response: { status: 500 } });
+  };
+  await assert.rejects(gmail.collectMessage(flaky, "g-flaky", new Map(), gmail.emptyStats()), /Backend Error/);
+  assert.equal(await staging.gmailRefetchDue(db), true);
+  await db.query("DELETE FROM archive_source_item");
+});
+
 test("catch-up: extract when candidates are stale, then match when works are", { skip }, async () => {
   const run = await import("../src/archive/consolidation/extract/run");
   const match = await import("../src/archive/consolidation/match/run");
@@ -691,7 +825,7 @@ test("catch-up: extract when candidates are stale, then match when works are", {
   const collecting = async () => {
     throw new staging.RunBlockedError("gmail");
   };
-  assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail" });
+  assert.deepEqual(await auto.catchUp(collecting, stale), { waitingFor: "gmail", step: "extract" });
 });
 
 // A run that has ended, started now: nextStep reads its start.
